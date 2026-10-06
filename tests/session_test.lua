@@ -236,7 +236,10 @@ T.test("code scopes accumulate in one pane; cached repeats and refresh replace o
     T.eq(first.result.notes[1].detail, s.batches[1].result.notes[1].detail)
     api.nvim_set_current_win(s.pane.win); api.nvim_win_set_cursor(s.pane.win, { 2, 0 })
     s.pane:detail()
+    api.nvim_win_set_cursor(s.pane.win, { api.nvim_buf_line_count(s.pane.detail_buf), 0 })
+    local target = assert(s.pane:detail_target())
     T.eq(s, plugin.code("file")); ready(s)
+    T.eq(target.line, api.nvim_win_get_cursor(target.win)[1]); T.eq(nil, s.pane.detail_buf)
     T.eq(win, s.source); T.eq(3, #s.batches); T.eq(4, calls())
     T.eq(nil, s.pane.pending)
   end)
@@ -266,10 +269,15 @@ end)
 T.test("switching source buffers creates a new session without annotations from the previous buffer", function()
   fixture_buffer(function(_, win, calls)
     config(); local first = plugin.code("file"); ready(first)
+    api.nvim_set_current_win(first.pane.win)
+    first.pane:detail(1)
+    api.nvim_win_set_cursor(first.pane.win, { api.nvim_buf_line_count(first.pane.detail_buf), 0 })
     local other = api.nvim_create_buf(false, false)
-    api.nvim_buf_set_lines(other, 0, -1, false, { "other file" })
+    api.nvim_buf_set_lines(other, 0, -1, false, { "other file", "second", "third", "fourth", "fifth" })
     api.nvim_win_set_buf(win, other)
+    api.nvim_win_set_cursor(win, { 3, 2 })
     local second = plugin.code("file"); ready(second)
+    T.eq({ 3, 2 }, api.nvim_win_get_cursor(win))
     T.eq(true, first.closed); assert(first ~= second); T.eq(1, #second.batches)
     T.eq(other, second.snapshot.source_buf); T.eq(2, calls())
     plugin.close(); api.nvim_buf_delete(other, { force = true })
@@ -590,6 +598,59 @@ T.test("cancel refresh close and stale comparison discard active and queued hunk
       if action ~= "refresh" then T.eq(nil, s.pane.pending) end
       plugin.close()
     end
+  end)
+end)
+
+T.test("Diffview closure owns its background session, cancels immediately, and leaves other tabs alone", function()
+  diff_fixture(function(f)
+    local lib, original = {}, package.loaded["diffview.lib"]
+    local closing = false
+    local view = { closing = { check = function() return closing end } }
+    local s = plugin.diff("hunk"); f.collect(f.snapshot(2, "closure")); f.answer("accepted"); f.drain()
+    lib.tabpage_to_view = function(tab) if tab == s.tab then return view end end
+    lib.get_current_view = function() return nil end
+    package.loaded["diffview.lib"] = lib
+    local ok, err = xpcall(function()
+      plugin.diff("hunk"); f.collect(f.snapshot(4, "closure"))
+      local active = f.launches[#f.launches]
+      plugin.diff("hunk"); local queued = f.collections[#f.collections]
+      api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
+      local detail, summary = s.pane.detail_buf, s.pane.buf
+      api.nvim_exec_autocmds("TextChanged", {})
+      assert(vim.wait(1000, function() return s.checking ~= nil end))
+      local checking = f.checks[#f.checks]
+      api.nvim_exec_autocmds("User", { pattern = "DiffviewViewClosed" })
+      vim.wait(30)
+      T.eq(nil, s.closed) -- A different view may close while this tab is active.
+      api.nvim_exec_autocmds("WinResized", {})
+      vim.cmd("tabnew")
+      local other_tab = api.nvim_get_current_tabpage()
+      local other = plugin.code("file")
+      local other_job = f.launches[#f.launches]
+      -- The event contains no tab/view payload. The current tab is not proof
+      -- of ownership, nor should a different view's closure kill this session.
+      api.nvim_exec_autocmds("User", { pattern = "DiffviewViewClosed" })
+      T.eq(nil, s.closed); T.eq(nil, other.closed)
+      closing = true
+      api.nvim_exec_autocmds("User", { pattern = "DiffviewViewClosed" })
+      T.eq(true, s.closed); T.eq(true, active.cancelled); T.eq(true, queued.cancelled)
+      T.eq(true, checking.cancelled); T.eq(nil, s.checking)
+      T.eq(nil, s.timer); T.eq(nil, s.pending); T.eq(0, #s.queue)
+      T.eq(nil, sessions.sessions[s.tab]); T.eq(other, sessions.current())
+      T.eq(nil, other_job.cancelled); T.eq(other_tab, api.nvim_get_current_tabpage())
+      T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(false, api.nvim_buf_is_valid(summary))
+      local calls = #f.launches
+      queued.callback(f.snapshot(5)); active.callback(nil, "late closed failure")
+      checking.callback(true)
+      vim.wait(30)
+      T.eq(calls, #f.launches); T.eq({}, f.errors)
+      T.eq(other, sessions.current())
+    end, debug.traceback)
+    package.loaded["diffview.lib"] = original
+    plugin.close()
+    if api.nvim_get_current_tabpage() ~= s.tab then vim.cmd("tabclose!") end
+    api.nvim_set_current_tabpage(s.tab)
+    assert(ok, err)
   end)
 end)
 

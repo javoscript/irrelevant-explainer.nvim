@@ -152,14 +152,39 @@ local function start_markdown(buf)
   pcall(vim.treesitter.start, buf, "markdown")
 end
 
+local function skipped_rows(win, view)
+  if view.skipcol == 0 then return 0 end
+  -- start_vcol excludes preceding filler; end_vcol is exclusive.
+  return api.nvim_win_text_height(win, { start_row = view.topline - 1, end_row = view.topline - 1,
+    start_vcol = 0, end_vcol = view.skipcol }).all
+end
+
+-- Distance between native viewport origins, including virtual and diff filler.
+-- Start at the first line's text and end just before the last line's text:
+-- filler belongs to the latter boundary, not to the former.
+local function display_distance(win, before, after)
+  local distance = before.topfill - after.topfill
+  if before.topline ~= after.topline then
+    local first, last = math.min(before.topline, after.topline), math.max(before.topline, after.topline)
+    local rows = api.nvim_win_text_height(win, { start_row = first - 1, end_row = last - 1,
+      start_vcol = 0, end_vcol = 0 }).all
+    distance = distance + (after.topline > before.topline and rows or -rows)
+  end
+  return distance + skipped_rows(win, after) - skipped_rows(win, before)
+end
+
 -- One entry per *display* row, not per buffer line. Explicitly excluding filler
 -- from text height lets us retain deletions and virtual lines as separate rows.
 -- Expanded context needs the remaining source, not just the current viewport.
-function M.project(win, through_eof)
+function M.project(win, through_eof, from_start)
   local info = vim.fn.getwininfo(win)[1]
   if not info then return {} end
   return api.nvim_win_call(win, function()
     local view = vim.fn.winsaveview()
+    if from_start then
+      view = { topline = 1, skipcol = 0,
+        topfill = api.nvim_win_text_height(win, { start_row = 0, end_row = 0 }).fill }
+    end
     local rows, line = {}, view.topline
     local count = api.nvim_buf_line_count(info.bufnr)
     local limit = through_eof and math.huge or info.height
@@ -265,7 +290,16 @@ function M.open(source, snapshot, result, on_close, keymaps)
   local wheel_down = api.nvim_replace_termcodes("<ScrollWheelDown>", true, false, true)
   local wheel_up = api.nvim_replace_termcodes("<ScrollWheelUp>", true, false, true)
   vim.on_key(function(_, typed)
-    if typed ~= "" then pane.wheel_input = typed == wheel_down or typed == wheel_up end
+    if typed ~= "" then
+      pane.wheel_input = typed == wheel_down or typed == wheel_up
+      if pane.detail_win and pane:windows()[api.nvim_get_current_win()] then
+        if typed == "z" then pane.fold_prefix = true
+        elseif pane.fold_prefix and not typed:match("^%d$") then
+          if ("cCoOaAMRrmxXEfFdDv"):find(typed, 1, true) then pane.detail_folds_dirty = true end
+          pane.fold_prefix = nil
+        end
+      end
+    end
   end, detail_ns)
   local function clear_detail_marks()
     for source_buf in pairs(detail_sources) do
@@ -443,6 +477,16 @@ function M.open(source, snapshot, result, on_close, keymaps)
       end
     end
     return windows
+  end
+
+  function pane:detail_valid()
+    local layout = self.detail_layout
+    if not layout then return true end
+    if not api.nvim_win_is_valid(self.win) or api.nvim_win_get_buf(self.win) ~= self.detail_buf then return false end
+    for candidate, captured in pairs(layout.buffers) do
+      if not api.nvim_win_is_valid(candidate) or api.nvim_win_get_buf(candidate) ~= captured then return false end
+    end
+    return true
   end
 
   function pane:headers(clear)
@@ -746,8 +790,8 @@ function M.open(source, snapshot, result, on_close, keymaps)
       api.nvim_win_get_width(self.win)) or ""
   end
 
-  function pane:project(through_eof)
-    local rows, extra_row = M.project(self.source, through_eof), self.source_count + 1
+  function pane:project(through_eof, from_start)
+    local rows, extra_row = M.project(self.source, through_eof, from_start), self.source_count + 1
     for index, item in ipairs(rows) do
       if item.empty and extra_row <= #self.lines then
         rows[index] = { line = extra_row, last = extra_row }
@@ -923,7 +967,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:render()
     if self.closed or self.rendering or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
+    if not self:detail_valid() then return end
     self.rendering = true
+    self.detail_context_cache = nil
     self:headers()
     self.focus_ids = nil
     self.rows, self.locations = {}, {}
@@ -1096,6 +1142,15 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local context = layout.rows[api.nvim_win_get_cursor(self.win)[1]]
     if context and context.item then
       local item = context.item
+      local last = item.line <= self.source_count and api.nvim_win_call(layout.source,
+        function() return vim.fn.foldclosedend(item.line) end) or -1
+      if not item.filler and ((last >= 0) ~= (item.folded == true) or last >= 0 and last ~= item.last) then
+        -- A programmatic/off-screen fold change may have no input event.
+        -- Refresh at the addressed target before trusting retained EOF rows.
+        self.detail_context_cache = nil
+        self:place_detail()
+        return self:detail_target()
+      end
       local coordinate = (self.overflow[item.line] or self:coordinates(layout.source)[item.line]) + (item.offset or 0)
       local candidate, target = layout.source, self:locate(coordinate, layout.source)
       if target.offset then
@@ -1154,6 +1209,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:back(replacing)
     if self.closed or not self.detail_win then return end
+    replacing = replacing or not self:detail_valid()
     self.display_generation = (self.display_generation or 0) + 1
     clear_detail_marks()
     local saved, detail = self.overview, self.detail_buf
@@ -1186,6 +1242,8 @@ function M.open(source, snapshot, result, on_close, keymaps)
     end
     self.detail_win, self.detail_buf, self.detail_index, self.overview, self.render_detail = nil, nil, nil, nil, nil
     self.detail_layout = nil
+    self.detail_context_cache = nil
+    self.detail_folds_dirty, self.fold_prefix = nil, nil
     self.focus_ids = nil
     if detail and api.nvim_buf_is_valid(detail) then api.nvim_buf_delete(detail, { force = true }) end
     -- A new result (including invalidation on a Diffview file switch) must
@@ -1197,40 +1255,96 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   -- Context is display-only, but its real blank rows own exact source targets.
-  -- Share its projection between opening detail and later sticky placement.
-  function pane:detail_context(ranges)
+  -- Cache geometry once, independently of the viewport. Scrolling changes an
+  -- origin index, not every EOF target. render() invalidates on geometry/result
+  -- changes; reader width and range changes are checked here as well.
+  function pane:detail_context(ranges, required_row)
     self.projection = self:project()
-    local coordinates, rows, seen, anchor_end = self:coordinates(self.source), {}, {}, 0
     local width = math.max(1, api.nvim_win_get_width(self.win) - 2)
-    for row, item in ipairs(self:project(true)) do
-      if item.empty then break end
-      local first = (self.overflow[item.line] or coordinates[item.line]) + (item.offset or 0)
-      local last = item.folded and coordinates[item.last] or first
-      local active = false
-      for _, range in ipairs(ranges) do
-        if first <= range[2] and last >= range[1] then active, anchor_end = true, row; break end
-      end
-      local text = ""
-      if item.eof then text = (self.eof_refs[item.offset] or "") .. (self.eof[item.offset] or "")
-      elseif item.filler then
-        text = (self.filler_refs[item.line] and self.filler_refs[item.line][item.offset] or "")
-          .. (self.filler[item.line] and self.filler[item.line][item.offset] or "")
-      elseif not seen[item.line] then
-        text = item.folded and self:fold_label(item.line, item.last)
-          or (self.references[item.line] or "") .. self.lines[item.line]
-        seen[item.line] = true
-      end
-      text = shorten(text, width)
-      local hl = active and { "ExplainrDetailContext", "ExplainrDetailActive" } or "ExplainrDetailContext"
-      rows[row] = { item = item, active = active, populated = text ~= "", chunks = { { text, hl },
-        { string.rep(" ", math.max(0, width - vim.fn.strdisplaywidth(text))), hl } } }
+    local info = vim.fn.getwininfo(self.source)[1]
+    local tick = api.nvim_buf_get_changedtick(info.bufnr)
+    local view = api.nvim_win_call(self.source, vim.fn.winsaveview)
+    local skipped = skipped_rows(self.source, view)
+    local cache = self.detail_context_cache
+    if cache and (cache.source ~= self.source or cache.buf ~= info.bufnr or cache.tick ~= tick
+        or cache.source_width ~= info.width - info.textoff or cache.width ~= width or not vim.deep_equal(cache.ranges, ranges)) then
+      cache = nil
     end
-    return rows, anchor_end
+    if cache and required_row and not cache.lines[required_row] then cache = nil end
+    if cache then
+      -- Fold changes can precede the scheduled rebuild. Validate the visible
+      -- slice so an opened fold never leaves the new topline without a target.
+      local origin = cache.lines[view.topline]
+      if origin then
+        origin = origin - view.topfill + skipped
+        for row, item in ipairs(self.projection) do
+          if item.empty then break end
+          local context = cache.rows[origin + row - 1]
+          if not context or not vim.deep_equal(context.item, item) then cache = nil; break end
+        end
+      else cache = nil end
+    end
+    if not cache then
+      cache = { source = self.source, buf = info.bufnr, tick = tick, source_width = info.width - info.textoff,
+        width = width, ranges = vim.deepcopy(ranges), rows = {}, lines = {}, populated = {}, anchor_end = 0 }
+      local coordinates, seen = self:coordinates(self.source), {}
+      for row, item in ipairs(self:project(true, true)) do
+        if item.empty then break end
+        local first = (self.overflow[item.line] or coordinates[item.line]) + (item.offset or 0)
+        local last = item.folded and coordinates[item.last] or first
+        local active = false
+        for _, range in ipairs(ranges) do
+          if first <= range[2] and last >= range[1] then active, cache.anchor_end = true, row; break end
+        end
+        local text = ""
+        if item.eof then text = (self.eof_refs[item.offset] or "") .. (self.eof[item.offset] or "")
+        elseif item.filler then
+          text = (self.filler_refs[item.line] and self.filler_refs[item.line][item.offset] or "")
+            .. (self.filler[item.line] and self.filler[item.line][item.offset] or "")
+        elseif not seen[item.line] then
+          text = item.folded and self:fold_label(item.line, item.last)
+            or (self.references[item.line] or "") .. self.lines[item.line]
+          seen[item.line], cache.lines[item.line] = true, row
+        end
+        text = shorten(text, width)
+        local hl = active and { "ExplainrDetailContext", "ExplainrDetailActive" } or "ExplainrDetailContext"
+        if text ~= "" then cache.populated[#cache.populated + 1] = row end
+        cache.rows[row] = { item = item, coordinate = first, active = active, populated = text ~= "", chunks = { { text, hl },
+          { string.rep(" ", math.max(0, width - vim.fn.strdisplaywidth(text))), hl } } }
+      end
+      self.detail_context_cache = cache
+    end
+    local origin = cache.lines[view.topline] - view.topfill + skipped
+    return cache.rows, math.max(0, cache.anchor_end - origin + 1), origin
+  end
+
+  -- Only visible context needs extmarks or gutter entries. Off-screen blank
+  -- rows remain cursor-addressable through layout.rows' lazy source mapping.
+  function pane:decorate_detail_context()
+    local layout = self.detail_layout
+    for _, id in ipairs(layout.marks) do api.nvim_buf_del_extmark(self.detail_buf, ns, id) end
+    layout.marks = {}
+    local view = api.nvim_win_call(self.win, vim.fn.winsaveview)
+    local height = vim.fn.getwininfo(self.win)[1].height
+    local active = {}
+    for row = view.topline, math.min(api.nvim_buf_line_count(self.detail_buf), view.topline + height) do
+      local context = layout.rows[row]
+      if row >= layout.first and row <= layout.last or context and context.active then active[tostring(row)] = 1 end
+      if context then
+        local chunks = context.chunks
+        layout.marks[#layout.marks + 1] = api.nvim_buf_set_extmark(self.detail_buf, ns, row - 1, 0, {
+          end_row = row, end_col = 0, hl_group = chunks[1][2], hl_eol = true, priority = 130 })
+        layout.marks[#layout.marks + 1] = api.nvim_buf_set_extmark(self.detail_buf, ns, row - 1, 0, {
+          virt_text = chunks, virt_text_pos = "overlay", priority = 140 })
+      end
+    end
+    vim.b[self.detail_buf].explainr_detail_active = active
   end
 
   function pane:place_detail()
     local layout = self.detail_layout
     if not layout or self.closed or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
+    if not self:detail_valid() then return end
     local syncing = self.syncing
     self.syncing = true
     local view = api.nvim_win_call(self.win, vim.fn.winsaveview)
@@ -1240,84 +1354,65 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local count = layout.last - layout.first + 1
     local card_height = api.nvim_win_text_height(self.win, { start_row = layout.first - 1, end_row = layout.last - 1 }).all
     local height = vim.fn.getwininfo(self.win)[1].height
-    local source_view = api.nvim_win_call(self.source, vim.fn.winsaveview)
     local location = self.locations[self.detail_index]
     local row, offset = math.min(location.row, self.source_count), location.offset or 0
     local first = api.nvim_win_call(self.source, function() return vim.fn.foldclosed(row) end)
     if first >= 0 then row = first end
-    local natural = api.nvim_win_call(self.source, function()
-      local top = source_view.topline
-      local distance = row == top and 0 or api.nvim_win_text_height(self.source, {
-        start_row = math.min(row, top) - 1, end_row = math.max(row, top) - 2 }).all * (row > top and 1 or -1)
-      local skipped = source_view.skipcol == 0 and 0 or api.nvim_win_text_height(self.source, {
-        start_row = top - 1, end_row = top - 1, start_vcol = 0, end_vcol = source_view.skipcol - 1 }).all
-        - vim.fn.diff_filler(top)
-      if location.row > self.source_count then
-        offset = api.nvim_win_text_height(self.source, { start_row = row - 1, end_row = row - 1 }).all
-          - vim.fn.diff_filler(row) + location.row - self.source_count - 1
-      end
-      return 1 + distance + source_view.topfill + vim.fn.diff_filler(row) - vim.fn.diff_filler(top) - skipped + offset
-    end)
+    local rows, _, origin = self:detail_context(layout.ranges, row)
+    local line_rows = self.detail_context_cache.lines
+    -- Overflow indices already follow the final wrap and every EOF deletion.
+    local natural = line_rows[location.row > self.source_count and location.row or row] - origin + 1 + offset
     layout.natural, layout.card_height = natural, card_height
     local leading_count = math.max(0, math.min(height - card_height, natural - 1))
-    local rows, anchor_end = self:detail_context(layout.ranges)
-    local trimmed = math.max(0, math.min(#rows, natural - 1) - leading_count)
-    local leading, trailing, contexts, active = {}, {}, {}, {}
-    local function context_at(destination, projected)
-      local context = rows[projected]
-      if not context then return end
-      contexts[destination] = context
-      if context.active then active[tostring(destination)] = 1 end
+    local trimmed = math.max(0, math.min(#rows - origin + 1, natural - 1) - leading_count)
+    local tail_origin = origin + trimmed + leading_count + card_height
+    -- Retain a neighbor covered by the prose, without scanning the EOF suffix.
+    local populated = self.detail_context_cache.populated
+    local low, high = 1, #populated + 1
+    local next_row = math.max(origin, origin + natural)
+    while low < high do
+      local middle = math.floor((low + high) / 2)
+      if populated[middle] < next_row then low = middle + 1 else high = middle end
     end
-    for index = 1, leading_count do
-      leading[index] = ""
-      context_at(index, trimmed + index)
-    end
-    local next_note
-    for index = math.max(1, natural + 1), #rows do
-      if rows[index].populated then next_note = index; break end
-    end
-    local tail_start = math.max(anchor_end + 1, trimmed + leading_count + card_height + 1)
-    if next_note then tail_start = math.min(tail_start, next_note) end
-    for index = trimmed + leading_count + card_height + 1, tail_start - 1 do
-      trailing[#trailing + 1] = ""
-      context_at(leading_count + count + #trailing, index)
-    end
-    for index = tail_start, #rows do
-      trailing[#trailing + 1] = ""
-      context_at(leading_count + count + #trailing, index)
-    end
-    -- Delete only owned context marks; Markdown and semantic prose marks move
-    -- with their unchanged text when the leading presentation rows change.
-    for _, id in ipairs(layout.marks) do api.nvim_buf_del_extmark(self.detail_buf, ns, id) end
+    if populated[low] then tail_origin = math.min(tail_origin, populated[low]) end
+    local trailing_count = math.max(0, #rows - tail_origin + 1)
     vim.bo[self.detail_buf].modifiable = true
-    -- Context text is always blank; only its mappings/decorations change.
-    -- Rewriting equal-sized runs needlessly schedules Markdown updates and
-    -- invalidates the viewport even at a native scrolling limit.
-    if #trailing ~= api.nvim_buf_line_count(self.detail_buf) - layout.last then
-      api.nvim_buf_set_lines(self.detail_buf, layout.last, -1, false, trailing)
+    -- Resize blank context incrementally, without rewriting the retained EOF
+    -- suffix or allocating a replacement table for every off-screen row.
+    local trailing = api.nvim_buf_line_count(self.detail_buf) - layout.last
+    if trailing_count < trailing then
+      api.nvim_buf_set_lines(self.detail_buf, layout.last + trailing_count, -1, false, {})
+    elseif trailing_count > trailing then
+      api.nvim_buf_set_lines(self.detail_buf, -1, -1, false, vim.fn["repeat"]({ "" }, trailing_count - trailing))
     end
-    if #leading ~= layout.first - 1 then
-      api.nvim_buf_set_lines(self.detail_buf, 0, layout.first - 1, false, leading)
+    if leading_count ~= layout.first - 1 then
+      api.nvim_buf_set_lines(self.detail_buf, 0, layout.first - 1, false, vim.fn["repeat"]({ "" }, leading_count))
     end
     vim.bo[self.detail_buf].modifiable = false
-    layout.first, layout.last, layout.rows, layout.marks = leading_count + 1, leading_count + count, contexts, {}
+    layout.first, layout.last = leading_count + 1, leading_count + count
+    local last = layout.last
+    layout.rows = setmetatable({}, { __index = function(_, destination)
+      if destination >= 1 and destination <= leading_count then return rows[origin + trimmed + destination - 1] end
+      if destination > last then return rows[tail_origin + destination - last - 1] end
+    end })
     layout.source = self.source
     self.overview.context = {}
-    for index = 1, leading_count do self.overview.context[index] = rows[trimmed + index].chunks end
-    for index = layout.first, layout.last do active[tostring(index)] = 1 end
-    for index, context in pairs(contexts) do
-      local hl = context.chunks[1][2]
-      layout.marks[#layout.marks + 1] = api.nvim_buf_set_extmark(self.detail_buf, ns, index - 1, 0, {
-        end_row = index, end_col = 0, hl_group = hl, hl_eol = true, priority = 130 })
-      layout.marks[#layout.marks + 1] = api.nvim_buf_set_extmark(self.detail_buf, ns, index - 1, 0, {
-        virt_text = context.chunks, virt_text_pos = "overlay", priority = 140 })
-    end
-    vim.b[self.detail_buf].explainr_detail_active = active
+    for index = 1, leading_count do self.overview.context[index] = layout.rows[index].chunks end
     view.lnum = layout.first + math.max(0, math.min(count - 1, cursor_offset))
     if context_cursor then
-      for index, context in pairs(contexts) do
-        if vim.deep_equal(context_cursor.item, context.item) then view.lnum = index; break end
+      local target = self:locate(context_cursor.coordinate, self.source)
+      local row = target.row
+      local fold = api.nvim_win_call(self.source, function() return vim.fn.foldclosed(row) end)
+      if fold >= 0 then row = fold end
+      local index = line_rows[row]
+      -- Side switches and newly closed folds can remove an old context target.
+      if index then
+        index = index + (target.offset or 0)
+        if target.eof then index = line_rows[row] + api.nvim_win_text_height(self.source,
+          { start_row = row - 1, end_row = row - 1, start_vcol = 0 }).all + target.offset - 1 end
+        local destination = index < tail_origin and index - origin - trimmed + 1 or last + index - tail_origin + 1
+        local context = layout.rows[destination]
+        if context and (context.coordinate == context_cursor.coordinate or context.item.folded) then view.lnum = destination end
       end
     end
     if card_height > height then
@@ -1325,11 +1420,23 @@ function M.open(source, snapshot, result, on_close, keymaps)
     else view.topline, view.skipcol = 1, 0 end
     view.topfill = 0
     api.nvim_win_call(self.win, function() vim.fn.winrestview(view) end)
+    self:decorate_detail_context()
     if self.render_detail then self.render_detail(self.win) end
     for candidate in pairs(self:windows()) do self.scroll_views[candidate] = api.nvim_win_call(candidate, vim.fn.winsaveview) end
     self.scroll_views[self.win] = api.nvim_win_call(self.win, vim.fn.winsaveview)
     if untouched then layout.initial = vim.deepcopy(self.scroll_views[self.win]) end
     self.syncing = syncing
+  end
+
+  function pane:detail_reflow()
+    local layout = self.detail_layout
+    if not layout or not layout.card_height or not self:detail_valid() then return false end
+    local height = api.nvim_win_text_height(self.win, { start_row = layout.first - 1, end_row = layout.last - 1 }).all
+    if height == layout.card_height then return false end
+    -- Decoration/concealment changes are not a user scroll. Rebaseline native
+    -- viewport corrections without forwarding them back into the sources.
+    self:place_detail()
+    return true
   end
 
   function pane:detail(index)
@@ -1422,7 +1529,8 @@ function M.open(source, snapshot, result, on_close, keymaps)
     for _, id in ipairs(ids) do
       vim.list_extend(ranges, self:ranges(self.result.notes[id].anchors, self.snapshot.windows))
     end
-    local context_rows, anchor_end = self:detail_context(ranges)
+    local context_rows, anchor_end, origin = self:detail_context(ranges)
+    context_rows = vim.list_slice(context_rows, origin)
     local context, following, opening, next_note = {}, {}, nil, nil
     local location = self.locations[ids[1]]
     for row, projected in ipairs(context_rows) do
@@ -1442,6 +1550,14 @@ function M.open(source, snapshot, result, on_close, keymaps)
       elseif row > opening then
         -- Neighboring summaries stay dimmed, but must not cut off the active
         -- background/rail when they lie inside this explanation's anchors.
+        following[row] = projected.chunks
+        if projected.populated and not next_note then next_note = row end
+      end
+    end
+    if not opening then
+      -- Expanding from an off-screen anchor uses the top-edge fallback, but
+      -- still owns the complete following context and its actual eligibility.
+      for row, projected in ipairs(context_rows) do
         following[row] = projected.chunks
         if projected.populated and not next_note then next_note = row end
       end
@@ -1566,7 +1682,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if next_note then tail_start = math.min(tail_start, next_note) end
     local trailing, tail_rows = {}, {}
     for row = card_height + trimmed + 1, tail_start - 1 do
-      trailing[#trailing + 1] = { { "", "ExplainrDetailActive" } }
+      local projected = context_rows[row]
+      trailing[#trailing + 1] = { { "", projected and projected.active
+        and { "ExplainrDetailContext", "ExplainrDetailActive" } or "ExplainrDetailContext" } }
       tail_rows[#trailing] = row
     end
     for row = tail_start, #context_rows do
@@ -1579,20 +1697,20 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- Virtual lines cannot receive a cursor. Give each context/continuation
     -- row a real blank line, with a display-only label so Markdown does not
     -- parse or wrap neighboring summaries. Only prose is Markdown content.
-    local leading, tail, active = {}, {}, {}
-    local layout = { source = self.source, rows = {}, marks = {}, first = #self.overview.context + 1,
+    local leading, tail = {}, {}
+    local layout = { source = self.source, rows = {}, marks = {}, buffers = {}, first = #self.overview.context + 1,
       last = #self.overview.context + #lines, ranges = ranges, ids = ids }
+    for candidate in pairs(self:windows()) do layout.buffers[candidate] = api.nvim_win_get_buf(candidate) end
     local function context_row(row, chunks, projected)
       local hl = chunks[1][2]
       local focused = hl == "ExplainrDetailActive" or type(hl) == "table"
-      if focused then active[tostring(row)] = 1 end
-      layout.rows[row] = { item = context_rows[projected] and context_rows[projected].item, active = focused }
+      layout.rows[row] = { item = context_rows[projected] and context_rows[projected].item,
+        coordinate = context_rows[projected] and context_rows[projected].coordinate, active = focused, chunks = chunks }
     end
     for row, chunks in ipairs(self.overview.context) do
       leading[row] = ""
       context_row(row, chunks, trimmed + row)
     end
-    for row = layout.first, layout.last do active[tostring(row)] = 1 end
     for row, chunks in ipairs(trailing) do
       tail[row] = ""
       context_row(layout.last + row, chunks, tail_rows[row])
@@ -1602,22 +1720,13 @@ function M.open(source, snapshot, result, on_close, keymaps)
     api.nvim_buf_set_lines(detail, #lines, #lines, false, tail)
     api.nvim_buf_set_lines(detail, 0, 0, false, leading)
     vim.bo[detail].modifiable = false
-    local function decorate(row, chunks)
-      local hl = chunks[1][2]
-      layout.marks[#layout.marks + 1] = api.nvim_buf_set_extmark(detail, ns, row - 1, 0, { end_row = row, end_col = 0,
-        hl_group = hl, hl_eol = true, priority = 130 })
-      layout.marks[#layout.marks + 1] = api.nvim_buf_set_extmark(detail, ns, row - 1, 0, {
-        virt_text = chunks, virt_text_pos = "overlay", priority = 140,
-      })
-    end
-    for row, chunks in ipairs(self.overview.context) do decorate(row, chunks) end
-    for row, chunks in ipairs(trailing) do decorate(layout.last + row, chunks) end
     self.detail_layout = layout
-    vim.b[detail].explainr_detail_active = active
-    if render_detail then render_detail(self.win) end
     api.nvim_win_call(self.win, function()
       vim.fn.winrestview({ topline = 1, topfill = 0, lnum = layout.first, col = 0 })
     end)
+    self:decorate_detail_context()
+    if render_detail then render_detail(self.win) end
+    layout.card_height = api.nvim_win_text_height(self.win, { start_row = layout.first - 1, end_row = layout.last - 1 }).all
     self.scroll_views[self.win] = api.nvim_win_call(self.win, vim.fn.winsaveview)
     layout.initial = vim.deepcopy(self.scroll_views[self.win])
     if navigating then return end
@@ -1660,8 +1769,10 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:scroll(keys, from)
     if self.closed or self.syncing or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
+    if not self:detail_valid() then return end
     from = from or self.source
     if from == self.win and not self.detail_win then self:sync(from); return end
+    if from == self.win and self:detail_reflow() and not keys then return end
     self.syncing = true
     local before = self.scroll_views and self.scroll_views[from] or api.nvim_win_call(from, vim.fn.winsaveview)
     if keys then api.nvim_win_call(from, function() vim.cmd.normal({ keys, bang = true }) end) end
@@ -1672,21 +1783,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if self.detail_win and from == self.win then
       local layout = self.detail_layout
       if layout.initial and not vim.deep_equal(after, layout.initial) then layout.reading = true end
-      local delta = before.topfill - after.topfill
-      if before.topline ~= after.topline then
-        local first, last = math.min(before.topline, after.topline), math.max(before.topline, after.topline)
-        local rows = api.nvim_win_text_height(from, { start_row = first - 1, end_row = last - 2 }).all
-        rows = rows + api.nvim_win_call(from, function() return vim.fn.diff_filler(last) - vim.fn.diff_filler(first) end)
-        delta = delta + (after.topline > before.topline and rows or -rows)
-      end
-      for _, view in ipairs({ before, after }) do
-        if view.skipcol > 0 then
-          local rows = api.nvim_win_text_height(from, { start_row = view.topline - 1, end_row = view.topline - 1,
-            start_vcol = 0, end_vcol = view.skipcol - 1 }).all
-          local fill = api.nvim_win_call(from, function() return vim.fn.diff_filler(view.topline) end)
-          delta = delta + (view == after and 1 or -1) * (rows - fill)
-        end
-      end
+      local delta = display_distance(from, before, after)
       -- Sticky layout can remove every leading row. Ctrl-y still needs to
       -- scroll code back towards the summary, even though Markdown is at BOF.
       local source_view = self.scroll_views[self.source]
@@ -1708,8 +1805,8 @@ function M.open(source, snapshot, result, on_close, keymaps)
           local column = vim.fn.virtcol(".") - 1
           if source_view.lnum >= source_view.topline and (source_view.lnum > source_view.topline or column >= source_view.skipcol) then
             row = api.nvim_win_text_height(self.source, { start_row = source_view.topline - 1,
-              end_row = source_view.lnum - 1, start_vcol = source_view.skipcol, end_vcol = column }).all
-              + source_view.topfill - vim.fn.diff_filler(source_view.topline)
+              end_row = source_view.lnum - 1, start_vcol = source_view.skipcol, end_vcol = column + 1 }).all
+              + source_view.topfill
           end
           local margin = math.min(vim.wo.scrolloff, math.floor((height - 1) / 2))
           if row <= margin or row > height - margin then
@@ -1735,7 +1832,10 @@ function M.open(source, snapshot, result, on_close, keymaps)
       if from ~= self.win and self.source ~= from then self.source, self.folds = from, {}; self:render() end
       self:place_detail()
     end
-    if self.detail_win and from == self.win then self.projection = self:project() end
+    if self.detail_win and from == self.win then
+      self.projection = self:project()
+      self:decorate_detail_context()
+    end
     self.scroll_views = {}
     for candidate in pairs(self:windows()) do self.scroll_views[candidate] = api.nvim_win_call(candidate, vim.fn.winsaveview) end
     self.scroll_views[self.win] = api.nvim_win_call(self.win, vim.fn.winsaveview)
@@ -1745,6 +1845,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:sync(from)
     if self.closed or self.rendering or self.syncing or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
+    if not self:detail_valid() then return end
     if from ~= self.win and not self:windows()[from] then return end
     if self.detail_win then
       local layout = self.detail_layout
@@ -1952,6 +2053,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
       -- WinClosed cleanup is also deferred. A geometry callback queued first
       -- can run after Diffview has destroyed its windows but before cleanup.
       if not api.nvim_win_is_valid(pane.win) or not api.nvim_win_is_valid(pane.source) then pane:close(); return end
+      if not pane:detail_valid() then return end
       if generation ~= pane.display_generation then
         if rebuild then schedule(true) end
         return
@@ -1996,6 +2098,12 @@ function M.open(source, snapshot, result, on_close, keymaps)
   -- dedicated event. Check only viewport geometry when the editor becomes idle.
   api.nvim_create_autocmd("SafeState", { group = pane.group, callback = function()
     if pane.closed or pane.rendering or pane.syncing or not api.nvim_win_is_valid(pane.source) then return end
+    if not pane:detail_valid() then return end
+    if pane.detail_folds_dirty then
+      pane.detail_folds_dirty = nil
+      if pane.detail_win then schedule(true); return end
+    end
+    pane:detail_reflow()
     local current_win = api.nvim_get_current_win()
     if current_win == pane.win or pane:windows()[current_win] then
       local before = pane.scroll_views and pane.scroll_views[current_win]
@@ -2005,6 +2113,12 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local projection = source == pane.source and pane:project() or M.project(source)
     if source ~= pane.source or not vim.deep_equal(projection, pane.projection) then
       if pane.detail_win then schedule(true) else pane:sync(source) end
+    end
+  end })
+  api.nvim_create_autocmd("CmdlineLeave", { group = pane.group, pattern = ":", callback = function()
+    if pane.detail_win and pane:windows()[api.nvim_get_current_win()] then
+      local command = vim.fn.getcmdline()
+      if command:find("fold", 1, true) or command:match("norm.*z[cCoOaAMRrmxXEfFdDv]") then pane.detail_folds_dirty = true end
     end
   end })
   api.nvim_create_autocmd("OptionSet", { group = pane.group, pattern = { "wrap", "foldenable", "foldmethod", "foldlevel",

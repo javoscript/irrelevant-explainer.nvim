@@ -14,6 +14,49 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state == "diff-sticky-wrapped-filler" or vim.g.capture_state == "diff-sticky-eof-overflow" then
+  local api = vim.api
+  local eof = vim.g.capture_state == "diff-sticky-eof-overflow"
+  local lines = {}; for row = 1, eof and 15 or 80 do lines[row] = "-- comparison context " .. row end
+  lines[eof and 10 or 24] = string.rep("validate_payload(payload); ", eof and 4 or 40)
+  local old = api.nvim_get_current_win()
+  api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  vim.cmd("belowright vsplit")
+  local new = api.nvim_get_current_win(); api.nvim_win_set_buf(new, api.nvim_create_buf(false, true))
+  local after = eof and vim.list_slice(lines, 1, 10) or vim.deepcopy(lines)
+  if not eof then for _ = 1, 3 do table.remove(after, 21) end end
+  api.nvim_buf_set_lines(0, 0, -1, false, after)
+  for _, win in ipairs({ old, new }) do
+    api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end)
+    vim.wo[win].wrap, vim.wo[win].scrolloff, vim.wo[win].number = true, 0, true
+    vim.wo[win].smoothscroll = true
+    vim.wo[win].winbar = win == old and " OLD · payload.lua " or " NEW · payload.lua "
+  end
+  vim.cmd("diffupdate")
+  local function note(summary, detail)
+    return { summary = summary, detail = detail, intent_basis = "inferred",
+      anchors = { { path = "payload.lua", side = "new", start_line = eof and 10 or 21, end_line = eof and 10 or 21 } } }
+  end
+  local notes = eof and {
+    note("Validate the final payload", "Preserve the final validation call."),
+    note("Preserve its original anchor", "This overflow explanation follows every trailing deletion row."),
+  } or { note("Validate the wrapped payload", "Pin this explanation below the header when its first wrapped segment scrolls away.") }
+  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } }, { notes = notes })
+  local p = capture_pane
+  p:detail(eof and 2 or 1)
+  if eof then p:place_detail()
+  else
+    api.nvim_set_current_win(new); vim.cmd("normal! 21G0zt")
+    vim.cmd.normal({ api.nvim_replace_termcodes("<C-e>", true, false, true), bang = true })
+    p:scroll(nil, new)
+  end
+  vim.wait(50, function() return false end); vim.cmd("redraw!")
+  if eof then
+    local height = api.nvim_win_text_height(new, { start_row = 9, end_row = 9, start_vcol = 0 }).all
+    assert(p.detail_layout.natural == 10 + height + 5)
+  else assert(p.detail_layout.natural == 0 and p.detail_layout.first == 1) end
+  return
+end
 if vim.g.capture_state:match("^sticky%-") then
   local api, state = vim.api, vim.g.capture_state
   local source = api.nvim_get_current_win()
@@ -37,13 +80,23 @@ if vim.g.capture_state:match("^sticky%-") then
     prose = string.rep("Validate the payload before preparing the request. ", 9)
       .. "\n\n" .. string.rep("Existing validation remains in place. ", 6)
   end
+  local selected = note(40, 100, "Validate the request", prose)
+  if state == "sticky-disjoint" then
+    selected.anchors[1].end_line = 50
+    selected.anchors[2] = { path = "preparation.lua", side = "buffer", start_line = 80, end_line = 100 }
+  end
   _G.capture_pane = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = {
     note(24, 24, "Earlier request context", "Previous explanation."),
-    note(40, 100, "Validate the request", prose),
+    selected,
     note(65, 65, "Preserve validation", "Following explanation."),
   } })
   local p = capture_pane
-  api.nvim_set_current_win(p.win); vim.cmd("normal! 40Gzz"); p:sync(p.win); p:detail()
+  if state == "sticky-offscreen" then
+    api.nvim_set_current_win(source); vim.cmd("normal! 60Gzt"); p:sync(source); p:detail(2)
+    assert(p.detail_layout.rows[api.nvim_buf_line_count(p.detail_buf)].item.line == 200)
+  else
+    api.nvim_set_current_win(p.win); vim.cmd("normal! 40Gzz"); p:sync(p.win); p:detail()
+  end
   local detail = p.detail_buf
   if state == "sticky-long" then
     vim.cmd.normal({ (p.detail_layout.first + 3) .. "G02gjzt", bang = true }); p:sync(p.win)
@@ -84,7 +137,10 @@ if vim.g.capture_state:match("^detail%-eof") then
   assert(p.detail_layout.rows[last].item.line == 180, "expanded context must reach the source EOF")
   if vim.g.capture_state == "detail-eof-range" then
     local boundary
-    for row, context in pairs(p.detail_layout.rows) do if context.item.line == 110 then boundary = row end end
+    for row = 1, last do
+      local context = p.detail_layout.rows[row]
+      if context and context.item.line == 110 then boundary = row end
+    end
     assert(boundary)
     vim.cmd.normal({ boundary .. "G0", bang = true }); p:sync(p.win)
     assert(p.detail_index == 1 and api.nvim_win_get_cursor(source)[1] == 110)

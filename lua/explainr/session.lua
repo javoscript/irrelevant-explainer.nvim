@@ -170,7 +170,14 @@ local function watch(session)
     api.nvim_create_autocmd("User", { group = session.group,
       pattern = { "DiffviewDiffBufWinEnter", "DiffviewViewPostLayout", "DiffviewViewEnter" }, callback = schedule })
     api.nvim_create_autocmd("User", { group = session.group, pattern = "DiffviewViewClosed", callback = function()
-      if api.nvim_get_current_tabpage() == session.tab then vim.schedule(function() M.close(session) end) end
+      -- This payloadless event runs after tab teardown, possibly in another
+      -- tab. Inspect the owned view, not whichever tab now has focus. User
+      -- events are outside WinClosed, so cancel jobs and clean up immediately.
+      local lib = package.loaded["diffview.lib"]
+      local view = lib and lib.tabpage_to_view(session.tab)
+      if not api.nvim_tabpage_is_valid(session.tab) or lib and (not view or view.closing:check()) then
+        M.close(session)
+      end
     end })
   end
   -- Freshness polling never re-explains edits. Only following a different
@@ -366,7 +373,22 @@ function M.start(mode, scope, options)
   local source = options.win or api.nvim_get_current_win()
   if source == 0 then source = api.nvim_get_current_win() end
   if previous and (source == previous.pane.win or source == previous.pane.detail_win) then source = previous.pane.source end
-  if previous and previous.pane.detail_win and previous.pane.back then previous.pane:back() end
+  if previous and previous.pane.detail_win and previous.pane.back then
+    -- A new request can beat deferred follow/freshness checks. Only resolve
+    -- the reader cursor while its captured source identity still owns the
+    -- displayed buffers; otherwise collapse without navigating replacements.
+    local displayed = previous.pane.snapshot
+    local same = previous.mode == mode and displayed and api.nvim_win_is_valid(previous.pane.source)
+    if same and mode == "code" then
+      same = api.nvim_win_get_buf(previous.pane.source) == displayed.source_buf
+        and api.nvim_win_get_buf(source) == displayed.source_buf
+    elseif same then
+      local state = require("explainr.diffview").current(previous.pane.source)
+      same = state and vim.deep_equal(identity("diff", displayed), identity("diff", nil, state))
+        and (source == state.windows.old or source == state.windows.new)
+    end
+    previous.pane:back(not same)
+  end
   local config = vim.deepcopy(require("explainr").config)
   local snapshot, err, collection, session, generation
   local request = { source = source, scope = scope, row = api.nvim_win_get_cursor(source)[1],

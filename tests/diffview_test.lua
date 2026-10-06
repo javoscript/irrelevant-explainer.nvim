@@ -284,38 +284,186 @@ T.test("real Diffview navigation and explorer keymaps work in pending notes and 
   assert(ok, err)
 end)
 
-T.test("real DiffviewClose cancels queued expanded placement without leaking buffers or callback errors", function()
-  local fixture = dofile("tests/review.lua").open(true)
-  local pane, errors, schedule = nil, {}, vim.schedule
+T.test("real Diffview closure cancels expanded session work immediately in foreground and background tabs", function()
+  local plugin, sessions, agent = require("explainr"), require("explainr.session"), require("explainr.agent")
+  local old_run, schedule, old_columns = agent.run, vim.schedule, vim.o.columns
+  local jobs, deferred, errors = {}, {}, {}
+  agent.run = function(prompt, _, _, callback)
+    local job = { target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)")), callback = callback }
+    job.cancel = function() job.cancelled = true end
+    jobs[#jobs + 1] = job
+    return job
+  end
+  local function answer(job)
+    job.callback({ version = 1, notes = { { summary = "Read the permission change", detail = "Preserve the owner check.",
+      intent_basis = "unknown", anchors = { job.target.anchors[1] }, evidence = {} } } })
+  end
+  vim.o.columns = 220
+  local fixture, other
   local ok, err = xpcall(function()
-    vim.cmd("runtime plugin/diffview.lua") -- Runtime is added after -u NONE startup.
-    local state = fixture.state
-    pane = require("explainr.ui").open(state.source, { windows = state.windows }, { notes = { {
-      summary = "Read the permission change", detail = "Preserve the owner check while reading the diff.",
-      intent_basis = "inferred", anchors = { { path = "policy.lua", side = "new", start_line = 1, end_line = 9 } },
-    } } })
-    pane:detail(1)
-    vim.wait(30, function() return false end)
-    local detail, summary_buf = pane.detail_buf, pane.buf
-    vim.v.errmsg = ""
-    vim.schedule = function(callback)
-      schedule(function()
+    for _, background in ipairs({ false, true }) do
+      fixture = dofile("tests/review.lua").open(true)
+      plugin.setup()
+      vim.cmd("runtime plugin/diffview.lua")
+      vim.v.errmsg = ""
+      local before = #jobs
+      local s = plugin.diff("file")
+      assert(vim.wait(5000, function() return #jobs == before + 1 end))
+      answer(jobs[#jobs])
+      assert(vim.wait(5000, function() return s.pane.status:match("^Ready") end), s.pane.status)
+      local accepted = vim.deepcopy(s.pane.result)
+      api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
+      plugin.diff("hunk")
+      assert(vim.wait(5000, function() return #jobs == before + 2 end))
+      local active = jobs[#jobs]
+      api.nvim_win_set_cursor(fixture.state.source, { 8, 0 })
+      plugin.diff("hunk")
+      local queued = s.queue[1].collection
+      assert(queued)
+      api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
+      local detail, summary = s.pane.detail_buf, s.pane.buf
+      assert(detail)
+      if background then
+        vim.cmd("tabnew")
+        api.nvim_buf_set_lines(0, 0, -1, false, { "unrelated tab" })
+        other = plugin.code("file")
+      end
+      local current = api.nvim_get_current_tabpage()
+      local other_job = background and jobs[#jobs]
+      -- Hold session/UI callbacks only: Diffview itself still runs normally.
+      -- This proves cancellation is owned by the closure event, not a later
+      -- WinClosed cleanup or freshness poll, and replays queued geometry late.
+      vim.schedule = function(callback)
+        local source = debug.getinfo(callback, "S").source
+        if source:find("/explainr/ui.lua", 1, true) or source:find("/explainr/session.lua", 1, true) then
+          deferred[#deferred + 1] = callback
+        else schedule(callback) end
+      end
+      api.nvim_exec_autocmds("WinResized", {})
+      if background then
+        fixture.view:close()
+        require("diffview.lib").dispose_view(fixture.view)
+      else vim.cmd("DiffviewClose") end
+      T.eq(true, s.closed); T.eq(nil, s.pending); T.eq(nil, s.invocation); T.eq(nil, s.timer)
+      T.eq(true, active.cancelled); T.eq(true, queued.cancelled)
+      T.eq(0, #s.queue); T.eq(nil, sessions.sessions[s.tab])
+      T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(false, api.nvim_buf_is_valid(summary))
+      T.eq(0, vim.fn.exists("#ExplainrPane" .. s.pane.win))
+      T.eq(0, vim.fn.exists("#ExplainrSession" .. s.pane.win))
+      if background then
+        T.eq(current, api.nvim_get_current_tabpage()); T.eq(other, sessions.current())
+        T.eq(nil, other.closed); T.eq(nil, other_job.cancelled)
+      end
+      vim.schedule = schedule
+      active.callback(nil, "late closed failure")
+      for _, callback in ipairs(deferred) do
         local success, failure = xpcall(callback, debug.traceback)
         if not success then errors[#errors + 1] = failure end
-      end)
+      end
+      deferred = {}
+      vim.wait(30)
+      T.eq(accepted, s.pane.result); T.eq({}, errors); T.eq("", vim.v.errmsg)
+      if other then plugin.close(); vim.cmd("tabclose!"); other = nil end
+      fixture:close(); fixture = nil
     end
-    api.nvim_exec_autocmds("WinResized", {})
-    vim.cmd("DiffviewClose") -- Do not pre-close Explainr as normal fixture teardown does.
-    assert(vim.wait(1000, function() return pane.closed end), "DiffviewClose did not clean the pane")
-    vim.wait(30, function() return false end)
-    T.eq({}, errors); T.eq("", vim.v.errmsg)
-    T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(false, api.nvim_buf_is_valid(summary_buf))
-    T.eq(0, vim.fn.exists("#ExplainrPane" .. pane.win))
   end, debug.traceback)
   vim.schedule = schedule
-  if pane then pane:close() end
-  fixture:close()
+  if other then sessions.close(other); vim.cmd("tabclose!") end
+  if fixture then fixture:close() end
+  agent.run, vim.o.columns = old_run, old_columns
   assert(ok, err)
+end)
+
+local function replacement_reader(geometry_first)
+  local plugin, sessions, agent = require("explainr"), require("explainr.session"), require("explainr.agent")
+  local old_run, schedule, old_columns = agent.run, vim.schedule, vim.o.columns
+  local jobs, deferred, errors = {}, {}, {}
+  agent.run = function(prompt, _, _, callback)
+    local job = { target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)")), callback = callback }
+    job.cancel = function() job.cancelled = true end
+    jobs[#jobs + 1] = job
+    return job
+  end
+  local function answer(job)
+    job.callback({ version = 1, notes = { { summary = "Read " .. job.target.path, detail = "Read the captured file.",
+      intent_basis = "unknown", anchors = { job.target.anchors[1] }, evidence = {} } } })
+  end
+  vim.o.columns = 220
+  local fixture = dofile("tests/review.lua").open(true)
+  local ok, err = xpcall(function()
+    plugin.setup()
+    local s = plugin.diff("file")
+    assert(vim.wait(5000, function() return #jobs == 1 end))
+    answer(jobs[1])
+    assert(vim.wait(5000, function() return s.pane.status:match("^Ready") end), s.pane.status)
+    api.nvim_win_set_cursor(fixture.state.source, { 4, 0 }); plugin.diff("hunk")
+    assert(vim.wait(5000, function() return #jobs == 2 end))
+    local active = jobs[2]
+    api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
+    local detail = s.pane.detail_buf
+    local overview_lines = api.nvim_buf_line_count(s.pane.buf)
+    api.nvim_win_set_cursor(s.pane.win, { api.nvim_buf_line_count(detail), 0 })
+    vim.wait(100)
+    assert(vim.wait(5000, function() return not s.checking end))
+    s.timer:stop() -- No polling can bypass the deliberately held follow event.
+    vim.v.errmsg = ""
+    vim.schedule = function(callback)
+      local source = debug.getinfo(callback, "S").source
+      if source:find("/explainr/ui.lua", 1, true) or source:find("/explainr/session.lua", 1, true) then
+        deferred[#deferred + 1] = { callback = callback, ui = source:find("/explainr/ui.lua", 1, true) ~= nil }
+      else schedule(callback) end
+    end
+    api.nvim_exec_autocmds("WinResized", {})
+    fixture:switch("openspec/spec.md")
+    T.eq("policy.lua", s.snapshot.target.path); T.eq(detail, s.pane.detail_buf)
+    local cursors = {}
+    for _, win in pairs(fixture.state.windows) do
+      api.nvim_win_set_cursor(win, { 1, 2 }); cursors[win] = api.nvim_win_get_cursor(win)
+    end
+    -- Replay geometry while the old reader is still expanded and follow is
+    -- deliberately deferred. Window IDs are unchanged; buffer IDs are not.
+    if geometry_first then
+      for _, item in ipairs(deferred) do
+        if item.ui then
+          local success, failure = xpcall(item.callback, debug.traceback)
+          if not success then errors[#errors + 1] = failure end
+        end
+      end
+      T.eq(overview_lines, api.nvim_buf_line_count(s.pane.buf))
+    end
+    T.eq({}, errors)
+    for win, cursor in pairs(cursors) do T.eq(cursor, api.nvim_win_get_cursor(win)) end
+    -- An explicit request must also beat the deferred follow safely. Invoke
+    -- from notes so it resolves the retained source, not a Markdown cursor.
+    api.nvim_set_current_win(s.pane.win)
+    local replacement = plugin.diff("file")
+    T.eq(true, s.closed); T.eq(true, active.cancelled)
+    T.eq(nil, s.pending); T.eq(nil, s.pane.detail_buf)
+    T.eq(1, replacement.pending.row); T.eq(nil, replacement.pane.result)
+    for win, cursor in pairs(cursors) do T.eq(cursor, api.nvim_win_get_cursor(win)) end
+    vim.schedule = schedule
+    for _, item in ipairs(deferred) do
+      if not geometry_first or not item.ui then item.callback() end
+    end
+    active.callback(nil, "late replaced failure")
+    assert(vim.wait(5000, function() return #jobs == 3 end), replacement.pane.status)
+    T.eq("openspec/spec.md", jobs[3].target.path)
+    answer(jobs[3])
+    assert(vim.wait(5000, function() return replacement.pane.status:match("^Ready") end), replacement.pane.status)
+    T.eq(replacement, sessions.current()); T.eq(1, #replacement.batches)
+    T.eq(false, api.nvim_buf_is_valid(detail)); T.eq("", vim.v.errmsg)
+  end, debug.traceback)
+  vim.schedule = schedule
+  fixture:close(); agent.run, vim.o.columns = old_run, old_columns
+  assert(ok, err)
+end
+
+T.test("real Diffview new request collapses an old reader without navigating replacement panes before follow", function()
+  replacement_reader(false)
+end)
+
+T.test("real Diffview queued geometry rejects replacement buffers before deferred follow", function()
+  replacement_reader(true)
 end)
 
 T.test("Diffview restores per-file explanations without inference and rejects changed review context", function()
