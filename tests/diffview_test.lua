@@ -26,7 +26,7 @@ if vim.env.EXPLAINR_DIFFVIEW_CHILD ~= "1" then
     local result = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n",
       "-c", "luafile tests/run.lua" }, {
       cwd = vim.fn.getcwd(), env = { EXPLAINR_TEST = "tests/diffview_test.lua", EXPLAINR_DIFFVIEW_CHILD = "1",
-        EXPLAINR_DIFFVIEW_PATH = runtime } }):wait(60000)
+        EXPLAINR_DIFFVIEW_PATH = runtime } }):wait(120000)
     print((result.stdout or "") .. (result.stderr or ""))
     assert(result.code == 0 and result.signal == 0,
       string.format("isolated real Diffview tests failed (code=%s, signal=%s)", result.code, result.signal))
@@ -632,6 +632,126 @@ T.test("opt-in Diffview navigation requests files once while open and reuses or 
   fixture:close(); plugin.setup()
   agent.run, vim.notify, vim.o.columns = old_run, old_notify, old_columns
   assert(ok, err)
+end)
+
+local function toggle_fixture(run)
+  local plugin, agent = require("explainr"), require("explainr.agent")
+  local old_run, old_notify, old_columns = agent.run, vim.notify, vim.o.columns
+  local old_current, old_restore = adapter.current, diff.restore_async
+  local f = { jobs = {} }
+  agent.run = function(prompt, _, _, callback)
+    local job = { target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)")), callback = callback }
+    job.cancel = function() job.cancelled = true end
+    f.jobs[#f.jobs + 1] = job
+    return job
+  end
+  vim.notify = function() end
+  vim.o.columns = 220
+  local fixture = dofile("tests/review.lua").open(true)
+  function f.job(count)
+    assert(vim.wait(5000, function() return #f.jobs >= count end), "expected request " .. count)
+    T.eq(count, #f.jobs); return f.jobs[count]
+  end
+  function f.answer(job)
+    job.callback({ version = 1, notes = { { summary = "Explains " .. job.target.path,
+      detail = "First paragraph.\n\nSecond paragraph.", anchors = { job.target.anchors[1] }, intent_basis = "unknown", evidence = {} } } })
+  end
+  function f.ready(session, path)
+    assert(vim.wait(5000, function()
+      return session.pane.status:match("^Ready") and session.snapshot and session.snapshot.target.path == path
+    end), session.pane.status)
+  end
+  function f.events()
+    api.nvim_exec_autocmds("User", { pattern = "DiffviewViewPostLayout" })
+    api.nvim_exec_autocmds("User", { pattern = "DiffviewDiffBufWinEnter" })
+    vim.wait(1100)
+  end
+  local ok, err = xpcall(function() run(f, fixture, plugin) end, debug.traceback)
+  adapter.current, diff.restore_async = old_current, old_restore
+  fixture:close(); plugin.setup()
+  agent.run, vim.notify, vim.o.columns = old_run, old_notify, old_columns
+  assert(ok, err)
+end
+
+T.test("runtime toggle affects subsequent Diffview navigation, not current notes or active inference", function()
+  toggle_fixture(function(f, fixture, plugin)
+    plugin.setup()
+    T.eq(true, plugin.toggle_auto_explain()); fixture:switch("openspec/spec.md"); f.events()
+    T.eq(0, #f.jobs); T.eq(nil, require("explainr.session").current())
+    T.eq(false, plugin.toggle_auto_explain()); fixture:switch("policy.lua")
+    api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
+    local s = plugin.diff("hunk"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+    local accepted = vim.deepcopy(s.pane.result)
+    fixture:switch("openspec/spec.md")
+    assert(vim.wait(5000, function() return s.pane.status:match("^No explanations") end))
+    T.eq(true, plugin.toggle_auto_explain()); f.events(); T.eq(1, #f.jobs)
+    fixture:switch("docs/adr.md")
+    local automatic = f.job(2); T.eq("file", automatic.target.scope)
+    T.eq("docs/adr.md", automatic.target.path)
+    T.eq(false, plugin.toggle_auto_explain()); T.eq(nil, automatic.cancelled)
+    f.answer(automatic); f.ready(s, "docs/adr.md")
+    fixture:switch("openspec/spec.md"); f.events(); T.eq(2, #f.jobs)
+    fixture:switch("policy.lua"); f.ready(s, "policy.lua")
+    T.eq(accepted, s.pane.result); T.eq("Ready · restored", s.pane.status); T.eq(2, #f.jobs)
+    plugin.refresh(); f.answer(f.job(3)); f.ready(s, "policy.lua")
+    T.eq(true, plugin.toggle_auto_explain()); f.events(); T.eq(3, #f.jobs)
+    fixture:switch("tests/policy.txt"); f.answer(f.job(4)); f.ready(s, "tests/policy.txt")
+  end)
+end)
+
+T.test("runtime toggle never revives earlier loading, stale restoration or background navigation", function()
+  for _, initial in ipairs({ false, true }) do
+    toggle_fixture(function(f, fixture, plugin)
+      plugin.setup({ diff = { auto_explain = initial } })
+      api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
+      local s = plugin.diff("hunk"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+      local current = adapter.current
+      adapter.current = function() return nil, "held loading buffers" end
+      for _, entry in fixture.view.files:iter() do
+        if entry.path == "openspec/spec.md" then fixture.view:set_file(entry, false, true); break end
+      end
+      assert(vim.wait(5000, function() return s.restoring and s.snapshot == nil end))
+      if initial then T.eq(false, plugin.toggle_auto_explain()) end
+      T.eq(true, plugin.toggle_auto_explain())
+      adapter.current = current
+      fixture:switch("openspec/spec.md"); f.events(); T.eq(1, #f.jobs)
+      -- Capture saved notes, then hold a real failed restoration across a toggle.
+      T.eq(false, plugin.toggle_auto_explain())
+      local doc = plugin.diff("file"); f.answer(f.job(2)); f.ready(doc, "openspec/spec.md")
+      fixture:switch("policy.lua"); f.ready(doc, "policy.lua")
+      fixture:write("docs/adr.md", "Changed evidence before returning to saved notes.\n")
+      local restore, delayed = diff.restore_async, nil
+      diff.restore_async = function(snapshot, source, callback)
+        return restore(snapshot, source, function(value) delayed = function() callback(value) end end)
+      end
+      if initial then T.eq(true, plugin.toggle_auto_explain()) end
+      fixture:switch("openspec/spec.md")
+      assert(vim.wait(5000, function() return delayed ~= nil end))
+      if initial then T.eq(false, plugin.toggle_auto_explain()) end
+      T.eq(true, plugin.toggle_auto_explain()); delayed(); diff.restore_async = restore
+      f.events(); T.eq(2, #f.jobs); assert(doc.pane.status:match("^Stale"))
+      -- Navigate while disabled in a background tab, then enable before activating it.
+      T.eq(false, plugin.toggle_auto_explain())
+      vim.cmd("tabnew"); local background_from = api.nvim_get_current_tabpage()
+      for _, entry in fixture.view.files:iter() do
+        if entry.path == "tests/policy.txt" then fixture.view:set_file(entry, false, true); break end
+      end
+      f.events(); T.eq(2, #f.jobs)
+      T.eq(true, plugin.toggle_auto_explain())
+      api.nvim_set_current_tabpage(doc.tab); fixture:switch("tests/policy.txt"); f.events(); T.eq(2, #f.jobs)
+      -- An enabled background navigation is likewise revoked by an off/on cycle.
+      api.nvim_set_current_tabpage(background_from)
+      for _, entry in fixture.view.files:iter() do
+        if entry.path == "docs/adr.md" then fixture.view:set_file(entry, false, true); break end
+      end
+      assert(vim.wait(5000, function() return doc.restoring end)); T.eq(2, #f.jobs)
+      T.eq(false, plugin.toggle_auto_explain()); T.eq(true, plugin.toggle_auto_explain())
+      api.nvim_set_current_tabpage(doc.tab); fixture:switch("docs/adr.md"); f.events(); T.eq(2, #f.jobs)
+      api.nvim_set_current_tabpage(background_from); vim.cmd("tabclose!")
+      api.nvim_set_current_tabpage(doc.tab)
+      fixture:switch("tests/policy.txt"); f.answer(f.job(3)); f.ready(doc, "tests/policy.txt")
+    end)
+  end
 end)
 
 T.test("real Diffview whole-review fake-agent flow evidence deletion geometry and mutable lifecycle", function()

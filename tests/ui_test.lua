@@ -58,6 +58,54 @@ local function key(buf, lhs)
   error("missing mapping " .. lhs)
 end
 
+T.test("automatic header indicator survives every state and narrow widths without changing status integrations", function()
+  local lines = {}; for row = 1, 100 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local p = ui.open(source, { windows = { new = source } }, { notes = { note(2, "Diff note", "new") } })
+  vim.wo[source].statusline = "SOURCE BAR"; vim.wo[p.win].statusline = "EDITOR BAR"
+  p.auto_explain = true
+  for _, status in ipairs({ "Pending · collecting comparison", "Ready", "No explanations", "Failed", "Stale", "Cancelled" }) do
+    local result = status ~= "No explanations" and { notes = { note(2, "Diff note", "new") } } or nil
+    p:set(result, status)
+    local snapshot = p.snapshot; p.snapshot = nil -- Header mode must not depend on a collected snapshot.
+    p:header(); p.snapshot = snapshot
+    assert(state(p):find("Auto", 1, true)); T.eq(status, p.status); T.eq(status, vim.b[p.buf].explainr_status)
+    T.eq("SOURCE BAR", vim.wo[source].statusline); T.eq("EDITOR BAR", vim.wo[p.win].statusline)
+    local evaluated = api.nvim_eval_statusline(vim.wo[p.win].winbar, { winid = p.win, use_winbar = true, highlights = true })
+    local index = assert(evaluated.str:find("Auto", 1, true)) - 1
+    local group
+    for _, chunk in ipairs(evaluated.highlights) do if chunk.start <= index then group = chunk.group end end
+    T.eq("ExplainrMetadata", group)
+  end
+  local selected = note(2, "Diff note", "new"); selected.anchors[1].end_line = 80
+  selected.detail = string.rep("A reading paragraph about this diff.\n\n", 40)
+  p:set({ notes = { selected } }, "Ready")
+  motion(p.win, "2G"); p:state()
+  for _, expanded in ipairs({ false, true }) do
+    if expanded then p:detail(1) end
+    for _, width in ipairs({ 32, 18, 12 }) do
+      api.nvim_win_set_width(p.win, width); p:header()
+      assert(state(p):find("1 / 1 · Auto", 1, true), state(p))
+      assert(vim.fn.strwidth(state(p)) <= api.nvim_win_get_width(p.win))
+    end
+    api.nvim_win_set_width(p.win, 60)
+  end
+  motion(p.win, (p.detail_layout.first + 10) .. "Gzt")
+  assert(api.nvim_win_call(p.win, vim.fn.winsaveview).topline > 1)
+  vim.wo[p.win].statusline = "EDITOR BAR"
+  local detail, index, tick = p.detail_buf, p.detail_index, api.nvim_buf_get_changedtick(p.detail_buf)
+  local views = { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) }
+  for _, enabled in ipairs({ false, true }) do
+    p.auto_explain = enabled; p:header()
+    T.eq(enabled, state(p):find("Auto", 1, true) ~= nil)
+    T.eq(detail, p.detail_buf); T.eq(index, p.detail_index); T.eq(tick, api.nvim_buf_get_changedtick(detail))
+    T.eq(views, { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) })
+    T.eq("Ready", p.status); T.eq("Ready", vim.b[p.buf].explainr_status)
+    T.eq("EDITOR BAR", vim.wo[p.win].statusline)
+  end
+  p:close()
+end)
+
 T.test("range expansion preserves source views and prefers local notes without changing collapsed focus", function()
   local lines = {}; for row = 1, 50 do lines[row] = "source line " .. row end
   for _, overview in ipairs({ false, true }) do

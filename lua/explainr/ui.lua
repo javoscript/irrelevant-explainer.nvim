@@ -228,7 +228,14 @@ end
 -- Measure literal text, not winbar formatting; clip once across all segments.
 local function header(chunks, width)
   local text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, chunks))
-  local clipped = shorten(text, width, "…")
+  -- strdisplaywidth also accounts for the current reader's 'linebreak'.
+  -- A winbar never wraps, even when its Markdown buffer does.
+  local clipped = text
+  if vim.fn.strwidth(text) > width then
+    local chars = vim.fn.strchars(text)
+    while chars > 0 and vim.fn.strwidth(vim.fn.strcharpart(text, 0, chars) .. "…") > width do chars = chars - 1 end
+    clipped = vim.fn.strcharpart(text, 0, chars) .. "…"
+  end
   local remaining = #clipped - (clipped ~= text and #"…" or 0)
   local bar = {}
   for _, chunk in ipairs(chunks) do
@@ -707,28 +714,42 @@ function M.open(source, snapshot, result, on_close, keymaps)
     vim.b[self.buf].explainr_loading_folds = loading_folds
   end
 
-  function pane:state()
-    if self.closed or self.detail_win or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
+  function pane:header(ids)
+    if self.closed or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
+    local width = api.nvim_win_get_width(self.win)
+    local counter = self:counter(ids or (self.detail_win and self.detail_layout.ids or self:note_ids()))
+      .. (self.auto_explain and " · Auto" or "")
+    local title = width >= 60 and "Explainr · " or ""
+    if vim.fn.strwidth(title .. counter) > width then title = "" end
+    -- Do not spend the last cell on an ellipsis when the count/mode just fit.
+    local compact = vim.fn.strwidth(counter) + 1 >= width
+    if self.detail_win or compact then
+      local bar = header({ { title ~= "" and "Explainr" or "", "ExplainrTitle" },
+        { (title ~= "" and " · " or "") .. counter .. (compact and "" or " · Expanded · Enter/K back · n/p notes") } }, width)
+      self.updating_state = true
+      if vim.wo[self.win].winbar ~= bar then vim.wo[self.win].winbar = bar end
+      if not self.detail_win then vim.b[self.buf].explainr_status = self.status end
+      self.updating_state = false
+      return
+    end
     local pending = self.status:match("^Pending")
     local label = (pending and api.nvim_get_current_win() ~= self.win
       and spinner[(self.frame - 1) % #spinner + 1] .. " " or "") .. self.status
     local queued = pending and self.queued and #self.queued > 0 and " · " .. #self.queued .. " queued" or ""
     local context = focused()
     if context then label = label .. " · " .. context end
-    local width = api.nvim_win_get_width(self.win)
     local legend = width >= 50 and "D documented · ~ inferred · ? unknown" or "D doc · ~ inferred · ? unknown"
-    local title = width >= 60 and "Explainr · " or ""
-    local counter = self:counter(self:note_ids()) .. " · "
-    if vim.fn.strdisplaywidth(counter .. label .. queued .. title .. " · " .. legend) > width then
+    counter = counter .. " · "
+    if vim.fn.strwidth(counter .. label .. queued .. title .. " · " .. legend) > width then
       legend = "D doc · ~ inferred · ? unknown"
-      if vim.fn.strdisplaywidth(counter .. label .. queued .. title .. " · " .. legend) > width then
+      if vim.fn.strwidth(counter .. label .. queued .. title .. " · " .. legend) > width then
         legend = "D · ~ inferred · ?"
       end
     end
-    local budget = width - vim.fn.strdisplaywidth(legend .. queued .. title .. counter) - 3
-    if vim.fn.strdisplaywidth(label) > budget then
+    local budget = width - vim.fn.strwidth(legend .. queued .. title .. counter) - 3
+    if vim.fn.strwidth(label) > budget then
       local chars = vim.fn.strchars(label)
-      while chars > 0 and vim.fn.strdisplaywidth(vim.fn.strcharpart(label, 0, chars)) > budget - 1 do chars = chars - 1 end
+      while chars > 0 and vim.fn.strwidth(vim.fn.strcharpart(label, 0, chars)) > budget - 1 do chars = chars - 1 end
       label = vim.fn.strcharpart(label, 0, chars) .. "…"
     end
     local chunks = { { title ~= "" and "Explainr" or "", "ExplainrTitle" },
@@ -752,6 +773,11 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- Statusline (including laststatus=3/lualine) belongs entirely to the user.
     vim.b[self.buf].explainr_status = self.status
     self.updating_state = false
+  end
+
+  function pane:state()
+    if self.closed or self.detail_win or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
+    self:header()
     self:loading()
   end
 
@@ -1642,11 +1668,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- Give the gutter its own background so the content tint cannot spill into
     -- the rail/padding, including wrapped rows.
     vim.wo[self.win].statuscolumn = "%#ExplainrDetailGutter#%{get(b:explainr_detail_active, string(v:lnum), 0) ? '▎ ' : '  '}"
-    local counter = self:counter(ids)
-    local width = api.nvim_win_get_width(self.win)
-    local title = width >= 60 and "Explainr" or ""
-    vim.wo[self.win].winbar = header({ { title, "ExplainrTitle" },
-      { (title ~= "" and " · " or "") .. counter .. " · Expanded · Enter/K back · n/p notes" } }, width)
+    self:header(ids)
     vim.wo[self.detail_win].wrap = true
     vim.wo[self.detail_win].linebreak = true
     if render_detail then

@@ -613,7 +613,19 @@ if vim.g.capture_state:match("^diff") then
   local session = plugin.diff(focused and "hunk" or "file")
   assert(vim.wait(5000, function() return session.pane.result ~= nil end), session.pane.status)
   _G.capture_pane = session.pane
-  if overview then
+  if vim.g.capture_state:match("^diff%-auto") then
+    plugin.toggle_auto_explain()
+    vim.api.nvim_set_current_win(capture_pane.win)
+    capture_pane:jump(1)
+    if vim.g.capture_state == "diff-auto-detail" then capture_pane:detail(1) end
+    if vim.g.capture_state == "diff-auto-narrow" then
+      vim.api.nvim_win_set_width(capture_pane.win, 32); capture_pane:header()
+    end
+    if vim.g.capture_state == "diff-auto-off" then plugin.toggle_auto_explain() end
+    local text = vim.api.nvim_eval_statusline(vim.wo[capture_pane.win].winbar,
+      { winid = capture_pane.win, use_winbar = true }).str
+    assert((text:find("Auto", 1, true) ~= nil) == (vim.g.capture_state ~= "diff-auto-off"))
+  elseif overview then
     assert(capture_pane.locations[1].row == 1)
     assert(vim.deep_equal(capture_pane.result.notes[1].anchors, session.snapshot.target.anchors))
     vim.api.nvim_set_current_win(capture_pane.win)

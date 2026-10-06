@@ -47,6 +47,21 @@ COMMANDS                                                *explainr-commands*
   :ExplainrRefresh
   :ExplainrCancel
   :ExplainrClose
+  :ExplainrToggleAutoExplain
+<
+ExplainrToggleAutoExplain switches diff.auto_explain for all tabs in this Neovim
+process and reports enabled/disabled through vim.notify. Its Lua equivalent,
+require("explainr").toggle_auto_explain(), returns the new boolean without
+resetting other configuration. Setup supplies its initial value (default false);
+calling setup again resets configuration normally. Nothing persists on restart.
+Enabling applies to subsequent navigation only, not the current file or earlier
+navigation still resolving. Disabling leaves started requests and notes intact;
+use ExplainrCancel to stop work explicitly. Manual requests and saved-note
+restoration remain available. Enabled diff panes show Auto in the overview and
+detail winbars, not the editor's statusline. No global keymap is installed: >
+  vim.keymap.set("n", "<leader>ea", "<cmd>ExplainrToggleAutoExplain<CR>", {
+    desc = "Toggle Explainr automatic explanations",
+  })
 <
 Code and diff commands default to file scope. One agent invocation runs per
 tab. Requests for the same buffer or loaded old/new comparison accumulate in

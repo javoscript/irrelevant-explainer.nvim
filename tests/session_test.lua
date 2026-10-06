@@ -410,6 +410,75 @@ local function diff_fixture(run)
   end)
 end
 
+T.test("automatic mode updates owned headers across tabs without disturbing detail or queued manual work", function()
+  diff_fixture(function(f)
+    local s = plugin.diff("hunk")
+    local function header(p)
+      return api.nvim_eval_statusline(vim.wo[p.win].winbar, { winid = p.win, use_winbar = true }).str
+    end
+    T.eq(nil, s.pane.snapshot); assert(not header(s.pane):find("Auto", 1, true))
+    T.eq(true, plugin.toggle_auto_explain())
+    assert(header(s.pane):find("Auto", 1, true)); T.eq(nil, f.collections[1].cancelled)
+    f.collect(f.snapshot(2)); f.answer("accepted"); f.drain()
+    api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
+    local detail, selected, result = s.pane.detail_buf, s.pane.detail_index, vim.deepcopy(s.pane.result)
+    local tick = api.nvim_buf_get_changedtick(detail)
+    local views = { api.nvim_win_call(s.pane.win, vim.fn.winsaveview), api.nvim_win_call(f.win, vim.fn.winsaveview) }
+    -- A second diff session is still collecting, with a snapshot-free header.
+    vim.cmd("tabnew")
+    local other = plugin.diff("hunk")
+    T.eq(nil, other.pane.snapshot); assert(header(other.pane):find("Auto", 1, true))
+    local collection, status = other.collection, other.pane.status
+    -- A third tab contains ordinary code; the setting must not advertise code automation.
+    vim.cmd("tabnew")
+    api.nvim_buf_set_lines(0, 0, -1, false, { "ordinary manual code" })
+    local code = plugin.code("file")
+    local code_job = f.launches[#f.launches]
+    local tab, win = api.nvim_get_current_tabpage(), api.nvim_get_current_win()
+    for _, enabled in ipairs({ false, true, false }) do
+      T.eq(enabled, plugin.toggle_auto_explain())
+      T.eq(enabled, header(s.pane):find("Auto", 1, true) ~= nil)
+      T.eq(enabled, header(other.pane):find("Auto", 1, true) ~= nil)
+      assert(not header(code.pane):find("Auto", 1, true))
+      T.eq(tab, api.nvim_get_current_tabpage()); T.eq(win, api.nvim_get_current_win())
+      T.eq(detail, s.pane.detail_buf); T.eq(selected, s.pane.detail_index); T.eq(tick, api.nvim_buf_get_changedtick(detail))
+      T.eq(views, { api.nvim_win_call(s.pane.win, vim.fn.winsaveview), api.nvim_win_call(f.win, vim.fn.winsaveview) })
+      T.eq(result, s.pane.result); T.eq(status, other.pane.status); T.eq(collection, other.collection)
+      T.eq(nil, collection.cancelled); T.eq(nil, code_job.cancelled)
+      T.eq(2, #f.launches); T.eq(2, #f.collections)
+    end
+    -- Explicit setup resets the mode and keeps existing headers synchronized.
+    for _, enabled in ipairs({ true, false }) do
+      plugin.setup({ diff = { auto_explain = enabled } })
+      T.eq(enabled, header(s.pane):find("Auto", 1, true) ~= nil)
+      T.eq(enabled, header(other.pane):find("Auto", 1, true) ~= nil)
+      assert(not header(code.pane):find("Auto", 1, true))
+      T.eq(detail, s.pane.detail_buf); T.eq(tick, api.nvim_buf_get_changedtick(detail))
+      T.eq(tab, api.nvim_get_current_tabpage()); T.eq(win, api.nvim_get_current_win())
+      T.eq(2, #f.launches); T.eq(nil, collection.cancelled); T.eq(nil, code_job.cancelled)
+    end
+    -- Edits in code mode still invalidate, never re-request.
+    f.answer("code accepted")
+    T.eq(true, plugin.toggle_auto_explain())
+    api.nvim_buf_set_lines(api.nvim_get_current_buf(), 0, -1, false, { "changed code" })
+    api.nvim_exec_autocmds("TextChanged", {})
+    assert(vim.wait(1000, function() return code.pane.status:match("^Stale") end))
+    T.eq(2, #f.launches)
+    plugin.close(); vim.cmd("tabclose!")
+    plugin.close(); vim.cmd("tabclose!"); api.nvim_set_current_tabpage(s.tab)
+    api.nvim_set_current_win(f.win)
+    plugin.diff("hunk"); f.collect(f.snapshot(4))
+    local active = f.launches[#f.launches]
+    plugin.diff("hunk"); local queued = s.queue[1]
+    T.eq(false, plugin.toggle_auto_explain())
+    T.eq(nil, active.cancelled); T.eq(nil, queued.collection.cancelled)
+    f.collect(f.snapshot(5)); f.answer("first manual"); f.drain(); f.answer("queued manual"); f.drain()
+    T.eq(3, #s.batches); T.eq("Ready", s.pane.status)
+    T.eq(s, plugin.refresh()); T.eq(nil, s.collection.cancelled)
+    T.eq("hunk", s.scope)
+  end)
+end)
+
 T.test("paired diff sides accumulate with per-batch coverage and cached results follow the merge path", function()
   diff_fixture(function(f)
     local s = plugin.diff("hunk")

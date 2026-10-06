@@ -63,6 +63,16 @@ retry a request, nor do current-file edits, cancellation or failures. Background
 tab navigation waits until that tab is active. The default is false; opting in
 can increase external-agent usage. Refresh or navigate again to retry explicitly.
 
+ExplainrToggleAutoExplain switches this mode at runtime across all tabs. Enabling
+affects subsequent navigation only; disabling leaves started requests and notes
+intact. Auto appears beside the count in both overview and expanded diff winbars
+whenever the mode is enabled, regardless of request state. It denotes enabled
+navigation automation, not a running request. Toggling updates open headers
+immediately without collapsing detail, changing focus, or moving reading views.
+Counts and Auto take priority over descriptions/hints when the header is narrow.
+Disabled mode and code panes omit the indicator. The editor statusline and
+vim.b.explainr_status request-state string remain unchanged.
+
 Diff j/k (including counts) switches the followed side when needed to put a
 native cursor on added/deleted lines rather than jumping over virtual filler.
 Keyboard-driven paired scroll events cannot take over while notes have focus;

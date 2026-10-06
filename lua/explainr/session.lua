@@ -19,6 +19,16 @@ local function notify(err) vim.notify(err, vim.log.levels.ERROR, { title = "Expl
 
 function M.current() return M.sessions[api.nvim_get_current_tabpage()] end
 
+function M.auto_explain_changed(enabled)
+  for _, session in pairs(M.sessions) do
+    if not session.closed and session.mode == "diff" then
+      if not enabled then session.auto_explain_navigation = false end
+      session.pane.auto_explain = enabled
+      session.pane:header()
+    end
+  end
+end
+
 -- Accepted batches are immutable. Only their assembled view is given to UI.
 local function render(session, status)
   local value = #session.batches > 0 and { version = 1, notes = {} } or nil
@@ -212,6 +222,7 @@ follow = function(session)
     remember(session)
     discard_pending(session)
     session.review_key, session.batches, session.restoring = key, {}, true
+    session.auto_explain_navigation = require("explainr").config.diff.auto_explain
     session.snapshot, session.context, session.pane.snapshot = nil, nil, nil
     session.stale = false
     render(session, retained[key] and "Checking saved explanations" or "No explanations · request file or hunk")
@@ -225,7 +236,7 @@ follow = function(session)
   session.pane.snapshot = { windows = state.windows }
   local saved = retained[key]
   if not saved then
-    local auto = require("explainr").config.diff.auto_explain
+    local auto = session.auto_explain_navigation and require("explainr").config.diff.auto_explain
     -- M.start owns the current tab's session. Defer background-tab navigation
     -- until that tab is active, instead of opening/replacing another tab's pane.
     if auto and M.current() ~= session then return true end
@@ -269,7 +280,7 @@ follow = function(session)
       if not snapshot then
         retained[key], session.checking, session.restoring = nil, nil, nil
         session.stale = true
-        if require("explainr").config.diff.auto_explain then
+        if session.auto_explain_navigation and require("explainr").config.diff.auto_explain then
           session.restoring = true
           follow(session)
         else render(session, "Stale · context changed · refresh") end
@@ -440,6 +451,7 @@ function M.start(mode, scope, options)
     M.sessions[session.tab] = session
     watch(session)
   end
+  session.pane.auto_explain = mode == "diff" and config.diff.auto_explain
   session.pane.source = source
   request.windows = snapshot and snapshot.windows or collection and collection.state and collection.state.windows
     or compatible and previous_windows or { [mode == "code" and "buffer" or "new"] = source }

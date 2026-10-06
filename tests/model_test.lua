@@ -31,6 +31,35 @@ T.test("setup loads without agent or Diffview and validates argv", function()
   plugin.setup()
   T.eq(nil, package.loaded["diffview"])
 end)
+
+T.test("runtime automatic toggle preserves configuration and remains lazy without a pane", function()
+  local plugin = require("explainr").setup({
+    ai = { command = { "custom-agent", "--model", "custom/model" }, output = "codex", timeout_ms = 12345 },
+    context = { diff = "focused", radius = 3, max_bytes = 54321 },
+  })
+  local config, expected = plugin.config, vim.deepcopy(plugin.config)
+  local loaded = {}
+  for _, name in ipairs({ "explainr.session", "explainr.ui", "diffview", "diffview.lib" }) do loaded[name] = package.loaded[name] end
+  local old_notify, notices = vim.notify, {}
+  vim.notify = function(message, level, options) notices[#notices + 1] = { message, level, options.title } end
+  local ok, err = xpcall(function()
+    T.eq(true, plugin.toggle_auto_explain()); expected.diff.auto_explain = true
+    T.eq(config, plugin.config); T.eq(expected, plugin.config)
+    vim.cmd("ExplainrToggleAutoExplain"); expected.diff.auto_explain = false
+    T.eq(expected, plugin.config)
+    T.eq(false, plugin.config.diff.auto_explain)
+    T.eq({ { "Automatic explanations enabled", vim.log.levels.INFO, "Explainr" },
+      { "Automatic explanations disabled", vim.log.levels.INFO, "Explainr" } }, notices)
+    plugin.setup({ diff = { auto_explain = true } })
+    T.eq(false, plugin.toggle_auto_explain())
+    plugin.setup({ diff = { auto_explain = true } }); T.eq(true, plugin.config.diff.auto_explain)
+    plugin.setup(); T.eq(false, plugin.config.diff.auto_explain)
+    for _, name in ipairs({ "explainr.session", "explainr.ui", "diffview", "diffview.lib" }) do T.eq(loaded[name], package.loaded[name]) end
+  end, debug.traceback)
+  vim.notify = old_notify; plugin.setup()
+  assert(ok, err)
+end)
+
 T.test("paired renamed anchors and supplied evidence", function()
   local value = { version = 1, notes = { note } }
   T.eq(value, assert(model.validate(vim.json.encode(value), snapshot)))

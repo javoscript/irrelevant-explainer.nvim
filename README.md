@@ -206,6 +206,29 @@ layout/focus events, edits on the current file, cancellation and failures do not
 automatically retry; use refresh explicitly or navigate to another file.
 The default is `false`; enabling it can increase external-agent usage.
 
+Use **`:ExplainrToggleAutoExplain`** or `require("explainr").toggle_auto_explain()`
+to switch automatic explanations on/off without running setup again. The Lua
+function returns the new boolean; both entrypoints notify the new mode. The
+setting applies across tabs for this Neovim process, with setup providing its
+initial value. Enabling affects **subsequent navigation only**, not the current
+file or an earlier file switch still loading/checking saved notes. Disabling
+preserves notes and already-started requests; use `:ExplainrCancel` to stop work.
+Manual requests, refresh, and saved-note restoration work in either mode.
+
+Enabled diff panes show **Auto** beside the explanation count in their winbar,
+in overview and expanded detail, including pending and terminal states. It
+indicates enabled navigation automation, not a running request. Toggling updates
+all open diff headers immediately without collapsing detail or moving focus.
+Code panes omit it, and your editor statusline/lualine remains untouched.
+The mode is not persisted across restarts. No global mapping is installed;
+an optional user-defined keybind is:
+
+```lua
+vim.keymap.set("n", "<leader>ea", "<cmd>ExplainrToggleAutoExplain<CR>", {
+  desc = "Toggle Explainr automatic explanations",
+})
+```
+
 While waiting, every active and queued range has a steady, faint full-width tint.
 Only a cursor-width `▊` gutter rail animates, with an eased 2.4-second cascading glow.
 Accepted notes and text backgrounds remain steady; the focused cursor row pauses
