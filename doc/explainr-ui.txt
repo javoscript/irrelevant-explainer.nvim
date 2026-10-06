@@ -212,9 +212,15 @@ and scroll/cursor bindings are retained.
 Native expanded-detail viewport changes (including zz/zt/zb and cursor motions
 that scroll) move sources by the actual display-row distance, bounded by
 each buffer's native limits. The detail cursor remains free to read paragraphs;
-Markdown cursor lines are never treated as code line numbers. A cursor motion
-within prose does not move the anchored code to a paragraph line. Only context
-and continuation rows carry source display coordinates.
+Markdown cursor lines are never treated as code line numbers. After a reading
+scroll, the source cursor selects the final source-aligned target, even if
+sticky-edge scrolling left the reader cursor unchanged. Context and continuation
+retain exact source coordinates; prose selects by its final content-screen row,
+bounded to visible anchors with nearest-target and earlier-row tie rules.
+Without a visible prose target, the native source cursor remains unchanged.
+Selection preserves the completed source viewport, focus and original scrolloff
+settings. Source-driven motion, initialization and layout-only changes never
+apply an inactive prose cursor to code, and a true scroll no-op does not reselect.
 Referenced source ranges are
 temporarily marked with muted ▎ signs in the gutter. Text outside the union of
 the expanded anchors is dimmed in the source buffers, including both diff sides.

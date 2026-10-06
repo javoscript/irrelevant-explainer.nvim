@@ -1779,6 +1779,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local after = api.nvim_win_call(from, vim.fn.winsaveview)
     local changed = from ~= self.win and not vim.deep_equal(before, after)
     local scrolled = before.topline ~= after.topline or before.topfill ~= after.topfill or before.skipcol ~= after.skipcol
+    local reading = from == self.win and (scrolled or before.lnum ~= after.lnum or before.col ~= after.col)
     local edge_scroll = false
     if self.detail_win and from == self.win then
       local layout = self.detail_layout
@@ -1821,6 +1822,10 @@ function M.open(source, snapshot, result, on_close, keymaps)
           end
           vim.cmd.normal({ action, bang = true })
         end)
+        if edge_scroll and display_distance(self.source, source_view,
+            api.nvim_win_call(self.source, vim.fn.winsaveview)) ~= 0 then
+          reading, layout.reading = true, true
+        end
         self.overview.scrolled = true
         changed = true
         scrolled = true
@@ -1835,6 +1840,16 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if self.detail_win and from == self.win then
       self.projection = self:project()
       self:decorate_detail_context()
+      -- Native scrolling may move code's cursor for scrolloff, or change the
+      -- target under a pinned reader without moving its cursor at all. Select
+      -- only after viewport/placement corrections, before caching final views.
+      local layout = self.detail_layout
+      local row = api.nvim_win_get_cursor(self.win)[1]
+      local context = layout.rows[row]
+      if reading and (context and context.active or row >= layout.first and row <= layout.last) then
+        local target = self:detail_target()
+        if target then self:select_source(target) end
+      end
     end
     self.scroll_views = {}
     for candidate in pairs(self:windows()) do self.scroll_views[candidate] = api.nvim_win_call(candidate, vim.fn.winsaveview) end
@@ -1850,29 +1865,14 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if self.detail_win then
       local layout = self.detail_layout
       local context = from == self.win and layout and layout.rows[api.nvim_win_get_cursor(self.win)[1]]
-      if context and context.item then
+      if context and context.item and not context.active then
         local target = self:detail_target()
-        if context.active then
-          self:scroll(nil, from)
-          self:select_source(target)
-        else
-          self:back(true)
-          api.nvim_win_set_cursor(target.win, { target.line, 0 })
-          self:sync_sources(target.line, target.win)
-          self:sync(target.win)
-        end
+        self:back(true)
+        api.nvim_win_set_cursor(target.win, { target.line, 0 })
+        self:sync_sources(target.line, target.win)
+        self:sync(target.win)
       else
-        local cursor = api.nvim_win_get_cursor(self.win)
-        local previous = self.scroll_views and self.scroll_views[self.win]
-        -- Opening/navigating detail can emit a deferred cursor event. Only
-        -- actual reading motion maps prose; source-driven scrolling stays free.
-        local moved = from == self.win and previous
-          and (cursor[1] ~= previous.lnum or cursor[2] ~= previous.col)
         self:scroll(nil, from)
-        if moved and layout and cursor[1] >= layout.first and cursor[1] <= layout.last then
-          local target = self:detail_target()
-          if target then self:select_source(target) end
-        end
       end
       return
     end

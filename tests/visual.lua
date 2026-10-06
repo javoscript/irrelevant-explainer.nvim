@@ -107,6 +107,25 @@ if vim.g.capture_state:match("^sticky%-") then
   if state == "sticky-resized" then
     api.nvim_win_set_width(p.win, 24); api.nvim_exec_autocmds("WinResized", {})
   end
+  if state == "sticky-scroll-top" or state == "sticky-scroll-bottom" then
+    local bottom = state == "sticky-scroll-bottom"
+    local height = vim.fn.getwininfo(source)[1].height
+    api.nvim_set_current_win(source)
+    vim.cmd.normal({ (bottom and (40 - height + 7) or 70) .. "Gzt", bang = true }); p:sync(source)
+    api.nvim_set_current_win(p.win)
+    vim.cmd.normal({ (bottom and p.detail_layout.last or p.detail_layout.first + 3) .. "G0", bang = true })
+    p:sync(p.win)
+    vim.wo[p.win].cursorline = true
+    local top = api.nvim_win_call(source, vim.fn.winsaveview).topline
+    api.nvim_feedkeys(api.nvim_replace_termcodes("<C-y>", true, false, true), "xt", false)
+    vim.wait(50, function() return false end); vim.cmd("redraw!")
+    api.nvim_exec_autocmds("SafeState", {})
+    local view = api.nvim_win_call(source, vim.fn.winsaveview)
+    local reader = api.nvim_win_call(p.win, vim.fn.winsaveview)
+    assert(view.topline == top - 1)
+    assert(view.lnum == (bottom and 40 or 67), "sticky scroll must finish on the final source row")
+    assert(view.lnum == view.topline + reader.lnum - reader.topline)
+  end
   vim.wait(50, function() return false end); vim.cmd("redraw!")
   assert(p.detail_buf == detail and p.detail_index == 2 and vim.wo[source].scrolloff == 5)
   api.nvim_set_current_win(p.win)
@@ -198,6 +217,45 @@ if vim.g.capture_state:match("^range%-") then
     end
   end
   assert(api.nvim_get_current_win() == capture_pane.win)
+  return
+end
+if vim.g.capture_state == "diff-scroll-deletion" then
+  local api = vim.api
+  local old = api.nvim_get_current_win()
+  local lines = {}; for row = 1, 120 do lines[row] = "-- comparison context " .. row end
+  api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  vim.cmd("belowright vsplit")
+  local new = api.nvim_get_current_win(); api.nvim_win_set_buf(new, api.nvim_create_buf(false, true))
+  local after = vim.deepcopy(lines); for _ = 1, 5 do table.remove(after, 40) end
+  api.nvim_buf_set_lines(0, 0, -1, false, after)
+  api.nvim_set_hl(0, "CursorLine", { bg = "#34485c" })
+  for side, win in pairs({ old = old, new = new }) do
+    vim.bo[api.nvim_win_get_buf(win)].filetype = "lua"
+    vim.wo[win].winbar = " " .. side:upper() .. " · comparison.lua "
+    vim.wo[win].number, vim.wo[win].cursorline, vim.wo[win].wrap = true, true, false
+    vim.wo[win].scrolloff = side == "old" and 5 or 9
+    api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end)
+  end
+  vim.cmd("diffupdate")
+  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } }, { notes = { {
+    summary = "Review the removed comparison context",
+    detail = "The old side retains the deleted code.\n\nThe new side shows native diff filler.",
+    intent_basis = "inferred", anchors = { { path = "comparison.lua", side = "old", start_line = 30, end_line = 80 } },
+  } } })
+  local p = capture_pane
+  p:detail(1)
+  api.nvim_set_current_win(old); vim.cmd("normal! 45Gzt"); p:sync(old)
+  api.nvim_set_current_win(p.win); vim.cmd("normal! 4G0"); p:sync(p.win)
+  vim.wo[p.win].cursorline = true
+  api.nvim_feedkeys(api.nvim_replace_termcodes("<C-y>", true, false, true), "xt", false)
+  vim.wait(50, function() return false end); vim.cmd("redraw!"); api.nvim_exec_autocmds("SafeState", {})
+  assert(api.nvim_win_call(old, vim.fn.winsaveview).topline == 39)
+  -- The relocated diff summary releases to row 2; retained fourth-card-row
+  -- prose moves to screen row 5, beside deleted old line 43 (not pre-scroll 42).
+  assert(p.detail_layout.first == 2 and api.nvim_win_get_cursor(p.win)[1] == 5)
+  assert(api.nvim_win_get_cursor(old)[1] == 43 and api.nvim_win_get_cursor(new)[1] == 40)
+  assert(p.detail_index == 1 and api.nvim_get_current_win() == p.win and not vim.wo[p.win].diff)
+  assert(vim.wo[old].scrolloff == 5 and vim.wo[new].scrolloff == 9)
   return
 end
 if vim.g.capture_state:match("^diff%-prose") then

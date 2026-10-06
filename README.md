@@ -170,7 +170,11 @@ on the summary at the top screen edge does the same without collapsing detail
 or jumping to stale context. Both accept counts and stop at the source's beginning.
 Source `scrolloff` is respected, including different margins on diff sides,
 without duplicate margin-correction scrolls. In overview, code and notes still
-scroll together. Moving through expanded summaries,
+scroll together. Expanded reading scrolls also select the final source-aligned
+cursor target, even when sticky-edge scrolling leaves the reader cursor still.
+Selection preserves the completed source viewport and original `scrolloff` values;
+source-driven scrolling never applies the inactive reader cursor to code.
+Moving through expanded summaries,
 metadata or prose also selects the source line beside the cursor's display row,
 including wrapped prose, source wraps, folds and old-only diff deletions. Targets
 stay within the expanded anchors: prose beyond them selects the nearest visible
