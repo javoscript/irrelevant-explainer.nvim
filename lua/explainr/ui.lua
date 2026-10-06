@@ -2,7 +2,6 @@ local M = {}
 local api = vim.api
 local ns = api.nvim_create_namespace("explainr.ui")
 local geometry_ns = api.nvim_create_namespace("explainr.geometry")
-local state_ns = api.nvim_create_namespace("explainr.state")
 local range_ns = api.nvim_create_namespace("explainr.ranges")
 local loading_ns = api.nvim_create_namespace("explainr.loading")
 local spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
@@ -15,9 +14,7 @@ local intent = {
 local function highlights()
   for name, link in pairs({ ExplainrSummary = "Normal", ExplainrDocumented = "DiagnosticOk",
     ExplainrInferred = "DiagnosticWarn", ExplainrUnknown = "DiagnosticInfo", ExplainrMetadata = "Comment",
-    ExplainrHeading = "Title",
-    ExplainrPending = "DiagnosticInfo", ExplainrFailed = "DiagnosticError", ExplainrStale = "DiagnosticWarn",
-    ExplainrCancelled = "Comment", ExplainrReady = "Comment" }) do
+    ExplainrHeading = "Title", ExplainrTitle = "DiagnosticInfo" }) do
     api.nvim_set_hl(0, name, { default = true, link = link })
   end
   -- Mark expanded anchors in the gutter, never on the code/diff text.
@@ -200,6 +197,23 @@ local function shorten(value, width, suffix)
     chars = chars - 1
   end
   return vim.fn.strcharpart(value, 0, chars) .. (width >= vim.fn.strdisplaywidth(suffix) and suffix or "+")
+end
+
+-- Measure literal text, not winbar formatting; clip once across all segments.
+local function header(chunks, width)
+  local text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, chunks))
+  local clipped = shorten(text, width, "…")
+  local remaining = #clipped - (clipped ~= text and #"…" or 0)
+  local bar = {}
+  for _, chunk in ipairs(chunks) do
+    local value = chunk[1]:sub(1, remaining)
+    if value ~= "" then
+      bar[#bar + 1] = "%#" .. (chunk[2] or "ExplainrMetadata") .. "#" .. value:gsub("%%", "%%%%")
+      remaining = remaining - #value
+    end
+  end
+  if clipped ~= text then bar[#bar + 1] = "%#ExplainrMetadata#…" end
+  return table.concat(bar) .. "%#ExplainrMetadata#"
 end
 
 -- Native comparison coordinates omit wraps/folds but include diff filler.
@@ -430,28 +444,24 @@ function M.open(source, snapshot, result, on_close, keymaps)
     return windows
   end
 
-  function pane:overview_header(clear)
-    local overview = false
-    for _, note in ipairs(not clear and self.result and self.result.notes or {}) do
-      if note.kind == "overview" then overview = true; break end
-    end
+  function pane:headers(clear)
+    local windows = not clear and self:windows() or {}
     self.source_headers = self.source_headers or {}
+    self.updating_state = true
     for source_win, original in pairs(self.source_headers) do
-      if not overview or not self:windows()[source_win] then
+      if not windows[source_win] then
         if api.nvim_win_is_valid(source_win) and vim.wo[source_win].winbar == " " then vim.wo[source_win].winbar = original end
         self.source_headers[source_win] = nil
       end
     end
-    if overview then
-      -- Reserve a matched header row, not a status overlay on the overview.
-      -- Temporary blank source bars preserve exact side-by-side line geometry.
-      for source_win in pairs(self:windows()) do
-        if vim.wo[source_win].winbar == "" then
-          self.source_headers[source_win] = ""
-          vim.wo[source_win].winbar = " "
-        end
+    -- Reserve this row from opening, never when a particular result arrives.
+    for source_win in pairs(windows) do
+      if api.nvim_win_is_valid(source_win) and vim.wo[source_win].winbar == "" then
+        self.source_headers[source_win] = ""
+        vim.wo[source_win].winbar = " "
       end
     end
+    self.updating_state = false
   end
 
   function pane:coordinates(candidate)
@@ -596,23 +606,6 @@ function M.open(source, snapshot, result, on_close, keymaps)
           opts.virt_lines[index] = loading_rail(opts.virt_lines[index], width, self.frame, coordinate)
         end
       end
-      local status = self.virtual_status
-      if status and geometry.row == status.row and opts.virt_lines_above then
-        local text = shorten(status.label, api.nvim_win_get_width(self.win))
-        local padding = math.max(0, api.nvim_win_get_width(self.win) - vim.fn.strdisplaywidth(text))
-        local chunks = {}
-        for _, chunk in ipairs(opts.virt_lines[status.index]) do
-          local prefix, chars = chunk[1], vim.fn.strchars(chunk[1])
-          while vim.fn.strdisplaywidth(prefix) > padding do
-            chars = chars - 1; prefix = vim.fn.strcharpart(chunk[1], 0, chars)
-          end
-          if prefix ~= "" then chunks[#chunks + 1] = { prefix, chunk[2] } end
-          padding = padding - vim.fn.strdisplaywidth(prefix)
-          if padding == 0 then break end
-        end
-        chunks[#chunks + 1] = { string.rep(" ", padding) .. text, status.hl }
-        opts.virt_lines[status.index] = chunks
-      end
       api.nvim_buf_set_extmark(self.buf, geometry_ns, geometry.row, 0, opts)
     end
     local seen, loading_folds = {}, {}
@@ -663,18 +656,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local queued = pending and self.queued and #self.queued > 0 and " · " .. #self.queued .. " queued" or ""
     local context = focused()
     if context then label = label .. " · " .. context end
-    local has_bar = vim.fn.getwininfo(self.source)[1].winbar == 1
     local width = api.nvim_win_get_width(self.win)
-    if not has_bar then
-      width = width - vim.fn.getwininfo(self.win)[1].textoff
-      local top = (self.projection or {})[1]
-      local ref = top and (top.eof and self.eof_refs[top.offset]
-        or top.filler and self.filler_refs[top.line] and self.filler_refs[top.line][top.offset]
-        or self.references[top.line])
-      width = width - vim.fn.strdisplaywidth(ref or "")
-    end
     local legend = width >= 50 and "D documented · ~ inferred · ? unknown" or "D doc · ~ inferred · ? unknown"
-    local title = has_bar and width >= 60 and "Explainr · " or ""
+    local title = width >= 60 and "Explainr · " or ""
     local counter = self:counter(self:note_ids()) .. " · "
     if vim.fn.strdisplaywidth(counter .. label .. queued .. title .. " · " .. legend) > width then
       legend = "D doc · ~ inferred · ? unknown"
@@ -688,37 +672,26 @@ function M.open(source, snapshot, result, on_close, keymaps)
       while chars > 0 and vim.fn.strdisplaywidth(vim.fn.strcharpart(label, 0, chars)) > budget - 1 do chars = chars - 1 end
       label = vim.fn.strcharpart(label, 0, chars) .. "…"
     end
-    label = counter .. label .. queued .. " · " .. legend
-    local bar = has_bar and shorten(title .. label, width, "…"):gsub("%%", "%%%%") or ""
+    local chunks = { { title ~= "" and "Explainr" or "", "ExplainrTitle" },
+      { (title ~= "" and " · " or "") .. counter .. label .. queued .. " · " } }
+    local first = 1
+    for index = 1, #legend do
+      local symbol = legend:sub(index, index)
+      for _, cue in pairs(intent) do
+        if symbol == cue[1] then
+          chunks[#chunks + 1] = { legend:sub(first, index - 1) }
+          chunks[#chunks + 1] = { symbol, cue[2] }
+          first = index + 1
+          break
+        end
+      end
+    end
+    chunks[#chunks + 1] = { legend:sub(first) }
+    local bar = header(chunks, width)
     self.updating_state = true
     if vim.wo[self.win].winbar ~= bar then vim.wo[self.win].winbar = bar end
     -- Statusline (including laststatus=3/lualine) belongs entirely to the user.
     vim.b[self.buf].explainr_status = self.status
-    api.nvim_buf_clear_namespace(self.buf, state_ns, 0, -1)
-    self.virtual_status = nil
-    if not has_bar then
-      local view = api.nvim_win_call(self.win, vim.fn.winsaveview)
-      local row = math.min(api.nvim_buf_line_count(self.buf), view.topline) - 1
-      local hl = "Explainr" .. (self.status:match("^(%w+)") or "Ready")
-      if vim.fn.hlexists(hl) == 0 then hl = "ExplainrMetadata" end
-      -- A logical topline can sit *below* the first visible virtual filler/wrap
-      -- row. Paint that row instead of letting status drift down the pane.
-      if view.topfill > 0 then
-        for _, geometry in ipairs(self.virtual_geometry or {}) do
-          if geometry.row == row and geometry.opts.virt_lines_above then
-            self.virtual_status = { row = row, index = #geometry.opts.virt_lines - view.topfill + 1,
-              label = label, hl = hl }
-            break
-          end
-        end
-      end
-      if not self.virtual_status then
-        api.nvim_buf_set_extmark(self.buf, state_ns, row, 0, {
-          virt_text = { { shorten(label, api.nvim_win_get_width(self.win), "…"), hl } },
-          virt_text_pos = "right_align", priority = 200,
-        })
-      end
-    end
     self.updating_state = false
     self:loading()
   end
@@ -771,6 +744,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:align()
     if self.closed or self.detail_win or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
+    self:headers()
     if self.source_count ~= api.nvim_buf_line_count(api.nvim_win_get_buf(self.source)) then self:render(); return end
     self.projection = self:project()
     local view = api.nvim_win_call(self.source, vim.fn.winsaveview)
@@ -932,7 +906,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   function pane:render()
     if self.closed or self.rendering or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
     self.rendering = true
-    self:overview_header()
+    self:headers()
     self.focus_ids = nil
     self.rows, self.locations = {}, {}
     self.overflow = {}
@@ -1242,7 +1216,6 @@ function M.open(source, snapshot, result, on_close, keymaps)
     end
     local detail = self.detail_buf or api.nvim_create_buf(false, true)
     api.nvim_buf_clear_namespace(detail, ns, 0, -1)
-    api.nvim_buf_clear_namespace(detail, state_ns, 0, -1)
     vim.bo[detail].modifiable = true
     api.nvim_buf_set_lines(detail, 0, -1, false, lines)
     vim.bo[detail].modifiable = false
@@ -1306,9 +1279,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     vim.wo[self.win].statuscolumn = "%#ExplainrDetailGutter#%{get(b:explainr_detail_active, string(v:lnum), 0) ? '▎ ' : '  '}"
     local counter = self:counter(ids)
     local width = api.nvim_win_get_width(self.win)
-    local title = width >= 60 and "Explainr · " or ""
-    vim.wo[self.win].winbar = self.overview.options.winbar ~= ""
-      and shorten(title .. counter .. " · Expanded · Enter/K back · n/p notes", width, "…") or ""
+    local title = width >= 60 and "Explainr" or ""
+    vim.wo[self.win].winbar = header({ { title, "ExplainrTitle" },
+      { (title ~= "" and " · " or "") .. counter .. " · Expanded · Enter/K back · n/p notes" } }, width)
     vim.wo[self.detail_win].wrap = true
     vim.wo[self.detail_win].linebreak = true
     if render_detail then
@@ -1331,23 +1304,6 @@ function M.open(source, snapshot, result, on_close, keymaps)
       self.overview.context = vim.list_slice(self.overview.context, #self.overview.context - keep + 1)
       api.nvim_buf_set_extmark(detail, ns, 0, 0, { id = context_mark,
         virt_lines = self.overview.context, virt_lines_above = true })
-    end
-    -- Without a source header, use the existing top context row or an inline
-    -- count at the card start. Never add an unmatched row or obscure detail.
-    if self.overview.options.winbar == "" then
-      if #self.overview.context > 0 then
-        local chunks, width = self.overview.context[1], math.max(1, api.nvim_win_get_width(self.win) - 2)
-        local text = shorten(chunks[1][1], math.max(0, width - vim.fn.strdisplaywidth(counter) - 1), "…")
-        chunks[1][1] = text .. string.rep(" ", math.max(0, width - vim.fn.strdisplaywidth(text .. counter)))
-        chunks[2] = { counter, { "ExplainrMetadata", type(chunks[1][2]) == "table"
-          and "ExplainrDetailActive" or "ExplainrDetailContext" } }
-        api.nvim_buf_set_extmark(detail, ns, 0, 0, { id = context_mark,
-          virt_lines = self.overview.context, virt_lines_above = true })
-      else
-        api.nvim_buf_set_extmark(detail, state_ns, 0, 0, {
-          virt_text = { { counter .. " · ", { "ExplainrMetadata", "ExplainrDetailActive" } } }, virt_text_pos = "inline", priority = 200,
-        })
-      end
     end
     -- Keep the visible anchored extent without clipping a long explanation.
     local card_height = api.nvim_win_text_height(self.win, { start_row = 0, end_row = #lines - 1 }).all
@@ -1626,7 +1582,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if self.closed then return end
     self:focus(true)
     self.closed = true
-    self:overview_header(true)
+    self:headers(true)
     clear_detail_marks()
     self:stop_spinner()
     vim.on_key(nil, detail_ns)
@@ -1720,7 +1676,11 @@ function M.open(source, snapshot, result, on_close, keymaps)
   api.nvim_create_autocmd("OptionSet", { group = pane.group, pattern = { "wrap", "foldenable", "foldmethod", "foldlevel",
     "foldminlines", "winbar", "number", "relativenumber", "signcolumn", "foldcolumn", "linebreak", "breakindent", "showbreak",
     "cursorline", "cursorlineopt" },
-    callback = function() if not pane.updating_state then schedule() end end })
+    callback = function(event)
+      if pane.closed or pane.updating_state then return end
+      if event.match == "winbar" then pane:headers() end
+      schedule()
+    end })
   api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "DiffUpdated" }, { group = pane.group, callback = function(event)
     if pane.closed or not api.nvim_win_is_valid(pane.source) then return end
     local affected = event.event == "DiffUpdated"

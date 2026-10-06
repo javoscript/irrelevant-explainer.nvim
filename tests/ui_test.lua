@@ -23,11 +23,10 @@ local function detail_screen(p, row)
   return vim.fn.screenpos(p.win, p.detail_layout.first + row - 1, 1).row
 end
 local function marks(p, namespace)
-  return api.nvim_buf_get_extmarks(p.buf, api.nvim_get_namespaces()[namespace], 0, -1, { details = true })
+  return api.nvim_buf_get_extmarks(p.buf, api.nvim_create_namespace(namespace), 0, -1, { details = true })
 end
 local function state(p)
-  local m = marks(p, "explainr.state")
-  return #m > 0 and m[1][4].virt_text[1][1] or vim.wo[p.win].winbar
+  return api.nvim_eval_statusline(vim.wo[p.win].winbar, { winid = p.win, use_winbar = true }).str
 end
 local function motion(win, keys)
   api.nvim_set_current_win(win)
@@ -42,6 +41,125 @@ local function key(buf, lhs)
   end
   error("missing mapping " .. lhs)
 end
+
+T.test("header reservation starts before results and survives every request state", function()
+  for _, kind in ipairs({ "overview", "block" }) do
+    local source = setup({ string.rep("wrapped ", 30), "two", "three", "four", "five" })
+    vim.wo[source].wrap = true; vim.wo[source].foldmethod = "manual"; vim.wo[source].foldenable = true
+    api.nvim_win_call(source, function() vim.cmd("3,4fold") end)
+    local p = ui.open(source, { windows = { buffer = source } }, nil)
+    p:set(nil, "Pending · collecting")
+    local function geometry()
+      vim.cmd("redraw!")
+      local rows = {}
+      for _, line in ipairs({ 1, 2, 3, 5 }) do
+        rows[#rows + 1] = vim.fn.screenpos(source, line, 1).row
+        T.eq(rows[#rows], vim.fn.screenpos(p.win, line, 1).row)
+      end
+      T.eq(" ", vim.wo[source].winbar); T.eq(1, vim.fn.getwininfo(p.win)[1].winbar)
+      T.eq(5, api.nvim_buf_line_count(p.buf)); T.eq({}, marks(p, "explainr.state"))
+      return rows
+    end
+    local initial = geometry()
+    local n = note(1); n.kind = kind; n.anchors[1].end_line = 5
+    for _, status in ipairs({ "Ready", "Pending · refresh", "Failed", "Stale", "Cancelled" }) do
+      p:set({ notes = { n } }, status); T.eq(initial, geometry())
+    end
+    p:set(nil, "Stale"); T.eq(initial, geometry())
+    p:close(); T.eq("", vim.wo[source].winbar)
+  end
+end)
+
+T.test("matched headers reconcile diff source ownership and preserve user replacements", function()
+  local old = setup({ "first", "removed", "last" })
+  vim.wo[old].winbar = "Existing old header"
+  vim.cmd("belowright vsplit")
+  local new, buf = api.nvim_get_current_win(), api.nvim_create_buf(false, true)
+  api.nvim_win_set_buf(new, buf); api.nvim_buf_set_lines(buf, 0, -1, false, { "first", "last" })
+  vim.wo[new].winbar = ""
+  for _, win in ipairs({ old, new }) do api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end) end
+  vim.cmd("diffupdate")
+  local p = ui.open(new, { windows = { old = old, new = new } }, nil)
+  p:set(nil, "Pending · diff collection")
+  T.eq("Existing old header", vim.wo[old].winbar); T.eq(" ", vim.wo[new].winbar)
+  p:set({ notes = { note(2, "Removed", "old") } }, "Ready")
+  p:sync(old); T.eq(old, p.source)
+  p:set(nil, "Stale"); T.eq(" ", vim.wo[new].winbar)
+  p.snapshot = { windows = { old = old } }; p:render()
+  T.eq("", vim.wo[new].winbar); T.eq(nil, p.source_headers[new])
+  p.pending = { windows = { new = new } }; p:render(); T.eq(" ", vim.wo[new].winbar)
+  vim.wo[new].winbar = "User replacement"
+  p:close(); T.eq("User replacement", vim.wo[new].winbar); T.eq("Existing old header", vim.wo[old].winbar)
+  vim.cmd("diffoff!")
+end)
+
+T.test("evaluated header colors are state independent and clipping preserves literal text", function()
+  local colors = { ExplainrTitle = 0x33ccdd, ExplainrMetadata = 0x778899,
+    ExplainrDocumented = 0x55bb66, ExplainrInferred = 0xddaa44, ExplainrUnknown = 0x6699ee }
+  local saved = {}
+  for group, color in pairs(colors) do
+    saved[group] = api.nvim_get_hl(0, { name = group })
+    api.nvim_set_hl(0, group, { fg = color })
+  end
+  local p
+  local ok, err = xpcall(function()
+    local source = setup({ "one", "two", "three", "four" }); vim.o.columns = 280
+    p = ui.open(source, { windows = { buffer = source } }, nil)
+    api.nvim_win_set_width(p.win, 130)
+    local function check(parts)
+      local evaluated = api.nvim_eval_statusline(vim.wo[p.win].winbar,
+        { winid = p.win, use_winbar = true, highlights = true })
+      assert(evaluated.width <= api.nvim_win_get_width(p.win), evaluated.str)
+      for text, expected in pairs(parts) do
+        local first, last = evaluated.str:find(text, 1, true)
+        assert(first, evaluated.str .. " missing " .. text)
+        for offset = first - 1, last - 1 do
+          local actual
+          for _, span in ipairs(evaluated.highlights) do
+            if span.start <= offset then actual = span.group end
+          end
+          T.eq(expected, actual)
+        end
+      end
+      return evaluated.str
+    end
+    for _, status in ipairs({ "Pending · collecting", "Ready", "Failed", "Stale", "Cancelled" }) do
+      p:set(nil, status)
+      check({ Explainr = "ExplainrTitle", [status] = "ExplainrMetadata", [" · "] = "ExplainrMetadata",
+        D = "ExplainrDocumented", ["~"] = "ExplainrInferred", ["?"] = "ExplainrUnknown",
+        documented = "ExplainrMetadata", inferred = "ExplainrMetadata", unknown = "ExplainrMetadata" })
+    end
+    local literal = "Failed · 50% %#Error# 界界"
+    p:set(nil, literal); assert(check({ [literal] = "ExplainrMetadata" }):find(literal, 1, true))
+    api.nvim_win_set_width(p.win, 80)
+    p:set(nil, "Failed · " .. string.rep("界", 50))
+    assert(check({ ["Failed · 界"] = "ExplainrMetadata", D = "ExplainrDocumented",
+      ["~"] = "ExplainrInferred", ["?"] = "ExplainrUnknown" }):find("… · D", 1, true))
+    p:set(nil, "Ready")
+    for _, width in ipairs({ 60, 59, 40, 25, 12 }) do
+      api.nvim_win_set_width(p.win, width); p:render()
+      check({ [width >= 14 and "0 explanations" or "0 explan"] = "ExplainrMetadata" })
+      if width >= 40 then
+        check({ D = "ExplainrDocumented", ["~"] = "ExplainrInferred", ["?"] = "ExplainrUnknown",
+          inferred = "ExplainrMetadata" })
+      end
+    end
+    api.nvim_win_set_width(p.win, 130)
+    p:set({ notes = { note(2), note(3) } }, "Ready"); motion(p.win, "2G0"); p:detail()
+    check({ Explainr = "ExplainrTitle", ["1 / 2"] = "ExplainrMetadata", Expanded = "ExplainrMetadata" })
+    local row = vim.fn.screenpos(source, 2, 1).row
+    vim.wo[source].winbar = ""
+    api.nvim_exec_autocmds("OptionSet", { pattern = "winbar" })
+    T.eq(" ", vim.wo[source].winbar); T.eq(row, vim.fn.screenpos(source, 2, 1).row)
+    key(p.detail_buf, "n"); check({ ["2 / 2"] = "ExplainrMetadata" })
+    key(p.detail_buf, "q"); check({ ["2 / 2"] = "ExplainrMetadata", D = "ExplainrDocumented" })
+    for group, color in pairs(colors) do T.eq(color, api.nvim_get_hl(0, { name = group, link = false }).fg) end
+  end, debug.traceback)
+  if p and not p.closed then p:close() end
+  for group, value in pairs(saved) do api.nvim_set_hl(0, group, value) end
+  assert(ok, err)
+end)
+
 T.test("sparse rows, read-only pane, truncation and in-pane detail", function()
   local win = setup({ "one", "two", "three", "four", "five" })
   local original = vim.wo[win].wrap
@@ -248,11 +366,11 @@ T.test("external global statusline survives focus renders and all pane-local sta
       T.eq("EXTERNAL PANE", vim.wo[p.win].statusline)
       T.eq("EXTERNAL SOURCE", vim.wo[win].statusline)
       T.eq("EXTERNAL GLOBAL %= editor bar", vim.go.statusline); T.eq(3, vim.o.laststatus)
-      T.eq("", vim.wo[p.win].winbar); T.eq("", vim.wo[win].winbar)
+      T.eq(1, vim.fn.getwininfo(p.win)[1].winbar); T.eq(" ", vim.wo[win].winbar)
       T.eq(projection, p.projection); T.eq({ 1 }, p.rows[2])
       T.eq(summary("Note 2"), api.nvim_buf_get_lines(p.buf, 1, 2, false)[1])
       T.eq(status, vim.b[p.buf].explainr_status)
-      if status ~= "Ready" then assert(state(p):find(status, 1, true)) end
+      assert(state(p):find(status:match("^%w+"), 1, true), state(p))
     end
   end
   p:close(); vim.o.laststatus = laststatus; vim.go.statusline = global; vim.wo[win].statusline = ""
@@ -349,7 +467,7 @@ T.test("missing renderer API or parser leaves semantic native fallback usable", 
   assert(ok, err)
 end)
 
-T.test("full note viewport uses a row-local state overlay without moving any anchors", function()
+T.test("full note viewport uses a separate state header without moving any anchors", function()
   local lines, notes = {}, {}
   for row = 1, 60 do lines[row] = "line " .. row; notes[row] = note(row) end
   local win = setup(lines)
@@ -358,15 +476,9 @@ T.test("full note viewport uses a row-local state overlay without moving any anc
   local rows, projection = vim.deepcopy(p.rows), vim.deepcopy(p.projection)
   p:set(result, "Stale")
   T.eq(rows, p.rows); T.eq(projection, p.projection)
-  local overlay = false
-  for _, m in ipairs(marks(p, "explainr.state")) do
-    assert(not m[4].virt_lines and not m[4].conceal_lines)
-    if m[4].virt_text then
-      assert(m[4].virt_text[1][1]:find("Stale", 1, true))
-      assert(m[4].virt_text[1][1]:find("? unknown", 1, true)); overlay = true
-    end
-  end
-  assert(overlay); p:close()
+  T.eq({}, marks(p, "explainr.state"))
+  assert(state(p):find("Stale", 1, true))
+  assert(state(p):find("? unknown", 1, true)); p:close()
 end)
 
 T.test("blank and pending lines synchronize both directions beyond viewport without stealing focus", function()
@@ -512,7 +624,7 @@ T.test("focused context remains visible after scroll but is omitted from detail"
   local p = ui.open(source, snapshot, { notes = { note(100) } })
   assert(state(p):find("Focused ±12 · 2 files omitted", 1, true))
   motion(p.win, "100G"); assert(state(p):find("Focused", 1, true))
-  T.eq(api.nvim_win_call(source, vim.fn.winsaveview).topline - 1, marks(p, "explainr.state")[1][2])
+  T.eq({}, marks(p, "explainr.state"))
   key(p.buf, "K")
   local text = table.concat(api.nvim_buf_get_lines(api.nvim_win_get_buf(p.detail_win), 0, -1, false), "\n")
   assert(not text:find("**Context:**", 1, true))
@@ -659,7 +771,7 @@ T.test("screen-filling wraps use bounded virtual geometry and retain a reachable
   local source = setup({ string.rep("x", 6000), "after wrap" })
   vim.wo[source].wrap = true; vim.wo[source].smoothscroll = true
   local p = ui.open(source, { windows = { buffer = source } }, { notes = { note(1), note(2) } })
-  local height = api.nvim_win_get_height(p.win)
+  local height = vim.fn.getwininfo(p.win)[1].height
   T.eq(height + 1, api.nvim_win_text_height(p.win, { start_row = 0, end_row = 1 }).all)
   T.eq(0, api.nvim_win_call(p.win, vim.fn.winsaveview).topfill)
   T.eq(2, api.nvim_buf_line_count(p.buf))
@@ -682,7 +794,8 @@ T.test("wrapped source cursor matches notes on each physical segment and n p rev
   api.nvim_win_set_width(source, 40); p:render()
   for _, column in ipairs({ 0, 39, 40, 75, 119, 120 }) do
     api.nvim_win_set_cursor(source, { 1, column }); p:sync(source)
-    local expected_row = vim.fn.getwininfo(source)[1].winrow + math.floor(column / 40)
+    local info = vim.fn.getwininfo(source)[1]
+    local expected_row = info.winrow + info.winbar + math.floor(column / 40)
     T.eq(expected_row, vim.fn.screenpos(source, 1, column + 1).row)
     T.eq(expected_row, vim.fn.screenpos(p.win, 1, 1).row)
     T.eq({ 1, column }, api.nvim_win_get_cursor(source))
@@ -741,8 +854,8 @@ T.test("native cursor and viewport actions synchronize source and overview witho
       local notes = api.nvim_win_call(p.win, vim.fn.winsaveview)
       T.eq({ driver, action, code.topline, code.topfill, code.lnum },
         { driver, action, notes.topline, notes.topfill, notes.lnum })
-      local offset = ({ zz = math.floor((api.nvim_win_get_height(driver) - 1) / 2), zt = 0,
-        zb = api.nvim_win_get_height(driver) - 1 })[action]
+      local height = vim.fn.getwininfo(driver)[1].height
+      local offset = ({ zz = math.floor((height - 1) / 2), zt = 0, zb = height - 1 })[action]
       if offset then T.eq({ action, notes.lnum - offset }, { action, notes.topline }) end
       local delta = ({ ["3<C-d>"] = 3, ["5<C-u>"] = -5 })[action]
       if delta then T.eq({ action, before.topline + delta }, { action, notes.topline }) end
@@ -1506,7 +1619,7 @@ T.test("file overview has a separate matched status header and focuses the compl
   key(p.buf, "<CR>"); T.eq(5, #api.nvim_buf_get_extmarks(source_buf, active_ns, 0, -1, {}))
   key(p.detail_buf, "<CR>"); T.eq(5, #api.nvim_buf_get_extmarks(source_buf, active_ns, 0, -1, {}))
   T.eq(bar, vim.o.statusline)
-  p:set(nil, "Stale"); T.eq("", vim.wo[source].winbar)
+  p:set(nil, "Stale"); T.eq(" ", vim.wo[source].winbar)
   p:set({ notes = { overview } }, "Ready")
   vim.wo[source].winbar = "User changed this header"
   p:close(); T.eq("User changed this header", vim.wo[source].winbar)
@@ -1596,7 +1709,7 @@ T.test("bottom-edge expansion leaves its first body visible without moving the s
       "the first explanation line is below the viewport")
     assert(detail_screen(p, 1) < opening_row)
     T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
-    T.eq(bar == "" and 0 or 1, info.winbar) -- No extra header row shifts a source without a winbar.
+    T.eq(1, info.winbar) -- The matched header is already reserved before expansion.
     key(p.detail_buf, "q"); T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
     p:close()
   end
@@ -1946,14 +2059,7 @@ T.test("headers count explanations in display order through navigation expansion
     local statusline = vim.o.statusline
     local p = ui.open(source, { windows = { buffer = source } }, { notes = { note(6), note(2), note(4) } })
     local function detail_header()
-      if vim.wo[p.win].winbar ~= "" then return vim.wo[p.win].winbar end
-      if #p.overview.context > 0 then
-        local text = ""
-        for _, chunk in ipairs(p.overview.context[1]) do text = text .. chunk[1] end
-        return text
-      end
-      local m = api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.state"], 0, -1, { details = true })
-      return #m > 0 and m[1][4].virt_text[1][1] or ""
+      return state(p)
     end
     assert(state(p):find("3 explanations", 1, true), state(p))
     motion(p.win, "2G0"); assert(state(p):find("1 / 3", 1, true), state(p))
@@ -2015,25 +2121,24 @@ T.test("header ordinals update when notes are appended and survive narrow panes"
   key(p.buf, "K")
   assert(vim.wo[p.win].winbar:find("2 / 3", 1, true), vim.wo[p.win].winbar)
   -- Winbars do not inherit Markdown's wrapped linebreak display calculation.
-  assert(vim.fn.strwidth(vim.wo[p.win].winbar) <= 25, vim.wo[p.win].winbar)
+  assert(vim.fn.strwidth(state(p)) <= 25, state(p))
   key(p.detail_buf, "<CR>")
   p:set(nil, "Stale · changed context")
   assert(state(p):find("0 explanations", 1, true), state(p))
   p:close()
 end)
 
-T.test("expanded first-row counter without a winbar stays inline and does not change detail text", function()
+T.test("expanded first-row counter stays in the reserved header without changing detail text", function()
   local source = setup({ "one", "two", "three" })
   local p = ui.open(source, { windows = { buffer = source } }, { notes = { note(1) } })
   motion(p.win, "2G0"); assert(state(p):find("1 explanation ·", 1, true), state(p))
   motion(p.win, "1G0"); key(p.buf, "K")
-  T.eq({}, p.overview.context); T.eq("", vim.wo[p.win].winbar)
+  T.eq({}, p.overview.context); T.eq(1, vim.fn.getwininfo(p.win)[1].winbar)
   local m = api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.state"], 0, -1, { details = true })
-  T.eq(1, #m); T.eq(0, m[1][2]); T.eq("inline", m[1][4].virt_text_pos)
-  T.eq("1 / 1 · ", m[1][4].virt_text[1][1])
+  T.eq({}, m); assert(state(p):find("1 / 1 · Expanded", 1, true), state(p))
   T.eq("▎ ? Note 1", api.nvim_buf_get_lines(p.detail_buf, 0, 1, false)[1])
   key(p.detail_buf, "n")
-  T.eq(1, #api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.state"], 0, -1, {}))
+  T.eq({}, api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.state"], 0, -1, {}))
   p:close()
 end)
 
@@ -2078,7 +2183,7 @@ T.test("requested scopes animate only matching visible rows without writes or co
   assert(ok, err)
   p.pending = { source = source, scope = "file", row = 4, windows = { buffer = source } }
   p:set(result, "Pending · collecting file")
-  T.eq(api.nvim_win_get_height(source), #rows())
+  T.eq(vim.fn.getwininfo(source)[1].height, #rows())
   p.pending.scope = "hunk"; p:set(result, "Pending · provisional hunk"); T.eq({ 4 }, rows())
   vim.wo[source].foldmethod = "manual"; vim.wo[source].foldenable = true
   api.nvim_win_call(source, function() vim.cmd("2,8fold") end)
@@ -2397,7 +2502,7 @@ T.test("diff line motion counts folds once and reaches added lines at EOF withou
   p:close(); vim.cmd("diffoff!")
 end)
 
-T.test("status stays on the first displayed row when the viewport begins inside diff filler", function()
+T.test("status stays above content when the viewport begins inside diff filler", function()
   local old = setup({ "first", "removed one", "removed two", "removed three", "last", "tail" })
   vim.cmd("belowright vsplit"); local new = api.nvim_get_current_win()
   local buf = api.nvim_create_buf(false, true); api.nvim_win_set_buf(new, buf)
@@ -2421,9 +2526,10 @@ T.test("status stays on the first displayed row when the viewport begins inside 
   end
   assert(first, "the first visible filler row must exist")
   local text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, first))
-  assert(text:find("Focused ±20", 1, true), "status must be in the first visible filler row")
-  assert(text:find("[old:3]", 1, true), "available left-hand annotation content must survive the status overlay")
-  T.eq({}, marks(p, "explainr.state")) -- Not attached to the logical line below the filler.
+  assert(not text:find("Focused", 1, true), "status must not be in a filler row")
+  assert(state(p):find("Focused ±20", 1, true), "status must remain in the reserved header")
+  assert(text:find("[old:3]", 1, true), "annotation content must remain intact")
+  T.eq({}, marks(p, "explainr.state"))
   p:close(); vim.cmd("diffoff!")
 end)
 

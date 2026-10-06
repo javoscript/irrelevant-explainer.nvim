@@ -139,9 +139,11 @@ Byte count is not provider token count: the external tool may still reject a
 prompt below the budget. Lower max_bytes (for example, 65536) or use focused
 mode for a smaller-context provider.
 
-Pending/Ready/Failed/Stale/Cancelled are shown inside existing pane rows or a
-matched source winbar, never extra annotation rows. The editor's statusline is
-not overwritten. Pending phases animate the requested rows every 100ms,
+Pending/Ready/Failed/Stale/Cancelled use a separate matched header from the
+moment the pane opens, never content rows. Source windows without winbars get
+temporary blank headers until ownership ends or the pane closes; existing
+headers and user edits are preserved. The editor's statusline is not overwritten.
+Pending phases animate the requested rows every 100ms,
 including deletion filler; initial hunk ranges are provisional until collected.
 Ticks only update decorations, not buffer text, collection or inference. Full
 errors use vim.notify and :messages. Edits, file/revision/layout switches and
@@ -209,7 +211,8 @@ Diff summaries use the first changed line within their anchor, not an unchanged
 block header. Entirely unchanged ranges keep their original start. References
 and expanded detail retain the full anchor range.
 Whole-file overviews instead stay at the file start, with a separate matched
-status header that never covers their summary.
+status header that, like all requests, is reserved before results arrive and
+never covers their summary.
 Overlapping notes each get a separate row and their own original range label.
 Primary positions are reserved; collisions prefer file overviews, narrower
 ranges, documented/inferred/unknown intent, then original result order. If an

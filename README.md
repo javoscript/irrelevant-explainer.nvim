@@ -85,9 +85,16 @@ expand to read their details. The status header includes `D documented · ~ infe
 It also shows the explanation count, or your position (e.g. `2 / 5`) when
 focusing/navigating an entry, in both overview and expanded detail. Folded groups
 show a range such as `1–3 / 5`.
-File overviews reserve a separate status header; source windows without a winbar
-temporarily get a matching blank header to keep every content row aligned. These
-temporary headers are restored when the overview disappears or the pane closes.
+The status header sits above content from the moment the pane opens, including
+initial loading, and stays there across results, refreshes, and expanded detail.
+Source windows without a winbar temporarily get a matching blank header to keep
+content rows aligned. These placeholders are restored when a source leaves the
+pane's ownership or the pane closes; existing headers and user edits are preserved.
+`Explainr` uses the theme's information accent (`ExplainrTitle`); other header
+text is muted (`ExplainrMetadata`) regardless of request state. Legend symbols
+use the same `ExplainrDocumented`, `ExplainrInferred`, and `ExplainrUnknown` colors
+as explanation items. Narrow headers prioritize counts and abbreviate other text,
+omitting the title when necessary. Themes can override these highlight groups.
 In the explainer pane, focusing a collapsed summary applies the same dimming and
 theme-derived tint as expanded detail: its full anchor ranges stay emphasized in both
 the explainer and source buffers. Moving to a blank row or a different window

@@ -67,19 +67,24 @@ Diff j/k (including counts) switches the followed side when needed to put a
 native cursor on added/deleted lines rather than jumping over virtual filler.
 Keyboard-driven paired scroll events cannot take over while notes have focus;
 direct source motions and mouse-wheel scrolling still drive synchronization.
-Without a winbar, status overlays the first displayed row, even inside filler.
-File overviews reserve a separate status winbar, so their top summary cannot
-overlap it. Source windows without a winbar get a temporary blank matching
-header to preserve row alignment. Those placeholders are restored when the
-overview disappears or the pane closes; user changes to them are preserved.
+Status reserves a separate winbar above content as soon as the pane opens,
+including initial loading, and never overlays summaries or diff filler.
+Source windows without a winbar get a temporary blank matching header to
+preserve row alignment. Those placeholders remain through results, refreshes,
+terminal states, and detail expansion; they are restored when a source leaves
+pane ownership or the pane closes. Existing headers and user edits are preserved.
 The status header includes an intent legend: D documented, ~ inferred, ? unknown.
 It also shows the number of available explanations, or the current position
 when on an explanation (e.g. 2 / 5), in source/display order. Counts update in
 both overview and expanded detail, including entry navigation and newly
 accepted notes. Shared or folded groups show their positions as a range
 (e.g. 1–3 / 5); every explanation counts, not only each navigation stop.
-Without a winbar, expanded counts use the top context row or appear inline at
-the card start, without adding source-misaligned rows or hiding detail text.
+Expanded counts and navigation hints use the same reserved header row.
+ExplainrTitle defaults to DiagnosticInfo for the cyan/theme information accent
+on the Explainr title. ExplainrMetadata keeps counts, spinner, state, separators,
+descriptions, and hints muted from the start, regardless of request state.
+Legend D/~/? symbols reuse ExplainrDocumented/ExplainrInferred/ExplainrUnknown
+exactly as explanation-item markers do. User highlight overrides are respected.
 Documented means intent cites supplied decision material; inferred means the
 model inferred intent from code; unknown means no intent basis was established.
 These are intent categories, not guarantees of correctness. Semantic
@@ -201,8 +206,8 @@ Detail is already part of the returned answer:
 opening it does not invoke AI. Initial expansion keeps the source position;
 navigating or paired scrolling then follows the user's actions.
 
-Pending, stale, and failed status uses existing blank rows or a matched winbar,
-not the editor's statusline. Global statuslines/lualine retain ownership.
+Pending, stale, and failed status uses the persistent matched winbar, not content
+rows or the editor's statusline. Global statuslines/lualine retain ownership.
 Every active and queued range has a steady faint full-width loading tint.
 Only a cursor-width ▊ gutter rail animates: an eased 2.4-second cascading
 glow, updated every 100ms. Braille spinners remain as activity cues. Rails cover
@@ -220,10 +225,10 @@ that preview. Ticks update visible decorations, not buffer text or full-file
 coordinate scans. Earlier accepted notes remain visible during an addition;
 cancel/failure preserves them, while stale data removes them.
 Focused-context status identifies the effective nearby-line radius and omitted
-file count in the overview, not the detailed explanation. With no source
-winbar, status stays on the top visible logical row and may overlap a summary
-in a narrow pane. The explanation count comes first; verbose status/context
-text is shortened to keep counts visible. The intent legend abbreviates as
+file count in the overview, not the detailed explanation. Status stays above
+content even in a narrow pane. The explanation count comes first; the title is
+omitted when necessary and verbose status/context text is shortened to keep
+counts visible. Visible text keeps its semantic colors. The legend abbreviates as
 space requires, first documented to doc, then just D and ? around ~ inferred.
 vim.b.explainr_status exposes the pane's state for optional statusline components.
 The explanation window never joins diff/scrollbind membership. Closing the
