@@ -188,12 +188,24 @@ Entry navigation updates the existing Markdown buffer in place; it does not
 switch through the overview or retrigger buffer/filetype attachment events.
 Statusline plugins retain the same buffer throughout expanded navigation.
 Entries expand at their current overview position when space allows.
-Ctrl-e/Ctrl-y scroll content and explanations together, including when detail is
-expanded, with counts. Scrolling either diff source also scrolls its counterpart
-and the expanded detail by the same number of display rows. Wraps, folds and
-diff filler are accounted for. Source scroll/cursor bindings are not changed.
+Code-driven scrolling follows the summary's natural position until the card
+reaches an edge, then pins it within the content viewport below the header.
+A fitting card stays entirely visible at either edge. Scrolling back releases
+it into natural alignment. A longer card retains a viewport-sized reading area
+and the logical prose position, including later wrapped segments; every paragraph
+remains reachable. Pinning neither scrolls code again nor changes selection or
+focus, even when every anchor leaves the screen. Bounds use the card's height,
+not its blank anchored continuation. Dimmed neighbors remain navigable where
+space permits. Resize, wrapping, folds and diff geometry recompute placement
+without replacing the Markdown buffer or resetting reading.
+Ctrl-e/Ctrl-y still accept counts. In overview, code and notes scroll together;
+with detail open, source scrolling uses sticky placement instead of equal prose
+movement. Explanation-driven scrolling continues to move code while pinned.
+Wraps, folds, diff filler and source scrolloff (including unequal diff margins)
+are accounted for without extra cursor-margin scrolls. Original source options
+and scroll/cursor bindings are retained.
 Native expanded-detail viewport changes (including zz/zt/zb and cursor motions
-that scroll) also move the sources by the same display-row distance, bounded by
+that scroll) move sources by the actual display-row distance, bounded by
 each buffer's native limits. The detail cursor remains free to read paragraphs;
 Markdown cursor lines are never treated as code line numbers. A cursor motion
 within prose does not move the anchored code to a paragraph line. Only context

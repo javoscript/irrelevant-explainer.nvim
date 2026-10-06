@@ -156,11 +156,18 @@ selected explanation, including both diff sides and old-only deletions.
 Detail shows the explanation and intent basis, without
 context warnings or separate evidence/anchor lists; range labels and source
 gutter markers still identify the referenced lines.
-Detail needs no extra AI call or popup. **Ctrl-e/Ctrl-y** scroll content and notes
-together from any paired source or the explainer, even with detail expanded;
-counts work too. Native expanded-detail scrolling (including **zz/zt/zb** and
-cursor motions that scroll the viewport) moves source panes by the same displayed
-row distance, within native buffer limits. Moving through expanded summaries,
+Detail needs no extra AI call or popup. When you scroll code, expanded detail
+follows its summary until it reaches an edge, then sticks inside the explanation
+viewport below the header. A fitting card stays wholly visible; longer detail
+keeps your prose reading position, with every paragraph reachable. Scrolling back
+releases the card into natural alignment without moving code again or changing
+the selected explanation.
+Scrolling the explanation still scrolls code, even while pinned: **Ctrl-e/Ctrl-y**
+(including counts), **zz/zt/zb**, page/half-page and cursor-induced viewport motion
+move sources by the actual displayed-row distance, within native buffer limits.
+Source `scrolloff` is respected, including different margins on diff sides,
+without duplicate margin-correction scrolls. In overview, code and notes still
+scroll together. Moving through expanded summaries,
 metadata or prose also selects the source line beside the cursor's display row,
 including wrapped prose, source wraps, folds and old-only diff deletions. Targets
 stay within the expanded anchors: prose beyond them selects the nearest visible

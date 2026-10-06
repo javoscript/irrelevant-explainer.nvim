@@ -1350,6 +1350,300 @@ T.test("expanded prose cursor events preserve initialization source motion and s
   p:close(); vim.wo[source].scrolloff = original
 end)
 
+T.test("source scrolling pins a short card at both edges and releases without source jumps", function()
+  local lines = {}; for row = 1, 150 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(40, "Selected"); selected.anchors[1].end_line = 100
+  selected.detail = "First paragraph.\n\nSecond paragraph."
+  local p = ui.open(source, { windows = { buffer = source } },
+    { notes = { note(24, "Before"), selected, note(65, "After") } })
+  motion(p.win, "40Gzz"); p:detail(); vim.cmd("redraw!")
+  local detail, prose = p.detail_buf, detail_lines(p)
+  T.eq(7, #prose)
+  local height = vim.fn.getwininfo(p.win)[1].height
+  local bottom_top = 40 - (height - 7)
+  for _, top in ipairs({ 28, 39, 40, 41, 52, 40, 39, 27,
+    bottom_top + 1, bottom_top, bottom_top - 1, 1, 27 }) do
+    api.nvim_set_current_win(source)
+    api.nvim_win_call(source, function()
+      vim.fn.winrestview({ topline = top, lnum = top + 10, col = 2 })
+    end)
+    local view = api.nvim_win_call(source, vim.fn.winsaveview)
+    api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(source) }); vim.cmd("redraw!")
+    local info = vim.fn.getwininfo(p.win)[1]
+    local first = math.max(1, math.min(height - 7 + 1, 41 - top))
+    T.eq({ top, info.winrow + info.winbar + first - 1 }, { top, detail_screen(p, 1) })
+    T.eq(info.winrow + info.winbar + first + 5, detail_screen(p, 7))
+    T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
+    T.eq(prose, detail_lines(p)); T.eq(detail, p.detail_buf); T.eq(2, p.detail_index)
+    T.eq(source, api.nvim_get_current_win())
+  end
+  p:close()
+end)
+
+T.test("pinned context retains neighboring targets and untouched collapse keeps native code position", function()
+  local lines = {}; for row = 1, 150 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(40, "Selected"); selected.anchors[1].end_line = 58
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected, note(65, "After") } })
+  motion(p.win, "40Gzz"); p:detail(); motion(source, "52Gzt")
+  local view = api.nvim_win_call(source, vim.fn.winsaveview)
+  for _ = 1, 3 do
+    api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(source) })
+    api.nvim_exec_autocmds("CursorMoved", { buffer = api.nvim_win_get_buf(source) })
+    api.nvim_exec_autocmds("SafeState", {}); vim.wait(10, function() return false end)
+  end
+  T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
+  local neighbor
+  for row, context in pairs(p.detail_layout.rows) do
+    if context.item.line == 65 then neighbor = row; T.eq(false, context.active) end
+  end
+  assert(neighbor, "the following note must retain its source-backed context row")
+  motion(p.win, neighbor .. "G0")
+  T.eq(nil, p.detail_buf); T.eq(65, api.nvim_win_get_cursor(source)[1]); T.eq(65, api.nvim_win_get_cursor(p.win)[1])
+  motion(p.win, "40Gzz"); p:detail(); motion(source, "110Gzt")
+  view = api.nvim_win_call(source, vim.fn.winsaveview)
+  key(p.detail_buf, "q")
+  T.eq(110, api.nvim_win_get_cursor(p.win)[1]); T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
+  T.eq(nil, p.detail_layout); p:close()
+end)
+
+T.test("sticky geometry follows fold changes and preserves logical prose cursor across width changes", function()
+  local lines = {}; for row = 1, 120 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  vim.wo[source].winbar = "User source header"
+  vim.wo[source].foldmethod, vim.wo[source].foldenable = "manual", true
+  local selected = note(30, "Selected")
+  selected.detail = string.rep("Wrapped prose words. ", 15)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "30Gzz"); p:detail(); motion(source, "20Gzt")
+  local detail, before = p.detail_buf, api.nvim_win_call(source, vim.fn.winsaveview)
+  api.nvim_win_call(source, function() vim.cmd("22,27fold") end)
+  api.nvim_exec_autocmds("SafeState", {}); vim.wait(30, function() return false end); vim.cmd("redraw!")
+  T.eq(vim.fn.screenpos(source, 30, 1).row, detail_screen(p, 1))
+  T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+  motion(p.win, (p.detail_layout.first + 3) .. "G02gj")
+  local cursor = api.nvim_win_get_cursor(p.win); cursor[1] = cursor[1] - p.detail_layout.first
+  for _, width in ipairs({ 22, 85, 40 }) do
+    api.nvim_win_set_width(p.win, width)
+    api.nvim_exec_autocmds("WinResized", {}); vim.wait(30, function() return false end); vim.cmd("redraw!")
+    local now = api.nvim_win_get_cursor(p.win)
+    T.eq(cursor, { now[1] - p.detail_layout.first, now[2] })
+    local screen = vim.fn.screenpos(p.win, now[1], now[2] + 1).row
+    local info = vim.fn.getwininfo(p.win)[1]
+    assert(screen >= info.winrow + info.winbar and screen < info.winrow + info.winbar + info.height)
+    T.eq(detail, p.detail_buf); T.eq("User source header", vim.wo[source].winbar)
+    T.eq(true, vim.wo[source].foldenable); T.eq(false, vim.wo[source].wrap)
+  end
+  api.nvim_win_call(source, function() vim.cmd("normal! zR") end)
+  api.nvim_exec_autocmds("SafeState", {}); vim.wait(30, function() return false end)
+  T.eq(false, p.projection[3].folded)
+  p:close()
+end)
+
+T.test("sticky diff detail follows real deletion geometry from either source without changing bindings", function()
+  local lines = {}; for row = 1, 120 do lines[row] = "source line " .. row end
+  local old = setup(lines)
+  vim.wo[old].winbar = "Old file"
+  vim.cmd("belowright vsplit")
+  local new = api.nvim_get_current_win(); api.nvim_win_set_buf(new, api.nvim_create_buf(false, true))
+  local after = vim.deepcopy(lines); for _ = 1, 5 do table.remove(after, 40) end
+  api.nvim_buf_set_lines(0, 0, -1, false, after)
+  for _, win in ipairs({ old, new }) do api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end) end
+  vim.cmd("diffupdate")
+  local selected = note(40, "Deleted", "old"); selected.anchors[1].end_line = 44
+  local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { selected } })
+  p:detail(1)
+  local detail = p.detail_buf
+  for _, win in ipairs({ new, old }) do
+    for _, line in ipairs({ 30, 55, 30 }) do
+      motion(win, line .. "Gzt"); vim.cmd("redraw!")
+      local info = vim.fn.getwininfo(p.win)[1]
+      if line == 55 then T.eq(info.winrow + info.winbar, detail_screen(p, 1))
+      else T.eq(vim.fn.screenpos(old, 40, 1).row, detail_screen(p, 1)) end
+      T.eq(detail, p.detail_buf); T.eq(win, p.source); T.eq(win, api.nvim_get_current_win())
+      T.eq(true, vim.wo[win].diff); T.eq(true, vim.wo[win].scrollbind)
+      T.eq(false, vim.wo[p.win].diff); T.eq(false, vim.wo[p.win].scrollbind)
+    end
+  end
+  -- Idle folding can change the followed side without a cursor/scroll event.
+  vim.wo[new].foldmethod, vim.wo[new].foldenable = "manual", true
+  api.nvim_set_current_win(new)
+  api.nvim_win_call(new, function() vim.cmd("normal! zE"); vim.cmd("32,37fold") end)
+  vim.cmd("redraw!")
+  local views = { api.nvim_win_call(old, vim.fn.winsaveview), api.nvim_win_call(new, vim.fn.winsaveview) }
+  api.nvim_exec_autocmds("SafeState", {}); vim.wait(30, function() return false end)
+  T.eq(new, p.source); T.eq(detail, p.detail_buf)
+  T.eq(views, { api.nvim_win_call(old, vim.fn.winsaveview), api.nvim_win_call(new, vim.fn.winsaveview) })
+  local folded = false
+  for _, context in pairs(p.detail_layout.rows) do if context.item.line == 32 and context.item.last == 37 then folded = true end end
+  assert(folded, "context must use the newly followed side's closed fold")
+  key(detail, "q"); p:close(); vim.cmd("diffoff!")
+  T.eq("Old file", vim.wo[old].winbar); T.eq("", vim.wo[new].winbar)
+end)
+
+T.test("pinned navigation reinitializes reading and file replacement or source closure clears sticky state", function()
+  local lines = {}; for row = 1, 240 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected, next_note = note(40), note(90)
+  selected.detail = string.rep("Reading paragraph.\n", 80)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected, next_note } })
+  motion(p.win, "40Gzz"); p:detail(); motion(p.win, (p.detail_layout.first + 20) .. "Gzt")
+  motion(source, "170Gzt")
+  local detail = p.detail_buf
+  assert(p.detail_layout.reading and p.detail_layout.natural < 1)
+  api.nvim_set_current_win(p.win); key(detail, "n")
+  T.eq(detail, p.detail_buf); T.eq(2, p.detail_index); T.eq(nil, p.detail_layout.reading)
+  T.eq(nil, p.detail_layout.natural); T.eq(90, api.nvim_win_get_cursor(source)[1])
+  key(detail, "N"); T.eq(1, p.detail_index); T.eq(nil, p.detail_layout.reading)
+  motion(source, "170Gzt"); assert(p.detail_layout.natural < 1)
+  p:set(nil, "Pending")
+  T.eq(nil, p.detail_layout); T.eq(nil, p.detail_buf); T.eq(false, api.nvim_buf_is_valid(detail))
+  local replacement = api.nvim_create_buf(false, true); api.nvim_win_set_buf(source, replacement)
+  api.nvim_buf_set_lines(replacement, 0, -1, false, { "one", "two", "three", "four", "five", "six", "seven", "eight" })
+  p.snapshot = { windows = { buffer = source } }; p:set({ notes = { note(8) } }, "Ready")
+  motion(p.win, "8Gzz"); p:detail()
+  T.eq(1, p.detail_index); T.eq(nil, p.detail_layout.reading); T.eq(nil, p.detail_layout.natural)
+  detail = p.detail_buf
+  -- Leave an ordinary editor window so later fixtures do not inherit the
+  -- Markdown reader's options from the last-window cleanup replacement.
+  api.nvim_win_call(source, function() vim.cmd("belowright new") end)
+  api.nvim_win_close(source, true); assert(vim.wait(500, function() return p.closed end))
+  T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(false, api.nvim_buf_is_valid(p.buf))
+end)
+
+T.test("code scroll preserves a long wrapped reading position and prose still scrolls code", function()
+  local lines = {}; for row = 1, 400 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(80); selected.anchors[1].end_line = 120
+  selected.detail = string.rep("A long paragraph with wrapped words. ", 15) .. "\n\n"
+    .. string.rep("Later paragraph.\n\n", 50)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "80Gzz"); p:detail()
+  motion(p.win, (p.detail_layout.first + 3) .. "G02gjzt")
+  local cursor, reading = api.nvim_win_get_cursor(p.win), api.nvim_win_call(p.win, vim.fn.winsaveview)
+  cursor[1], reading.topline = cursor[1] - p.detail_layout.first, reading.topline - p.detail_layout.first
+  for _, action in ipairs({ "160Gzt", "40Gzt", "100Gzt" }) do
+    motion(source, action); vim.cmd("redraw!")
+    local now, view = api.nvim_win_get_cursor(p.win), api.nvim_win_call(p.win, vim.fn.winsaveview)
+    T.eq(cursor, { now[1] - p.detail_layout.first, now[2] })
+    T.eq({ reading.topline, reading.skipcol }, { view.topline - p.detail_layout.first, view.skipcol })
+    T.eq(p.detail_buf, api.nvim_win_get_buf(p.win)); T.eq(1, p.detail_index)
+  end
+  local before = api.nvim_win_call(source, vim.fn.winsaveview)
+  local view = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  motion(p.win, "8jzt")
+  local after = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  local distance = api.nvim_win_text_height(p.win, { start_row = view.topline - 1, end_row = after.topline - 2 }).all
+  T.eq(before.topline + distance, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+  motion(p.win, p.detail_layout.last .. "Gzt")
+  T.eq(selected.detail, table.concat(vim.list_slice(detail_lines(p), 4, #detail_lines(p) - 1), "\n"))
+  T.eq(1, p.detail_index); p:close()
+end)
+
+T.test("expanded scrolling uses actual viewport deltas with global scrolloff and stays stable after redraw", function()
+  local saved = vim.o.scrolloff
+  for _, margin in ipairs({ 5, 999 }) do
+    vim.o.scrolloff = margin
+    local lines = {}; for row = 1, 500 do lines[row] = "source line " .. row end
+    local source = setup(lines); vim.wo[source].scrolloff = -1
+    local selected = note(80); selected.anchors[1].end_line = 300
+    selected.detail = string.rep("Reading paragraph.\n", 180)
+    local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+    motion(source, "80Gzz"); p:detail(1)
+    for _, action in ipairs({ "20G", "zt", "zb", "zz", "5j", "7k", "3<C-e>", "4<C-y>", "<C-d>", "<C-u>" }) do
+      local code = api.nvim_win_call(source, vim.fn.winsaveview)
+      local before = api.nvim_win_call(p.win, vim.fn.winsaveview)
+      api.nvim_set_current_win(p.win)
+      api.nvim_feedkeys(api.nvim_replace_termcodes(action, true, false, true), "xt", false)
+      vim.cmd("redraw!"); api.nvim_exec_autocmds("SafeState", {}); vim.wait(20, function() return false end)
+      local after = api.nvim_win_call(p.win, vim.fn.winsaveview)
+      T.eq({ margin, action, code.topline + after.topline - before.topline },
+        { margin, action, api.nvim_win_call(source, vim.fn.winsaveview).topline })
+      local views = { api.nvim_win_call(source, vim.fn.winsaveview), after }
+      for _ = 1, 3 do
+        api.nvim_exec_autocmds("CursorMoved", { buffer = p.detail_buf })
+        api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(source) })
+        api.nvim_exec_autocmds("SafeState", {}); vim.cmd("redraw!"); vim.wait(10, function() return false end)
+      end
+      T.eq(views, { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) })
+      T.eq(margin, vim.wo[source].scrolloff); T.eq(p.win, api.nvim_get_current_win())
+      T.eq(-1, api.nvim_get_option_value("scrolloff", { win = source, scope = "local" }))
+    end
+    motion(source, "230Gzt"); vim.cmd("redraw!")
+    local code, cursor = api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_get_cursor(p.win)
+    for _ = 1, 3 do
+      api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(source) }); api.nvim_exec_autocmds("SafeState", {})
+      vim.cmd("redraw!"); vim.wait(10, function() return false end)
+    end
+    T.eq(code, api.nvim_win_call(source, vim.fn.winsaveview)); T.eq(cursor, api.nvim_win_get_cursor(p.win))
+    p:close(); vim.wo[source].scrolloff = -1
+  end
+  vim.o.scrolloff = saved
+end)
+
+T.test("detail scrolling preserves comparison coordinates with unequal diff scrolloff margins", function()
+  local lines = {}; for row = 1, 200 do lines[row] = "source line " .. row end
+  local old = setup(lines); vim.wo[old].scrolloff = 5
+  vim.o.columns = 180 -- Keep metadata unwrapped so logical top rows independently give the display delta.
+  vim.cmd("belowright vsplit")
+  local new = api.nvim_get_current_win()
+  api.nvim_win_set_buf(new, api.nvim_create_buf(false, true))
+  vim.wo[new].scrolloff = 9
+  local after = vim.deepcopy(lines); for _ = 1, 5 do table.remove(after, 40) end
+  api.nvim_buf_set_lines(0, 0, -1, false, after)
+  for _, win in ipairs({ old, new }) do api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end) end
+  vim.cmd("diffupdate")
+  local selected = note(30, "Read across the deletion", "old"); selected.anchors[1].end_line = 120
+  selected.detail = string.rep("Explanation paragraph.\n", 100)
+  local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { selected } })
+  motion(old, "30Gzz"); p:detail(1)
+  local function position(win)
+    local view = api.nvim_win_call(win, vim.fn.winsaveview)
+    return p:coordinates(win)[view.topline] - view.topfill
+  end
+  for _, action in ipairs({ "20Gzt", "7<C-e>", "4<C-y>", "zz", "zb", "<C-d>", "<C-u>", "8j" }) do
+    local before, prose = { position(old), position(new) }, api.nvim_win_call(p.win, vim.fn.winsaveview)
+    api.nvim_set_current_win(p.win)
+    api.nvim_feedkeys(api.nvim_replace_termcodes(action, true, false, true), "xt", false)
+    vim.cmd("redraw!"); api.nvim_exec_autocmds("SafeState", {}); vim.wait(20, function() return false end)
+    local delta = api.nvim_win_call(p.win, vim.fn.winsaveview).topline - prose.topline
+    T.eq({ action, before[1] + delta, before[2] + delta }, { action, position(old), position(new) })
+    local views = { api.nvim_win_call(old, vim.fn.winsaveview), api.nvim_win_call(new, vim.fn.winsaveview) }
+    for _ = 1, 3 do
+      api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(new) }); api.nvim_exec_autocmds("SafeState", {})
+      vim.cmd("redraw!"); vim.wait(10, function() return false end)
+    end
+    T.eq(views, { api.nvim_win_call(old, vim.fn.winsaveview), api.nvim_win_call(new, vim.fn.winsaveview) })
+  end
+  T.eq(5, vim.wo[old].scrolloff); T.eq(9, vim.wo[new].scrolloff)
+  p:close(); vim.cmd("diffoff!"); vim.wo[old].scrolloff = 0; vim.wo[new].scrolloff = 0
+end)
+
+T.test("pinned reading respects source EOF and does not replay detail scroll keys when prose cannot scroll", function()
+  local lines = {}; for row = 1, 45 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(1); selected.anchors[1].end_line = 45
+  selected.detail = string.rep("Reading paragraph.\n", 200)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  p:detail(1)
+  motion(p.win, "150Gzt"); vim.cmd("redraw!")
+  local code = api.nvim_win_call(source, vim.fn.winsaveview)
+  T.eq(45, code.topline)
+  local before = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  p:scroll(api.nvim_replace_termcodes("7<C-e>", true, false, true), p.win)
+  T.eq(before.topline + 7, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
+  T.eq(code, api.nvim_win_call(source, vim.fn.winsaveview))
+  motion(p.win, p.detail_layout.last .. "Gzt")
+  motion(source, "20Gzz") -- Code can still scroll even though the prose has reached EOF.
+  code, before = api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview)
+  assert(code.topline < 45)
+  key(p.detail_buf, "<C-e>")
+  T.eq(before, api.nvim_win_call(p.win, vim.fn.winsaveview)); T.eq(code, api.nvim_win_call(source, vim.fn.winsaveview))
+  api.nvim_set_current_win(p.win); api.nvim_exec_autocmds("SafeState", {}); vim.wait(20, function() return false end)
+  T.eq(code, api.nvim_win_call(source, vim.fn.winsaveview)); T.eq(1, p.detail_index); p:close()
+end)
+
 T.test("native expanded viewport actions scroll code by display rows without mapping prose to source lines", function()
   local lines = {}; for row = 1, 700 do lines[row] = "line " .. row end
   local source = setup(lines)
@@ -1367,14 +1661,16 @@ T.test("native expanded viewport actions scroll code by display rows without map
       api.nvim_feedkeys(api.nvim_replace_termcodes(action, true, false, true), "xt", false)
       vim.cmd("redraw!"); api.nvim_exec_autocmds("SafeState", {})
       vim.wait(20, function() return false end)
-      T.eq({ driver, action, top(source) - before_code }, { driver, action, top(p.win) - before_detail })
+      if driver == p.win then
+        T.eq({ driver, action, top(source) - before_code }, { driver, action, top(p.win) - before_detail })
+      else T.eq(before_detail, top(p.win)) end -- Code placement never reads another paragraph.
       T.eq(driver, api.nvim_get_current_win()); T.eq(1, p.detail_index)
     end
   end
   motion(source, "400Gzt")
   assert(top(source) > 150, "the only anchor must be off-screen")
   local cursor, code_top, detail_top = api.nvim_win_get_cursor(source), top(source), top(p.win)
-  motion(p.win, "j")
+  motion(p.win, "Hj") -- Stay within the reading viewport; edge j may legitimately scroll code.
   T.eq(cursor, api.nvim_win_get_cursor(source))
   T.eq(code_top, top(source)); T.eq(detail_top, top(p.win)); T.eq(1, p.detail_index)
   p:close()
@@ -1489,7 +1785,7 @@ T.test("Ctrl e y synchronize both diff sources and notes in overview and detail"
           api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(driver) })
         end
         T.eq({ expanded, driver, old_top + action[2], new_top + action[2] }, { expanded, driver, top(old), top(new) })
-        if expanded then T.eq(notes_top + action[2], top(p.win))
+        if expanded then T.eq(notes_top + (driver == p.win and action[2] or 0), top(p.win))
         else T.eq(top(p.source), top(p.win)) end
         T.eq(driver, api.nvim_get_current_win())
       end
@@ -1516,7 +1812,7 @@ T.test("expanded scroll follows physical wrapped and folded rows and supports co
     api.nvim_set_current_win(source)
     vim.cmd.normal({ api.nvim_replace_termcodes("<C-e>", true, false, true), bang = true })
     api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(source) })
-    T.eq(21, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
+    T.eq(20, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
     vim.cmd.normal({ api.nvim_replace_termcodes("<C-y>", true, false, true), bang = true })
     api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(source) })
     T.eq(20, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
@@ -3050,7 +3346,7 @@ if vim.g.loaded_render_markdown then
     T.eq(false, vim.wo[p.win].wrap)
     T.eq(3, api.nvim_buf_line_count(p.buf))
     T.eq(1, api.nvim_win_text_height(p.win, { start_row = 0, end_row = 0 }).all)
-    local projection, rows = vim.deepcopy(p.projection), vim.deepcopy(p.rows)
+    local rows = vim.deepcopy(p.rows)
     p:detail(); local detail = api.nvim_win_get_buf(p.detail_win)
     assert(vim.wait(1000, function() return #marks(detail) > 0 and vim.wo[p.detail_win].conceallevel == 3 end),
       "first detail render was swallowed by automatic attachment")
@@ -3060,6 +3356,10 @@ if vim.g.loaded_render_markdown then
       for _, m in ipairs(marks(detail)) do if m[2] > 100 then return true end end
       return false
     end), "renderer did not follow detail scrolling")
+    -- Reading updates the authoritative source projection for sticky events;
+    -- rebuilding the hidden overview must retain that current snapshot.
+    T.eq(ui.project(win), p.projection)
+    local projection = vim.deepcopy(p.projection)
     p:render(); T.eq(projection, p.projection); T.eq(rows, p.rows)
     local handlers = #api.nvim_get_autocmds({ group = p.group })
     key(detail, "n"); T.eq(detail, p.detail_buf); T.eq(3, api.nvim_win_get_cursor(win)[1])

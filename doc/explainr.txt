@@ -206,7 +206,18 @@ including clearing focus when it lands on a blank row.
 In detail, n/p browses existing entries without inference and synchronizes the
 selected source line/viewport and both diff sides. Subsequent reading motion
 updates the collapse destination; collapse never forces a return to that summary.
-Ctrl-e/Ctrl-y scroll all paired buffers, even with detail expanded, with counts.
+Scrolling code makes expanded detail follow its summary until an edge, then
+stick inside the content viewport below the header. A fitting card stays fully
+visible; taller detail keeps its logical prose position and a reading area with
+every paragraph reachable. Scrolling back releases the card into alignment.
+Pinning does not move code a second time, steal focus or select another note.
+Entry navigation resets reading/sticky state; collapse, replaced results, file
+switches and pane closure clear it through their existing cleanup paths.
+Ctrl-e/Ctrl-y support counts. Overview scrolls paired buffers together. Expanded
+explanation-driven scrolling still moves code by its actual displayed-row delta,
+even while pinned, whereas source-driven scrolling uses sticky placement.
+Source scrolloff and unequal diff margins are respected without drift or an
+extra margin-correction scroll; original source option values are retained.
 Ordinary motion through expanded summary, metadata and prose selects the source
 line beside the cursor's display row, accounting for wraps, folds and diff filler.
 Prose beyond the anchors selects the nearest visible anchored row (earlier on

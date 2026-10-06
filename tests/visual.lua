@@ -14,6 +14,51 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state:match("^sticky%-") then
+  local api, state = vim.api, vim.g.capture_state
+  local source = api.nvim_get_current_win()
+  local lines = {}; for row = 1, 200 do lines[row] = "-- request preparation context " .. row end
+  lines[40], lines[100] = "local function prepare(payload)", "end -- request validated"
+  api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  vim.bo.filetype = "lua"
+  vim.wo.number, vim.wo.cursorline, vim.wo.wrap, vim.wo.scrolloff = true, true, false, 5
+  vim.wo.winbar = " SOURCE · preparation.lua "
+  api.nvim_set_hl(0, "CursorLine", { bg = "#34485c" })
+  local function note(first, last, summary, detail)
+    return { summary = summary, detail = detail, intent_basis = "inferred",
+      anchors = { { path = "preparation.lua", side = "buffer", start_line = first, end_line = last } } }
+  end
+  local prose = "Validate required fields before preparing the request.\n\n"
+    .. "Reject incomplete payloads; preserve existing validation."
+  if state == "sticky-long" then
+    prose = string.rep("A wrapped reading paragraph retains its logical position as code moves. ", 8)
+      .. "\n\n" .. string.rep("Later paragraphs remain reachable through native scrolling.\n\n", 35)
+  elseif state == "sticky-resized" then
+    prose = string.rep("Validate the payload before preparing the request. ", 9)
+      .. "\n\n" .. string.rep("Existing validation remains in place. ", 6)
+  end
+  _G.capture_pane = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = {
+    note(24, 24, "Earlier request context", "Previous explanation."),
+    note(40, 100, "Validate the request", prose),
+    note(65, 65, "Preserve validation", "Following explanation."),
+  } })
+  local p = capture_pane
+  api.nvim_set_current_win(p.win); vim.cmd("normal! 40Gzz"); p:sync(p.win); p:detail()
+  local detail = p.detail_buf
+  if state == "sticky-long" then
+    vim.cmd.normal({ (p.detail_layout.first + 3) .. "G02gjzt", bang = true }); p:sync(p.win)
+  end
+  api.nvim_set_current_win(source)
+  vim.cmd.normal({ (state == "sticky-bottom" and "1Gzt" or state == "sticky-aligned" and "28Gzt" or "60Gzt"), bang = true })
+  p:sync(source)
+  if state == "sticky-resized" then
+    api.nvim_win_set_width(p.win, 24); api.nvim_exec_autocmds("WinResized", {})
+  end
+  vim.wait(50, function() return false end); vim.cmd("redraw!")
+  assert(p.detail_buf == detail and p.detail_index == 2 and vim.wo[source].scrolloff == 5)
+  api.nvim_set_current_win(p.win)
+  return
+end
 if vim.g.capture_state:match("^range%-") then
   local api = vim.api
   local source = api.nvim_get_current_win()
