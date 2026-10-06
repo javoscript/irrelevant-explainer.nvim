@@ -154,37 +154,38 @@ end
 
 -- One entry per *display* row, not per buffer line. Explicitly excluding filler
 -- from text height lets us retain deletions and virtual lines as separate rows.
-function M.project(win)
+-- Expanded context needs the remaining source, not just the current viewport.
+function M.project(win, through_eof)
   local info = vim.fn.getwininfo(win)[1]
   if not info then return {} end
   return api.nvim_win_call(win, function()
     local view = vim.fn.winsaveview()
     local rows, line = {}, view.topline
     local count = api.nvim_buf_line_count(info.bufnr)
-    while #rows < info.height and line <= count do
+    local limit = through_eof and math.huge or info.height
+    while #rows < limit and line <= count do
       local fold = vim.fn.foldclosedend(line)
       local last = fold >= 0 and fold or line
       local fill = line == view.topline and view.topfill
         or api.nvim_win_text_height(win, { start_row = line - 1, end_row = line - 1 }).fill
-      for index = 1, math.min(fill, info.height - #rows) do
+      for index = 1, math.min(fill, limit - #rows) do
         rows[#rows + 1] = { line = line, last = last, filler = true, offset = index - fill - 1 }
       end
       local height = api.nvim_win_text_height(win, {
         start_row = line - 1, end_row = line - 1,
         start_vcol = line == view.topline and view.skipcol or 0,
       }).all
-      for _ = 1, math.min(math.max(1, height), info.height - #rows) do
+      for _ = 1, math.min(math.max(1, height), limit - #rows) do
         rows[#rows + 1] = { line = line, last = last, folded = fold >= 0 }
       end
       line = last + 1
     end
-    if vim.wo[win].diff and line > count and #rows < info.height then
-      for offset = 1, math.min(math.max(0, vim.fn.diff_filler(count + 1)), info.height - #rows) do
+    if vim.wo[win].diff and line > count and #rows < limit then
+      for offset = 1, math.min(math.max(0, vim.fn.diff_filler(count + 1)), limit - #rows) do
         rows[#rows + 1] = { line = count, last = count, filler = true, eof = true, offset = offset }
       end
     end
     while #rows < info.height do rows[#rows + 1] = { empty = true } end
-    while #rows > info.height do table.remove(rows) end
     return rows
   end)
 end
@@ -745,13 +746,16 @@ function M.open(source, snapshot, result, on_close, keymaps)
       api.nvim_win_get_width(self.win)) or ""
   end
 
-  function pane:project()
-    local rows, extra_row = M.project(self.source), self.source_count + 1
+  function pane:project(through_eof)
+    local rows, extra_row = M.project(self.source, through_eof), self.source_count + 1
     for index, item in ipairs(rows) do
       if item.empty and extra_row <= #self.lines then
         rows[index] = { line = extra_row, last = extra_row }
         extra_row = extra_row + 1
       end
+    end
+    if through_eof then
+      for row = extra_row, #self.lines do rows[#rows + 1] = { line = row, last = row } end
     end
     return rows
   end
@@ -1198,7 +1202,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     self.projection = self:project()
     local coordinates, rows, seen, anchor_end = self:coordinates(self.source), {}, {}, 0
     local width = math.max(1, api.nvim_win_get_width(self.win) - 2)
-    for row, item in ipairs(self.projection) do
+    for row, item in ipairs(self:project(true)) do
       if item.empty then break end
       local first = (self.overflow[item.line] or coordinates[item.line]) + (item.offset or 0)
       local last = item.folded and coordinates[item.last] or first
@@ -1226,7 +1230,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:place_detail()
     local layout = self.detail_layout
-    if not layout then return end
+    if not layout or self.closed or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
     local syncing = self.syncing
     self.syncing = true
     local view = api.nvim_win_call(self.win, vim.fn.winsaveview)
@@ -1287,8 +1291,15 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- with their unchanged text when the leading presentation rows change.
     for _, id in ipairs(layout.marks) do api.nvim_buf_del_extmark(self.detail_buf, ns, id) end
     vim.bo[self.detail_buf].modifiable = true
-    api.nvim_buf_set_lines(self.detail_buf, layout.last, -1, false, trailing)
-    api.nvim_buf_set_lines(self.detail_buf, 0, layout.first - 1, false, leading)
+    -- Context text is always blank; only its mappings/decorations change.
+    -- Rewriting equal-sized runs needlessly schedules Markdown updates and
+    -- invalidates the viewport even at a native scrolling limit.
+    if #trailing ~= api.nvim_buf_line_count(self.detail_buf) - layout.last then
+      api.nvim_buf_set_lines(self.detail_buf, layout.last, -1, false, trailing)
+    end
+    if #leading ~= layout.first - 1 then
+      api.nvim_buf_set_lines(self.detail_buf, 0, layout.first - 1, false, leading)
+    end
     vim.bo[self.detail_buf].modifiable = false
     layout.first, layout.last, layout.rows, layout.marks = leading_count + 1, leading_count + count, contexts, {}
     layout.source = self.source
@@ -1313,8 +1324,8 @@ function M.open(source, snapshot, result, on_close, keymaps)
       view.topline = layout.first + math.max(0, math.min(count - 1, top_offset))
     else view.topline, view.skipcol = 1, 0 end
     view.topfill = 0
-    if self.render_detail then self.render_detail(self.win) end
     api.nvim_win_call(self.win, function() vim.fn.winrestview(view) end)
+    if self.render_detail then self.render_detail(self.win) end
     for candidate in pairs(self:windows()) do self.scroll_views[candidate] = api.nvim_win_call(candidate, vim.fn.winsaveview) end
     self.scroll_views[self.win] = api.nvim_win_call(self.win, vim.fn.winsaveview)
     if untouched then layout.initial = vim.deepcopy(self.scroll_views[self.win]) end
@@ -1529,7 +1540,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
       -- detail viewport lifecycle without touching the renderer's internals.
       if not navigating then
         api.nvim_create_autocmd({ "CursorMoved", "WinScrolled", "BufWinEnter", "ModeChanged" }, {
-          group = self.group, buffer = detail, callback = function() render_detail(detail_win) end,
+          group = self.group, buffer = detail, callback = function()
+            if not self.syncing and not self.rendering then render_detail(detail_win) end
+          end,
         })
       end
     end
@@ -1556,7 +1569,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
       trailing[#trailing + 1] = { { "", "ExplainrDetailActive" } }
       tail_rows[#trailing] = row
     end
-    for row = tail_start, #self.projection do
+    for row = tail_start, #context_rows do
       if following[row] then
         trailing[#trailing + 1] = following[row]
         tail_rows[#trailing] = row
@@ -1573,7 +1586,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
       local hl = chunks[1][2]
       local focused = hl == "ExplainrDetailActive" or type(hl) == "table"
       if focused then active[tostring(row)] = 1 end
-      layout.rows[row] = { item = self.projection[projected], active = focused }
+      layout.rows[row] = { item = context_rows[projected] and context_rows[projected].item, active = focused }
     end
     for row, chunks in ipairs(self.overview.context) do
       leading[row] = ""
@@ -1621,6 +1634,19 @@ function M.open(source, snapshot, result, on_close, keymaps)
       local keys = api.nvim_replace_termcodes(lhs, true, false, true)
       vim.keymap.set("n", lhs, function() self:scroll(vim.v.count1 .. keys, self.win) end, { buffer = detail })
     end
+    vim.keymap.set("n", "k", function()
+      local count = vim.v.count1
+      -- Above a top-edge summary, old leading rows no longer describe the
+      -- code beside the reader. Scroll back before permitting context motion;
+      -- at buffer row 1 there is no native k motion to observe at all.
+      if api.nvim_win_get_cursor(self.win)[1] == self.detail_layout.first
+          and api.nvim_win_call(self.win, vim.fn.winline) == 1 then
+        self:scroll(api.nvim_replace_termcodes(count .. "<C-y>", true, false, true), self.win)
+      else
+        api.nvim_win_call(self.win, function() vim.cmd.normal({ count .. "k", bang = true }) end)
+        self:sync(self.win)
+      end
+    end, { buffer = detail })
     for lhs, direction in pairs({ n = 1, p = -1, N = -1 }) do
       vim.keymap.set("n", lhs, function()
         local position = 1
@@ -1633,7 +1659,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:scroll(keys, from)
-    if self.closed or self.syncing or not api.nvim_win_is_valid(self.source) then return end
+    if self.closed or self.syncing or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
     from = from or self.source
     if from == self.win and not self.detail_win then self:sync(from); return end
     self.syncing = true
@@ -1642,6 +1668,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local after = api.nvim_win_call(from, vim.fn.winsaveview)
     local changed = from ~= self.win and not vim.deep_equal(before, after)
     local scrolled = before.topline ~= after.topline or before.topfill ~= after.topfill or before.skipcol ~= after.skipcol
+    local edge_scroll = false
     if self.detail_win and from == self.win then
       local layout = self.detail_layout
       if layout.initial and not vim.deep_equal(after, layout.initial) then layout.reading = true end
@@ -1660,9 +1687,18 @@ function M.open(source, snapshot, result, on_close, keymaps)
           delta = delta + (view == after and 1 or -1) * (rows - fill)
         end
       end
+      -- Sticky layout can remove every leading row. Ctrl-y still needs to
+      -- scroll code back towards the summary, even though Markdown is at BOF.
+      local source_view = self.scroll_views[self.source]
+      local backward = keys and keys:match("^(%d*)\25$")
+      local requested = backward and (tonumber(backward) or 1)
+      if requested and after.topline == 1 and after.skipcol == 0 and requested > -delta
+          and (source_view.topline > 1 or source_view.topfill > 0 or source_view.skipcol > 0) then
+        delta = -requested
+        edge_scroll = true
+      end
       if delta ~= 0 then
         local action = api.nvim_replace_termcodes(math.abs(delta) .. (delta > 0 and "<C-e>" or "<C-y>"), true, false, true)
-        local source_view = self.scroll_views[self.source]
         api.nvim_win_call(self.source, function()
           -- Reading can select an anchored row inside scrolloff while keeping
           -- code's viewport fixed. Native scrolling would correct that margin
@@ -1690,12 +1726,13 @@ function M.open(source, snapshot, result, on_close, keymaps)
         end)
         self.overview.scrolled = true
         changed = true
+        scrolled = true
       end
     end
     local driver = from == self.win and self.source or from
     if changed then self:sync_sources(api.nvim_win_get_cursor(driver)[1], driver, scrolled) end
-    if self.detail_win and from ~= self.win and (self.source ~= from or scrolled) then
-      if self.source ~= from then self.source, self.folds = from, {}; self:render() end
+    if self.detail_win and (edge_scroll or from ~= self.win and (self.source ~= from or scrolled)) then
+      if from ~= self.win and self.source ~= from then self.source, self.folds = from, {}; self:render() end
       self:place_detail()
     end
     if self.detail_win and from == self.win then self.projection = self:project() end
@@ -1707,7 +1744,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:sync(from)
-    if self.closed or self.rendering or self.syncing or not api.nvim_win_is_valid(self.source) then return end
+    if self.closed or self.rendering or self.syncing or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
     if from ~= self.win and not self:windows()[from] then return end
     if self.detail_win then
       local layout = self.detail_layout
@@ -1912,6 +1949,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     vim.schedule(function()
       pending = false
       if pane.closed then return end
+      -- WinClosed cleanup is also deferred. A geometry callback queued first
+      -- can run after Diffview has destroyed its windows but before cleanup.
+      if not api.nvim_win_is_valid(pane.win) or not api.nvim_win_is_valid(pane.source) then pane:close(); return end
       if generation ~= pane.display_generation then
         if rebuild then schedule(true) end
         return

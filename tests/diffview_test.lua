@@ -284,6 +284,40 @@ T.test("real Diffview navigation and explorer keymaps work in pending notes and 
   assert(ok, err)
 end)
 
+T.test("real DiffviewClose cancels queued expanded placement without leaking buffers or callback errors", function()
+  local fixture = dofile("tests/review.lua").open(true)
+  local pane, errors, schedule = nil, {}, vim.schedule
+  local ok, err = xpcall(function()
+    vim.cmd("runtime plugin/diffview.lua") -- Runtime is added after -u NONE startup.
+    local state = fixture.state
+    pane = require("explainr.ui").open(state.source, { windows = state.windows }, { notes = { {
+      summary = "Read the permission change", detail = "Preserve the owner check while reading the diff.",
+      intent_basis = "inferred", anchors = { { path = "policy.lua", side = "new", start_line = 1, end_line = 9 } },
+    } } })
+    pane:detail(1)
+    vim.wait(30, function() return false end)
+    local detail, summary_buf = pane.detail_buf, pane.buf
+    vim.v.errmsg = ""
+    vim.schedule = function(callback)
+      schedule(function()
+        local success, failure = xpcall(callback, debug.traceback)
+        if not success then errors[#errors + 1] = failure end
+      end)
+    end
+    api.nvim_exec_autocmds("WinResized", {})
+    vim.cmd("DiffviewClose") -- Do not pre-close Explainr as normal fixture teardown does.
+    assert(vim.wait(1000, function() return pane.closed end), "DiffviewClose did not clean the pane")
+    vim.wait(30, function() return false end)
+    T.eq({}, errors); T.eq("", vim.v.errmsg)
+    T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(false, api.nvim_buf_is_valid(summary_buf))
+    T.eq(0, vim.fn.exists("#ExplainrPane" .. pane.win))
+  end, debug.traceback)
+  vim.schedule = schedule
+  if pane then pane:close() end
+  fixture:close()
+  assert(ok, err)
+end)
+
 T.test("Diffview restores per-file explanations without inference and rejects changed review context", function()
   local plugin, agent = require("explainr"), require("explainr.agent")
   local old_run, calls = agent.run, 0

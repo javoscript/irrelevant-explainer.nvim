@@ -155,6 +155,11 @@ Expanded detail SHALL allow ordinary cursor movement through prose, blank anchor
 - **THEN** paired sources follow its actual viewport movement by the corresponding display-row distance, accounting for folds, wraps and filler within native limits
 - **AND** this behavior remains available while the card is pinned
 
+#### Scenario: Scroll upward at the expanded reader's upper limit
+- **WHEN** Ctrl-y is pressed with no earlier explanation buffer rows, or k is pressed on the expanded summary at the top content-screen edge
+- **THEN** paired sources scroll upward by the requested count of native display rows while detail remains selected and available
+- **AND** stale leading context does not collapse detail or add a source jump, and source beginning-of-buffer limits are respected
+
 #### Scenario: Native expanded viewport action
 - **WHEN** zz/zt/zb or another motion changes the expanded viewport
 - **THEN** source viewports follow the displayed-row movement without treating Markdown rows as source lines or collapsing solely because a source scrolled

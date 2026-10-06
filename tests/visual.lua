@@ -59,6 +59,42 @@ if vim.g.capture_state:match("^sticky%-") then
   api.nvim_set_current_win(p.win)
   return
 end
+if vim.g.capture_state:match("^detail%-eof") then
+  local api = vim.api
+  local source = api.nvim_get_current_win()
+  local lines = {}; for row = 1, 180 do lines[row] = "-- request preparation context " .. row end
+  lines[40], lines[110], lines[180] = "local function prepare(payload)", "end -- validation finishes here",
+    "return prepare -- end of source"
+  api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  vim.bo.filetype = "lua"
+  vim.wo.number, vim.wo.cursorline, vim.wo.wrap = true, true, false
+  vim.wo.winbar = " SOURCE · preparation.lua "
+  api.nvim_set_hl(0, "CursorLine", { bg = "#34485c" })
+  _G.capture_pane = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = { {
+    summary = "Validate the request before preparation.",
+    detail = "Reject missing or extra fields before preparing the request.\n\n"
+      .. "The validation continues through line 110, beyond the initial viewport.\n\n"
+      .. "Unreferenced source lines remain reachable after the explanation ends.",
+    intent_basis = "inferred", anchors = { { path = "preparation.lua", side = "buffer", start_line = 40, end_line = 110 } },
+  } } })
+  local p = capture_pane
+  api.nvim_set_current_win(p.win)
+  vim.cmd("normal! 40Gzz"); p:sync(p.win); p:detail()
+  local last = api.nvim_buf_line_count(p.detail_buf)
+  assert(p.detail_layout.rows[last].item.line == 180, "expanded context must reach the source EOF")
+  if vim.g.capture_state == "detail-eof-range" then
+    local boundary
+    for row, context in pairs(p.detail_layout.rows) do if context.item.line == 110 then boundary = row end end
+    assert(boundary)
+    vim.cmd.normal({ boundary .. "G0", bang = true }); p:sync(p.win)
+    assert(p.detail_index == 1 and api.nvim_win_get_cursor(source)[1] == 110)
+  elseif vim.g.capture_state == "detail-eof-end" then
+    vim.cmd("normal! G0"); p:sync(p.win)
+    assert(not p.detail_buf and api.nvim_win_get_cursor(source)[1] == 180)
+    assert(api.nvim_win_get_cursor(p.win)[1] == 180)
+  end
+  return
+end
 if vim.g.capture_state:match("^range%-") then
   local api = vim.api
   local source = api.nvim_get_current_win()

@@ -201,6 +201,11 @@ without replacing the Markdown buffer or resetting reading.
 Ctrl-e/Ctrl-y still accept counts. In overview, code and notes scroll together;
 with detail open, source scrolling uses sticky placement instead of equal prose
 movement. Explanation-driven scrolling continues to move code while pinned.
+At the reader's upper buffer limit, Ctrl-y scrolls code upward even with no
+earlier prose rows. k on a summary at the top screen edge likewise scrolls code
+without collapsing into stale context. Counts use native source display rows;
+both controls stop at the source's beginning. Other prose/context motion remains
+ordinary cursor movement.
 Wraps, folds, diff filler and source scrolloff (including unequal diff margins)
 are accounted for without extra cursor-margin scrolls. Original source options
 and scroll/cursor bindings are retained.

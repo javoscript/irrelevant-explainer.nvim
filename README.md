@@ -165,6 +165,9 @@ the selected explanation.
 Scrolling the explanation still scrolls code, even while pinned: **Ctrl-e/Ctrl-y**
 (including counts), **zz/zt/zb**, page/half-page and cursor-induced viewport motion
 move sources by the actual displayed-row distance, within native buffer limits.
+At the reader's upper buffer limit, **Ctrl-y** still scrolls code upward; **k**
+on the summary at the top screen edge does the same without collapsing detail
+or jumping to stale context. Both accept counts and stop at the source's beginning.
 Source `scrolloff` is respected, including different margins on diff sides,
 without duplicate margin-correction scrolls. In overview, code and notes still
 scroll together. Moving through expanded summaries,
