@@ -1,0 +1,54 @@
+local M = {}
+
+local defaults = {
+  ai = { command = {}, output = "plain", timeout_ms = 300000 },
+  context = { max_bytes = 262144, diff = "auto", radius = 20 },
+  diff = { auto_explain = false },
+}
+M.config = vim.deepcopy(defaults)
+
+function M.setup(options)
+  assert(vim.fn.has("nvim-0.11") == 1, "explainr requires Neovim 0.11+")
+  assert(options == nil or type(options) == "table", "explainr setup expects a table")
+  local config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), options or {})
+  assert(vim.islist(config.ai.command), "ai.command must be an argument list")
+  for _, arg in ipairs(config.ai.command) do
+    assert(type(arg) == "string" and arg ~= "", "ai.command arguments must be nonempty strings")
+  end
+  assert(type(config.ai.output) == "function" or vim.tbl_contains({ "plain", "opencode", "codex" }, config.ai.output),
+    "ai.output must be plain, opencode, codex, or a decoder function")
+  for name, value in pairs({ timeout_ms = config.ai.timeout_ms, max_bytes = config.context.max_bytes }) do
+    assert(type(value) == "number" and value > 0 and value < math.huge and value % 1 == 0,
+      name .. " must be a positive finite integer")
+  end
+  assert(vim.tbl_contains({ "auto", "review", "focused" }, config.context.diff),
+    "context.diff must be auto, review, or focused")
+  assert(type(config.context.radius) == "number" and config.context.radius >= 0
+    and config.context.radius < math.huge and config.context.radius % 1 == 0,
+    "context.radius must be a nonnegative finite integer")
+  assert(type(config.diff.auto_explain) == "boolean", "diff.auto_explain must be a boolean")
+  M.config = config
+  M.commands()
+  return M
+end
+
+function M.code(scope, selection)
+  return require("explainr.session").start("code", scope or "file", { selection = selection })
+end
+
+function M.diff(scope) return require("explainr.session").start("diff", scope or "file") end
+function M.refresh() return require("explainr.session").refresh() end
+function M.cancel() return require("explainr.session").cancel() end
+function M.close() return require("explainr.session").close() end
+
+function M.commands()
+  vim.api.nvim_create_user_command("ExplainrCode", function(args) M.code(args.args ~= "" and args.args or "file") end,
+    { nargs = "?", range = true, force = true, complete = function() return { "file", "function", "class", "selection" } end })
+  vim.api.nvim_create_user_command("ExplainrDiff", function(args) M.diff(args.args ~= "" and args.args or "file") end,
+    { nargs = "?", force = true, complete = function() return { "file", "hunk" } end })
+  for name, fn in pairs({ Refresh = M.refresh, Cancel = M.cancel, Close = M.close }) do
+    vim.api.nvim_create_user_command("Explainr" .. name, fn, { force = true })
+  end
+end
+
+return M

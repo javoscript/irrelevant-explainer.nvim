@@ -1,0 +1,248 @@
+*explainr.txt*   AI explanations beside current code and whole-review diffs
+
+INTRODUCTION                                                    *explainr*
+
+Explainr uses a configured external command for inference. It collects actual
+buffer/review text, builds a versioned structured prompt, validates returned
+anchors/evidence, and shows sparse notes in a right-hand read-only pane. Enter
+or K opens full detail from that same answer. No source editing or autonomous
+repo exploration is performed by the plugin. Configure your external agent to
+deny unnecessary tools; a prompt alone cannot sandbox arbitrary commands.
+
+Requires Neovim 0.11+. Runtime tested on 0.11.5 and 0.12.5. Tree-sitter is
+needed only for structural scopes; Diffview/Git are needed only for diff mode.
+Install the repository using your normal plugin manager, or append a local
+checkout to 'runtimepath' and call setup. No global mappings are installed.
+
+SETUP                                                     *explainr-setup*
+>
+  require("explainr").setup({
+    ai = {
+      command = { "opencode", "run", "--model", "provider/model",
+                  "--agent", "explain", "--format", "json" },
+      output = "opencode", -- "plain", "codex", or decoder function
+      timeout_ms = 300000,
+    },
+    context = { max_bytes = 262144, diff = "auto", radius = 20 },
+    diff = { auto_explain = false },
+  })
+<
+The user-created primary "explain" agent and provider/model must already be
+configured. Authentication and any subscription/API billing belong to that
+tool, not Explainr. See |explainr-agents.txt| for restricted-agent guidance,
+Codex/plain/custom examples, output contracts and cancellation limitations.
+An empty command is allowed during setup, but cannot start an explanation.
+
+diff.auto_explain defaults to false. When true, navigating to a Diffview file
+without valid saved explanations requests a whole-file explanation, only if a
+diff explanation pane is already open. Valid saved file/hunk batches are reused;
+stale saved batches are replaced on navigation. Closing Explainr stops this
+behavior. Repeated events, current-file edits, cancellation and failures do not
+retry automatically. External-agent usage may increase. See |explainr-ui.txt|.
+
+COMMANDS                                                *explainr-commands*
+>
+  :ExplainrCode [file|function|class|selection]
+  :ExplainrDiff [file|hunk]
+  :ExplainrRefresh
+  :ExplainrCancel
+  :ExplainrClose
+<
+Code and diff commands default to file scope. One agent invocation runs per
+tab. Requests for the same buffer or loaded old/new comparison accumulate in
+the existing pane; repeating an identical target replaces only its batch.
+Distinct overlapping scopes can coexist. Further diff hunk requests append
+while a diff request is pending, rather than cancelling it. Hunks/configuration
+are captured at invocation; agent calls run in request order. Pending ranges
+animate together and status shows the queued count. Each completion adds notes;
+ordinary failures skip that request and continue the queue. Other new scopes
+replace pending work, not previously accepted notes. Different buffers, modes
+or comparison ownership start a new session. Commands invoked from notes/detail
+use the currently followed source window, not the explanation text.
+Refresh clears active/queued requests, collects a new snapshot and explicitly
+calls the command, even when a result is cached. Selection refresh retains the
+original region; structural/hunk refresh selects the structure/hunk at the
+source cursor now.
+Cancel stops active/queued collection/check/inference jobs and preserves
+accepted notes.
+Ordinary failures also preserve accepted notes; freshness checks remain active.
+Close removes the pane, detail, timer and event handlers; it never alters source
+text/options. Diff requests return a live Pending pane immediately; their
+snapshot becomes available after asynchronous collection succeeds.
+
+Code scope uses unsaved contents and the whole current file as context. File
+and visual scopes need no parser. Lua functions and Python/JavaScript/TypeScript
+functions/classes require installed compatible grammars; there is no automatic
+parser install or fallback to a wider scope. See |explainr-code.txt|.
+
+Both file scopes request a concise file-purpose overview before regular notes.
+Diff overviews also describe the selected file's overall change purpose, grounded
+in supplied context. Overviews display at the file start and reference all
+whole-file target anchors, so focusing them emphasizes the complete content.
+Other scopes do not request an overview. No text means no invented overview.
+
+For a last Visual selection, execute :'<,'>ExplainrCode selection. The Ex range
+is not an arbitrary line-range scope: the retained Visual type/marks determine
+characterwise, linewise or blockwise boundaries. Prefer this Visual mapping to
+capture live endpoints, virtual offsets, and the current selection option:
+>
+  vim.keymap.set("x", "<leader>ce", function()
+    local selection = {
+      type = vim.fn.mode(),
+      pos1 = vim.fn.getpos("v"),
+      pos2 = vim.fn.getpos("."),
+      exclusive = vim.o.selection == "exclusive",
+    }
+    require("explainr").code("selection", selection)
+  end)
+<
+Lua equivalents are code(scope?, selection?), diff(scope?), refresh(), cancel()
+and close() on require("explainr"). The default scopes are "file".
+
+DIFF SCOPE                                               *explainr-review*
+
+Invoke ExplainrDiff from a loaded old/new two-way Diffview source, not its file
+panel. The selected entry's coherent revision set and explicit path filters
+define the whole comparison. Staged and working sets are never silently mixed.
+context.diff="auto" supplies every textual patch and complete changed text
+version when the review fits the byte budget, including changed OpenSpec
+artifacts, other decisions/ADRs and tests. Otherwise it uses focused coverage:
+the whole selected hunk and nearby old/new lines, or complete selected file for
+file scope, plus affordable changed OpenSpec/ADR/decision/requirements documents.
+Those documents are prioritized by path, not semantic relevance. No unchanged
+repository document is automatically explored. Only selected file/hunk ranges
+may receive notes.
+
+context.diff="focused" always uses focused coverage. context.diff="review"
+requires the whole comparison and fails on overflow. context.radius=20 is the
+default number of nearby lines on each side of a focused hunk; a nonnegative
+integer (including 0) is allowed. Surroundings shrink if needed, prioritizing
+changed decision documents. Focused status shows the effective radius and
+omitted-file count; detail also labels coverage. The prompt identifies supplied
+files/ranges, and citations outside them are rejected.
+
+Requests ask for observable effects, documented/inferred/unknown intent,
+citations, and visible decision/code mismatches. Evidence validation proves
+that a cited range was supplied, not that an AI explanation is true or tests
+passed. Renamed paths, independent old/new lines, and deletion-only anchors
+are preserved. Absences/empty files/binaries are not fabricated source lines.
+See |explainr-diff.txt| for supported revision pairs and explicit limitations.
+
+SNAPSHOTS, BUDGETS AND STATUS                              *explainr-status*
+
+The complete serialized UTF-8 prompt (instructions, contract, context, target)
+must fit context.max_bytes. On overflow nothing is omitted and no command is
+started in strict review mode. Auto/focused mode explicitly omits optional
+context, never truncates the selected target, and fails if that target and
+request overhead cannot fit. Prefer hunk scope to file scope for large files.
+Byte count is not provider token count: the external tool may still reject a
+prompt below the budget. Lower max_bytes (for example, 65536) or use focused
+mode for a smaller-context provider.
+
+Pending/Ready/Failed/Stale/Cancelled are shown inside existing pane rows or a
+matched source winbar, never extra annotation rows. The editor's statusline is
+not overwritten. Pending phases animate the requested rows every 100ms,
+including deletion filler; initial hunk ranges are provisional until collected.
+Ticks only update decorations, not buffer text, collection or inference. Full
+errors use vim.notify and :messages. Edits, file/revision/layout switches and
+view closure invalidate late output. Stale notes are removed instead of shifted
+onto edited code. No automatic inference
+is issued on edits or scrolling. Source buffer events and a one-second timer
+check every retained batch's context; completions and cached output are
+revalidated before installation. Detail coverage warnings reflect each note's
+original request. A fresh new request can complete after stale older batches
+are discarded. Diff collection/revalidation uses cancellable asynchronous
+Git/filesystem reads and
+yielded processing batches. Checks are coalesced rather than run concurrently.
+Git reads time out after 30 seconds. Focused collection skips oversized unrelated
+files before reading their contents, but reads/diffs selected versions locally
+in full to locate exact hunks. Native hashes/diffs and final prompt encoding
+still perform CPU work on the editor's main thread.
+
+Validated results and serialized whole-context blocks are reused in memory by
+supplied coverage/target and agent/context configuration. Fresh collection checks
+current inputs before cache reuse. Cache entries live only in this Neovim
+process; no Explainr disk history or implicit external conversation is added.
+Completed diff batches are also retained per repository, comparison/filter and
+file for the current run. Navigation alone hides notes, not invalidates them.
+Returning to a file revalidates every retained batch under its original coverage
+and restores it without inference, including incremental hunk explanations.
+Recreated clean buffers and newly loaded identical context files are not edits;
+actual code/context/index changes still prevent restoration. In-flight work for
+the file being left is cancelled. Nothing is persisted across Neovim restarts.
+External tools may independently retain supplied code or continue attached
+remote generation after their local client is killed; see |explainr-agents.txt|.
+
+NAVIGATION                                                *explainr-reading*
+
+See |explainr-ui.txt|: n/p jump among explanations (counts, stopping at either
+end). N (Shift-n) also goes to the previous explanation in both views. K or
+Enter expands below the selected summary, retaining its visible position when
+space allows and dimmed overview context above and below it. Following notes
+keep their source rows when space allows, otherwise follow the card instead of
+disappearing. Both views reserve a gutter and one padding space, so expansion
+does not shift text horizontally. A matching gutter rail surrounds the
+expanded explanation, including wrapped lines. Near the bottom it lifts to expose
+the first explanation line without moving code. K/Enter or Esc/q collapses to the
+currently expanded note in the overview; Esc/q in overview closes notes.
+Referenced code gets temporary
+muted gutter markers. Text outside anchors dims; anchored syntax and Git diff
+backgrounds/signs remain intact. Native diff foregrounds may remain brighter.
+Collapsed summaries apply the same focus styling when selected; blank rows or
+leaving collapsed notes clears it. Collapse retains focus on the same summary.
+In detail, n/p browses existing entries without inference and synchronizes the
+selected source line/viewport and both diff sides. Collapse retains that entry.
+Ctrl-e/Ctrl-y scroll all paired buffers, even with detail expanded, with counts.
+Ordinary detail j/k and page motions remain independent of code.
+In diff mode, overview and detail also inherit Diffview's file/explorer bindings:
+Tab/Shift-Tab selects the next/previous diff file, <leader>e focuses the explorer,
+and <leader>b toggles it by default. Configured remaps and disabled mappings are
+respected; Explainr's Enter/K controls take precedence. File switches hide notes;
+returning restores validated saved batches without requesting new explanations.
+Unexplained files show an empty pane, not a stale warning. Tab is not an expansion
+shortcut.
+The pane opens at the far right, beyond both diff sources. One logical overview
+line matches each followed source line; j/k and other motions work on blank or
+pending rows. Either old/new source can drive sync without stealing focus.
+Original-side line references and continuation rails show annotation ranges.
+Diff summaries use the first changed line within their anchor, not an unchanged
+block header. Entirely unchanged ranges keep their original start. References
+and expanded detail retain the full anchor range.
+Whole-file overviews instead stay at the file start, with a separate matched
+status header that never covers their summary.
+Overlapping notes each get a separate row and their own original range label.
+Primary positions are reserved; collisions prefer file overviews, narrower
+ranges, documented/inferred/unknown intent, then original result order. If an
+anchor has no free row, use a free annotation row below it, adding rows at EOF
+if necessary. These overflow rows still synchronize to the original anchor;
+source text and geometry are not changed. n/p/N follows the displayed order.
+Ctrl-f/b/d/u/e/y and mouse wheel scroll the source then align the notes.
+Folds combine notes; wrapped continuations and diff filler retain their display
+rows. Long summaries end in an expansion indicator. Source window diff/fold/
+wrap/binding options remain unchanged. Intent accents are D (documented), ~
+(inferred), and ? (unknown). Optional render-markdown.nvim renders Markdown
+without resetting user configuration; native styling works without it.
+vim.b.explainr_status exposes pane status for an optional lualine component.
+
+If the terminal cursor flickers during loading, keep 'termsync' enabled (its
+Neovim default). Supported terminals/multiplexers batch redraws atomically;
+without synchronized output, even painting another split can hide/show the
+terminal cursor each frame. Explainr leaves 'termsync' and 'guicursor' alone.
+
+DEVELOPMENT                                               *explainr-testing*
+>
+  nvim --headless -u NONE -i NONE -n -c 'luafile tests/run.lua'
+<
+Use normal headless startup, not -l: editor resize/redraw tests require normal
+screen-grid allocation.
+Offline tests need Python 3 and Git; structural fixture tests use installed
+Lua/Python/JavaScript/TypeScript parsers. Optional Diffview tests report SKIP
+when its runtime is absent; see |explainr-diff-compat| for environment overrides.
+No credentials, login or paid inference are required. External CLI event
+contracts are fixture-tested, not an authenticated compatibility smoke test.
+
+Actual-screen captures use tests/render.py with Python pynvim/Pillow and a
+monospace font (--font), optionally --nvim and --states. Captures use fixed
+fixture explanations, not AI claims. Use an excluded artifact output directory.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

@@ -1,0 +1,146 @@
+*explainr-agents.txt*  External command transport
+
+Explainr requires Neovim 0.11+ and a user-configured, noninteractive command.
+It does not authenticate, select a fallback provider, or automatically approve
+permissions. Configure the executable, model and credentials outside Explainr.
+
+CONFIGURATION                                           *explainr-agent-config*
+>
+  require("explainr").setup({
+    ai = {
+      command = { "opencode", "run", "--model", "provider/model",
+                  "--agent", "explain", "--format", "json" },
+      output = "opencode",
+      timeout_ms = 300000,
+    },
+  })
+<
+Alternatively, use { "codex", "exec", "-", "--json", "--sandbox", "read-only" }
+with output = "codex", or a trusted wrapper with output = "plain". The examples
+are contracts to configure and verify, not an installed/authenticated smoke test.
+
+The complete prompt is written to stdin and stdin is closed. The argv list is
+passed directly to vim.system, never interpolated into a shell command. The
+invocation inherits your environment and uses the supplied project cwd. Stdout
+and stderr remain separate, with their bytes accumulated until process exit.
+No transport-side prompt truncation or budget is applied; the caller must check
+the complete assembled prompt budget before launching.
+
+DECODERS                                                *explainr-agent-output*
+
+plain: stdout is the final explanation text, not progress or log messages. It
+must ultimately be one explanation JSON object accepted by common validation.
+This transport checks nonempty output, not JSON, anchors, evidence, or schema.
+
+opencode: JSON Lines events from run --format json. Completed type="text"
+events have part.type="text", part.messageID, part.text and numeric part.time.end.
+Parts are grouped by messageID and concatenated without invented separators.
+Messages follow first-appearance order; late parts from an earlier message do
+not replace a newer answer. Repeated part IDs replace, not duplicate, text.
+The final message must be complete. Reasoning/tool events are not explanations.
+An error event or unsuccessful local process exit overrides partial text.
+
+codex: JSON Lines events from exec - --json. Only item.completed with an
+item.type="agent_message" supplies a candidate. Select the last such message
+after turn.completed, not the first schema-shaped progress answer. An incomplete
+new turn/message, turn.failed, error, interruption, or nonzero exit rejects it.
+
+Unknown progress event types are ignored; malformed JSON/event shapes fail.
+Both event decoders require successful local process completion. Split writes
+and coalesced writes have no special semantics: concatenated bytes are parsed
+as complete JSON Lines after exit. Empty/missing answers fail, even with exit 0.
+
+A function used as ai.output receives (stdout, stderr, exit_code) and returns
+final_text or nil,error. It runs on Neovim's main thread. Exceptions are reported
+as decoder failures. A custom decoder cannot turn a nonzero exit into success.
+Every returned explanation still needs the caller's common model validation.
+
+INTERNAL TRANSPORT API                                    *explainr-agent-api*
+>
+  local invocation, launch_error = require("explainr.agent").run(
+    prompt, ai_config, cwd, function(final_text, err) ... end)
+  invocation.cancel()
+  local final_text, err = require("explainr.agent").decode(
+    output, captured_stdout, captured_stderr, exit_code)
+<
+run returns an invocation or nil,error on configuration/spawn failure. With a
+valid callback, even those immediate failures schedule one callback(nil,error);
+do not handle the returned launch_error and callback as two independent results.
+Callbacks are scheduled exactly once, never delivered from a fast event.
+cancel is idempotent and delivers cancellation once if not already delivered.
+Cancellation before scheduled delivery overrides queued success. Timeout and
+cancel kill the owned local process; late completion cannot become success.
+Cancellation after result delivery does nothing. Snapshot/generation checks and
+UI invalidation belong to the caller, not this transport.
+
+PERMISSIONS AND EXTERNAL STATE                           *explainr-agent-safety*
+
+Prefer a dedicated primary OpenCode agent that infers only from supplied context.
+For example, merge this agent into your user-managed opencode.json:
+>
+  {
+    "agent": {
+      "explain": {
+        "description": "Explain supplied code without tools",
+        "mode": "primary",
+        "prompt": "Use only supplied context. Return the requested JSON. Do not use tools or ask questions.",
+        "permission": { "*": "deny" }
+      }
+    }
+  }
+<
+The wildcard denies tools, including edits, shell, MCP actions, delegation and
+interactive questions. Verify effective permissions against your CLI version
+and all user/project config. Verify that the named primary agent exists: the
+inspected OpenCode source warns and falls back to its default agent if missing
+or configured as a subagent. Explainr does not enforce these external settings.
+
+A filesystem read-only sandbox alone does not deny every network/MCP side effect.
+Arbitrary user commands are trusted configuration: Explainr supplies no sandbox
+guarantee. Do not add auto-approval/bypass flags for explanation-only inference.
+Authentication/subscription errors are surfaced; no fallback command is started.
+
+The external tool/provider owns authentication, billing, permissions, history,
+retention, and possible sharing of supplied code. Review its settings and privacy
+policy before sending sensitive code. Closing Explainr does not remove retained
+external history or undo external side effects. Requests are independent; the
+transport adds no continuation, session reuse, sharing or server-attachment flags.
+
+If you explicitly attach to a persistent server, killing the local client may
+not stop remote generation or billing. This transport kills only the local
+process it owns, not arbitrary descendants or server/provider tasks. Stronger
+cancellation requires tool-specific support outside this module.
+
+COMPATIBILITY AND EVIDENCE                         *explainr-agent-compatibility*
+
+Compatibility is with the CLI contracts above, not a guessed release range.
+No authenticated OpenCode or Codex release has been executed by the offline
+tests. No installed CLI version is claimed supported solely from its number.
+The explanation payload version (currently version=1) is distinct from CLI
+transport/event formats and is validated by the common model layer.
+
+Contract evidence inspected 2026-10-05:
+  OpenCode agents/permission documentation (v1 docs URL; updated 2026-10-03):
+    https://opencode.ai/docs/agents/
+  OpenCode run implementation (moving dev branch, not a pinned release):
+    https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/cli/cmd/run.ts
+  Codex noninteractive documentation (stdin '-' and JSON Lines event examples):
+    https://learn.chatgpt.com/codex/non-interactive-mode
+
+The OpenCode source emits text only when part.time.end is present, uses
+part.messageID, reads non-TTY stdin, and emits error events. Codex documentation
+shows item.completed/agent_message followed by turn.completed and documents
+turn.failed/error. Neither document establishes a minimum tested CLI release.
+Changed event dialects should use a custom decoder or fail clearly, not silently
+promote progress to a final explanation.
+
+Offline verification uses only tests/fixtures/agent.py (Python 3 required):
+>
+  EXPLAINR_TEST=tests/agent_test.lua nvim --headless -u NONE -i NONE -n \
+    -c 'luafile tests/run.lua'
+<
+These deterministic fake-process tests cover final/progress discrimination,
+multiple parts, chunk boundaries, stdin identity, responsiveness, separate
+stderr, failures, timeout and cancellation without contacting any provider.
+
+vim:tw=78:ts=8:ft=help:norl:
