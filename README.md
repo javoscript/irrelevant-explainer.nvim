@@ -127,8 +127,8 @@ background, softened toward `Normal`. Themes without that background use
 `NormalFloat` or a faint blend of the normal text color. The gutter and left
 padding stay on the dimmed backdrop, outside the tinted content.
 The summary, range label, metadata
-and wrapped prose margins share that background; Markdown code blocks keep
-their distinct formatting. A continuous `▎`
+and wrapped prose margins share that background; code fences stay visible and
+installed language parsers provide code syntax colors. A continuous `▎`
 gutter rail covers the expanded explanation, including wrapped lines, connecting
 it visually to the referenced source ranges. The rail and tint extend through
 the visible anchored range even past neighboring summaries, whose text stays
@@ -162,12 +162,18 @@ viewport below the header. A fitting card stays wholly visible; longer detail
 keeps your prose reading position, with every paragraph reachable. Scrolling back
 releases the card into natural alignment without moving code again or changing
 the selected explanation.
+In expanded detail, **j/k** move by displayed row, including counts: **4j** moves
+four screen rows, not four paragraphs. These buffer-local mappings do not use
+global j/k remappings; native **gj/gk**, other motions, and overview/source
+navigation remain unchanged.
 Scrolling the explanation still scrolls code, even while pinned: **Ctrl-e/Ctrl-y**
 (including counts), **zz/zt/zb**, page/half-page and cursor-induced viewport motion
 move sources by the actual displayed-row distance, within native buffer limits.
 At the reader's upper buffer limit, **Ctrl-y** still scrolls code upward; **k**
-on the summary at the top screen edge does the same without collapsing detail
+on the summary's first displayed segment at the top screen edge does the same without collapsing detail
 or jumping to stale context. Both accept counts and stop at the source's beginning.
+On later summary wraps, **k** reads the preceding segment instead, even if that
+later segment is clipped to the top edge.
 Source `scrolloff` is respected, including different margins on diff sides,
 without duplicate margin-correction scrolls. In overview, code and notes still
 scroll together. Expanded reading scrolls also select the final source-aligned
@@ -239,10 +245,14 @@ For terminal cursor flicker during animation, keep Neovim's default
 support synchronized output; with it disabled, even updates away from the cursor
 can hide/show the terminal cursor every frame. Explainr does not change this
 global option or your cursor blinking settings.
-Installed
-`MeanderingProgrammer/render-markdown.nvim` is used optionally, without changing
-your renderer setup; native semantic highlights remain available without it.
-The pane has one logical line per source line, including blanks. **j/k** in a
+Both overview and detail use the `explainr` filetype with optional Markdown
+Tree-sitter highlighting. The `markdown` and `markdown_inline` parsers highlight
+structure and inline code; installed language parsers highlight fenced snippets.
+Markdown markers remain visible, and detail wraps natively without renderer
+padding, borders, or concealment. Missing parsers leave readable semantic styling;
+Explainr does not install parsers or invoke `render-markdown.nvim`. Your renderer
+configuration and ordinary Markdown buffers remain unchanged.
+The collapsed pane has one logical line per source line, including blanks. **j/k** in a
 diff traverses insertion/deletion gaps using whichever side has real lines;
 passive paired scrolling does not take over navigation while notes have focus.
 Other cursor motions work across the whole file; cursors synchronize in both

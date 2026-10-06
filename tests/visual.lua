@@ -2,6 +2,9 @@ vim.opt.runtimepath:prepend(vim.fn.getcwd())
 for _, path in ipairs(vim.g.capture_runtime or {}) do vim.opt.runtimepath:append(path) end
 -- Exercise the installed optional plugin normally, without loading user config.
 if #(vim.g.capture_runtime or {}) > 0 then vim.cmd("runtime plugin/render-markdown.lua") end
+if vim.g.capture_state:match("^detail%-markdown.*%-plain$") then
+  vim.treesitter.start = function() error("parser unavailable in fallback capture") end
+end
 vim.o.termguicolors = true
 vim.o.laststatus = 3
 vim.o.statusline = " EXTERNAL EDITOR BAR %= untouched by Explainr "
@@ -79,8 +82,14 @@ if vim.g.capture_state:match("^sticky%-") then
   elseif state == "sticky-resized" then
     prose = string.rep("Validate the payload before preparing the request. ", 9)
       .. "\n\n" .. string.rep("Existing validation remains in place. ", 6)
+  elseif state:match("^sticky%-markdown") then
+    prose = string.rep("Read each wrapped row before preparing `payload`. Preserve validation and source alignment. ", 40)
+      .. "\n\n## Result\n\nKeep Markdown visible."
   end
   local selected = note(40, 100, "Validate the request", prose)
+  if state == "sticky-markdown-summary" then
+    selected.summary = "Validate the request and preserve the source position while reading every wrapped summary segment."
+  end
   if state == "sticky-disjoint" then
     selected.anchors[1].end_line = 50
     selected.anchors[2] = { path = "preparation.lua", side = "buffer", start_line = 80, end_line = 100 }
@@ -91,6 +100,7 @@ if vim.g.capture_state:match("^sticky%-") then
     note(65, 65, "Preserve validation", "Following explanation."),
   } })
   local p = capture_pane
+  if state:match("^sticky%-markdown") then api.nvim_win_set_width(p.win, 42) end
   if state == "sticky-offscreen" then
     api.nvim_set_current_win(source); vim.cmd("normal! 60Gzt"); p:sync(source); p:detail(2)
     assert(p.detail_layout.rows[api.nvim_buf_line_count(p.detail_buf)].item.line == 200)
@@ -106,6 +116,34 @@ if vim.g.capture_state:match("^sticky%-") then
   p:sync(source)
   if state == "sticky-resized" then
     api.nvim_win_set_width(p.win, 24); api.nvim_exec_autocmds("WinResized", {})
+  end
+  if state:match("^sticky%-markdown") then
+    vim.wo[p.win].smoothscroll = true
+    for _, win in ipairs({ source, p.win }) do
+      vim.wo[win].cursorline = true; vim.wo[win].cursorlineopt = "screenline"
+    end
+    api.nvim_set_current_win(p.win)
+    local function input(keys)
+      api.nvim_feedkeys(api.nvim_replace_termcodes(keys, true, false, true), "xt", false)
+      vim.cmd("redraw!"); api.nvim_exec_autocmds("SafeState", {}); vim.wait(20, function() return false end)
+    end
+    if state == "sticky-markdown-summary" then
+      input(p.detail_layout.first .. "G02gj2<C-e>")
+      assert(vim.fn.winline() == 1 and vim.fn.winsaveview().skipcol > 0)
+      local column = api.nvim_win_get_cursor(p.win)[2]
+      input("k")
+      assert(api.nvim_win_get_cursor(p.win)[1] == p.detail_layout.first and api.nvim_win_get_cursor(p.win)[2] < column)
+    else
+      input((p.detail_layout.first + 3) .. "G0")
+      local row, column = api.nvim_win_get_cursor(p.win)[1], api.nvim_win_get_cursor(p.win)[2]
+      local top = api.nvim_win_call(source, vim.fn.winsaveview).topline
+      input("30j")
+      assert(api.nvim_win_get_cursor(p.win)[1] == row and api.nvim_win_get_cursor(p.win)[2] > column)
+      assert(api.nvim_win_call(source, vim.fn.winsaveview).topline > top)
+    end
+    local source_view = api.nvim_win_call(source, vim.fn.winsaveview)
+    assert(source_view.lnum == math.min(100, source_view.topline + vim.fn.winline() - 1))
+    assert(api.nvim_get_current_win() == p.win and p.detail_buf == detail)
   end
   if state == "sticky-scroll-top" or state == "sticky-scroll-bottom" then
     local bottom = state == "sticky-scroll-bottom"
@@ -739,12 +777,14 @@ elseif vim.g.capture_state == "detail" or vim.g.capture_state == "detail-back" o
   capture_pane:detail()
   if vim.g.capture_state == "detail-back" then capture_pane:back()
   elseif vim.g.capture_state == "detail-next" then capture_pane:detail(1) end
-elseif vim.g.capture_state == "detail-markdown" then
-  capture_pane.result.notes[3].detail = "Reads `user.is_admin` and `user.role` to decide whether editing is allowed.\n\n"
+elseif vim.g.capture_state:match("^detail%-markdown") then
+  if vim.g.capture_state:find("narrow", 1, true) then vim.api.nvim_win_set_width(capture_pane.win, 38) end
+  capture_pane.result.notes[3].detail = "## Access check\n\nReads `user.is_admin` and `user.role` to decide whether editing is allowed.\n\n"
     .. "```lua\nreturn user.is_admin or user.role == \"editor\"\n```\n\n"
     .. "- Administrators pass immediately.\n- Otherwise, the role must equal `\"editor\"`.\n\n"
     .. "**Scope:** this explains the supplied check, not unavailable callers."
   vim.api.nvim_win_set_cursor(capture_pane.win, { 6, 0 }); capture_pane:detail()
+  if vim.g.capture_state == "detail-markdown-back" then capture_pane:back() end
 elseif vim.g.capture_state == "folded" then
   vim.wo[source].foldmethod = "manual"; vim.wo[source].foldenable = true
   vim.api.nvim_win_call(source, function() vim.cmd("1,7fold") end); capture_pane:render()

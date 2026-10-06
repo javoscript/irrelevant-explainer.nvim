@@ -762,7 +762,7 @@ T.test("semantic fallback stays single-row and detail omits citation sections an
   for _, m in ipairs(marks) do assert(not m[4].virt_lines and not m[4].conceal_lines) end
   p:detail()
   local detail_win, detail = p.detail_win, api.nvim_win_get_buf(p.detail_win)
-  T.eq("markdown", vim.bo[detail].filetype)
+  T.eq("explainr", vim.bo[detail].filetype)
   local text = table.concat(api.nvim_buf_get_lines(detail, 0, -1, false), "\n")
   for _, expected in ipairs({ "▎ D Guard missing user", "**Intent basis:** documented", n.detail }) do
     assert(text:find(expected, 1, true), expected)
@@ -782,58 +782,59 @@ T.test("semantic fallback stays single-row and detail omits citation sections an
   p:close()
 end)
 
-T.test("public optional renderer is seeded before FileType and rerenders summaries and detail", function()
+T.test("explainr buffers keep Markdown visible without calling an installed renderer", function()
   local win = setup({ "one", "two", "three" })
-  local previous, cache, calls = package.loaded["render-markdown"], {}, {}
+  local previous, calls = package.loaded["render-markdown"], 0
   local group = api.nvim_create_augroup("ExplainrRendererTest", { clear = true })
+  local filetypes = {}
+  local function called() calls = calls + 1 end
   package.loaded["render-markdown"] = {
-    setup = function() error("must not reset user configuration") end,
-    render = function(ctx)
-      cache[ctx.buf] = cache[ctx.buf] or ctx.config
-      calls[#calls + 1] = { buf = ctx.buf, win = ctx.win }
-      assert(ctx.config == cache[ctx.buf], "config must be stable for the buffer lifecycle")
-    end,
+    setup = called, render = called, enable = called, disable = called,
   }
   api.nvim_create_autocmd("FileType", { group = group, pattern = { "explainr", "markdown" }, callback = function(event)
-    assert(cache[event.buf], "automatic FileType attachment must not win the config cache")
+    filetypes[#filetypes + 1] = vim.bo[event.buf].filetype
   end })
   local ok, err = xpcall(function()
-    local p = ui.open(win, { windows = { buffer = win } }, { notes = { note(1, "**Bold** `code`") } })
-    local config = cache[p.buf]
-    T.eq(false, config.anti_conceal.enabled); T.eq(false, config.win_options.wrap.rendered)
-    T.eq(false, config.win_options.wrap.default); T.eq(0, config.win_options.conceallevel.rendered)
-    for _, key in ipairs({ "heading", "code", "pipe_table", "document", "latex", "paragraph", "dash", "bullet",
-      "checkbox", "quote", "sign", "indent", "html", "yaml", "link" }) do T.eq(false, config[key].enabled) end
+    vim.wo[win].conceallevel = 3
+    local selected = note(1, "**Bold** `code`")
+    selected.detail = "## Heading\n\n**Bold** and `code`.\n\n```lua\nreturn true\n```"
+    local p = ui.open(win, { windows = { buffer = win } }, { notes = { selected, note(3) } })
+    T.eq(0, vim.wo[p.win].conceallevel); T.eq(false, vim.wo[p.win].wrap)
     T.eq("markdown", vim.treesitter.language.get_lang("explainr"))
-    local count = #calls; p:render(); assert(#calls > count)
-    T.eq(p.win, calls[#calls].win); T.eq({ 1 }, p.rows[1])
+    p:render(); T.eq({ 1 }, p.rows[1])
     p:detail(); local detail = api.nvim_win_get_buf(p.detail_win)
-    T.eq(true, cache[detail].win_options.wrap.rendered); T.eq({ "▎ " }, cache[detail].heading.icons)
-    T.eq({ "-" }, cache[detail].bullet.icons)
-    count = #calls
+    T.eq("explainr", vim.bo[detail].filetype)
+    T.eq(0, vim.wo[p.win].conceallevel); T.eq(true, vim.wo[p.win].wrap)
+    T.eq(selected.detail, table.concat(vim.list_slice(detail_lines(p), 4, #detail_lines(p) - 1), "\n"))
     api.nvim_exec_autocmds("WinScrolled", { buffer = detail })
-    assert(#calls > count); T.eq(p.detail_win, calls[#calls].win)
+    api.nvim_win_set_width(p.win, 30); api.nvim_exec_autocmds("VimResized", {})
+    key(detail, "n"); key(detail, "p")
+    T.eq(detail, p.detail_buf); T.eq(0, vim.wo[p.win].conceallevel)
+    T.eq({ "explainr", "explainr" }, filetypes)
+    p:back(); T.eq(false, vim.wo[p.win].wrap); T.eq(0, vim.wo[p.win].conceallevel)
+    T.eq(3, vim.wo[win].conceallevel)
     p:close(); T.eq(false, api.nvim_buf_is_valid(detail))
+    T.eq(0, calls)
   end, debug.traceback)
   api.nvim_del_augroup_by_id(group); package.loaded["render-markdown"] = previous
+  if api.nvim_win_is_valid(win) then vim.wo[win].conceallevel = 0 end
   assert(ok, err)
 end)
 
-T.test("missing renderer API or parser leaves semantic native fallback usable", function()
-  local previous, start = package.loaded["render-markdown"], vim.treesitter.start
+T.test("missing Markdown parser leaves semantic native fallback usable", function()
+  local start = vim.treesitter.start
   local ok, err = xpcall(function()
     vim.treesitter.start = function() error("parser unavailable") end
-    for _, renderer in ipairs({ {}, { render = function() error("uninitialized optional renderer") end } }) do
-      package.loaded["render-markdown"] = renderer
-      local win = setup({ "one", "two" })
-      local p = ui.open(win, { windows = { buffer = win } }, { notes = { note(1) } })
-      T.eq(summary("Note 1"), api.nvim_buf_get_lines(p.buf, 0, 1, false)[1])
-      assert(#api.nvim_buf_get_extmarks(p.buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, {}) > 0)
-      p:detail(); T.eq("markdown", vim.bo[api.nvim_win_get_buf(p.detail_win)].filetype)
-      p:close()
-    end
+    local win = setup({ "one", "two" })
+    local p = ui.open(win, { windows = { buffer = win } }, { notes = { note(1) } })
+    T.eq(summary("Note 1"), api.nvim_buf_get_lines(p.buf, 0, 1, false)[1])
+    assert(#api.nvim_buf_get_extmarks(p.buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, {}) > 0)
+    p:detail(); T.eq("explainr", vim.bo[p.detail_buf].filetype)
+    T.eq("Full explanation without another request.", detail_lines(p)[4])
+    assert(#api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, {}) > 0)
+    p:close()
   end, debug.traceback)
-  package.loaded["render-markdown"], vim.treesitter.start = previous, start
+  vim.treesitter.start = start
   assert(ok, err)
 end)
 
@@ -1340,6 +1341,109 @@ T.test("expanded prose clamps to visible disjoint anchors and ignores EOF space"
   p:close()
 end)
 
+T.test("expanded j k use display rows and counts across paragraphs without invoking global mappings", function()
+  local lines = {}; for row = 1, 80 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(4); selected.anchors[1].end_line = 60
+  -- At 40 content columns these 150 characters occupy exactly four rows.
+  selected.detail = string.rep("x", 150) .. "\n\nA second paragraph."
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  api.nvim_win_set_width(p.win, 42); p:detail(1)
+  local calls = 0
+  for _, lhs in ipairs({ "j", "k" }) do vim.keymap.set("n", lhs, function() calls = calls + 1 end) end
+  local ok, err = xpcall(function()
+    local paragraph = p.detail_layout.first + 3
+    motion(p.win, paragraph .. "G0")
+    T.eq(40, api.nvim_win_get_width(p.win) - vim.fn.getwininfo(p.win)[1].textoff)
+    T.eq(4, api.nvim_win_text_height(p.win, { start_row = paragraph - 1, end_row = paragraph - 1 }).all)
+    local row = api.nvim_win_call(p.win, vim.fn.winline)
+    local source_line = api.nvim_win_get_cursor(source)[1]
+    input(p.win, "j"); T.eq({ paragraph, 40 }, api.nvim_win_get_cursor(p.win))
+    T.eq(row + 1, api.nvim_win_call(p.win, vim.fn.winline))
+    T.eq(source_line + 1, api.nvim_win_get_cursor(source)[1])
+    input(p.win, "k"); T.eq({ paragraph, 0 }, api.nvim_win_get_cursor(p.win))
+    input(p.win, "4j"); T.eq({ paragraph + 1, 0 }, api.nvim_win_get_cursor(p.win))
+    T.eq(source_line + 4, api.nvim_win_get_cursor(source)[1])
+    input(p.win, "4k"); T.eq({ paragraph, 0 }, api.nvim_win_get_cursor(p.win))
+    T.eq(source_line, api.nvim_win_get_cursor(source)[1]); T.eq(0, calls)
+    input(p.win, "gj"); T.eq({ paragraph, 40 }, api.nvim_win_get_cursor(p.win))
+    input(p.win, "gk"); T.eq({ paragraph, 0 }, api.nvim_win_get_cursor(p.win))
+    input(source, "j"); T.eq(1, calls) -- Source mappings remain user-owned.
+    input(p.win, "2j")
+    local cursor, view = api.nvim_win_get_cursor(source), api.nvim_win_call(source, vim.fn.winsaveview)
+    for _ = 1, 3 do api.nvim_exec_autocmds("SafeState", {}); vim.cmd("redraw!") end
+    T.eq(cursor, api.nvim_win_get_cursor(source)); T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
+    input(p.win, "<CR>"); T.eq(cursor[1], api.nvim_win_get_cursor(p.win)[1])
+    T.eq(cursor, api.nvim_win_get_cursor(source))
+  end, debug.traceback)
+  for _, lhs in ipairs({ "j", "k" }) do vim.keymap.del("n", lhs) end
+  p:close(); assert(ok, err)
+end)
+
+T.test("counted expanded j k forward wrapped viewport movement once and respect source bounds", function()
+  local lines = {}; for row = 1, 160 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(4); selected.anchors[1].end_line = 80
+  selected.detail = string.rep("x", 1600)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  api.nvim_win_set_width(p.win, 42); p:detail(1)
+  vim.wo[p.win].smoothscroll = true
+  input(p.win, (p.detail_layout.first + 3) .. "G0")
+  local paragraph = api.nvim_win_get_cursor(p.win)[1]
+  local original = api.nvim_win_get_cursor(source)[1]
+  -- The first prose row may be above the anchors: use its unwrapped source
+  -- display coordinate, not the already-clamped source cursor, for the delta.
+  local origin = api.nvim_win_call(source, vim.fn.winsaveview).topline + api.nvim_win_call(p.win, vim.fn.winline) - 1
+  input(p.win, "30j")
+  T.eq({ paragraph, 1200 }, api.nvim_win_get_cursor(p.win))
+  T.eq(origin + 30, api.nvim_win_get_cursor(source)[1])
+  assert(api.nvim_win_call(source, vim.fn.winsaveview).topline > 1)
+  local views = { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) }
+  for _ = 1, 3 do
+    api.nvim_exec_autocmds("CursorMoved", { buffer = p.detail_buf })
+    api.nvim_exec_autocmds("WinScrolled", {}); api.nvim_exec_autocmds("SafeState", {}); vim.cmd("redraw!")
+  end
+  T.eq(views, { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) })
+  input(p.win, "30k"); T.eq({ paragraph, 0 }, api.nvim_win_get_cursor(p.win))
+  T.eq(original, api.nvim_win_get_cursor(source)[1])
+  input(p.win, "gg0"); input(p.win, "999k")
+  T.eq(1, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+  local view = api.nvim_win_call(source, vim.fn.winsaveview)
+  input(p.win, "k"); T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
+  p:close()
+end)
+
+T.test("expanded k traverses later summary wraps even when clipped to the top edge", function()
+  for _, clipped in ipairs({ false, true }) do
+    local lines = {}; for row = 1, 160 do lines[row] = "source line " .. row end
+    local source = setup(lines)
+    local selected = note(40, string.rep("Long summary words ", 12)); selected.anchors[1].end_line = 100
+    selected.detail = string.rep("Reading paragraph.\n\n", 30)
+    local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+    api.nvim_win_set_width(p.win, 42); motion(source, "40Gzt"); p:detail(1)
+    vim.wo[p.win].smoothscroll = true
+    local first = p.detail_layout.first
+    motion(p.win, first .. "G02gj")
+    if clipped then
+      input(p.win, "2<C-e>")
+      T.eq(1, api.nvim_win_call(p.win, vim.fn.winline))
+      assert(api.nvim_win_call(p.win, vim.fn.winsaveview).skipcol > 0)
+    end
+    local before = api.nvim_win_get_cursor(p.win)
+    input(p.win, "k")
+    local after = api.nvim_win_get_cursor(p.win)
+    T.eq(1, p.detail_index); T.eq(first, after[1])
+    assert(after[2] < before[2], "k must read the preceding summary segment rather than scrolling sources")
+    input(p.win, "k"); T.eq(first, api.nvim_win_get_cursor(p.win)[1])
+    T.eq(1, api.nvim_win_call(p.win, vim.fn.winline))
+    local top = api.nvim_win_call(source, vim.fn.winsaveview).topline
+    input(p.win, "2k") -- Now the actual top-edge first segment owns the shortcut.
+    T.eq(top - 2, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+    T.eq(1, p.detail_index)
+    p:close()
+  end
+end)
+
 T.test("expanded prose maps later wraps of the same paragraph to distinct source lines", function()
   local lines = {}; for row = 1, 40 do lines[row] = "source line " .. row end
   local source = setup(lines)
@@ -1375,9 +1479,9 @@ T.test("expanded prose follows wrapped source lines and preserves source columns
   api.nvim_win_set_cursor(source, { 4, 6 })
   local height = api.nvim_win_text_height(source, { start_row = 4, end_row = 4 }).all
   assert(height > 1)
-  motion(p.win, "j") -- Metadata is beside the first segment of source line 5.
+  input(p.win, "j") -- Metadata is beside the first segment of source line 5.
   T.eq({ 5, 6 }, api.nvim_win_get_cursor(source))
-  motion(p.win, "j") -- The next display row is still source line 5.
+  input(p.win, "j") -- The next display row is still source line 5.
   T.eq({ 5, 6 }, api.nvim_win_get_cursor(source))
   motion(p.win, (p.detail_layout.first + height + 1) .. "G0")
   T.eq({ 6, 6 }, api.nvim_win_get_cursor(source)); T.eq(true, vim.wo[source].wrap)
@@ -1399,9 +1503,9 @@ T.test("expanded prose resolves partial folds and the anchors of combined entrie
   local p = ui.open(source, { windows = { buffer = source } }, { notes = { a, b } })
   motion(p.win, "4G0"); p:detail()
   assert(table.concat(detail_lines(p), "\n"):find("Note 7", 1, true))
-  motion(p.win, "j"); T.eq(9, api.nvim_win_get_cursor(source)[1])
-  motion(p.win, "k"); T.eq(4, api.nvim_win_get_cursor(source)[1])
-  motion(p.win, "3j"); T.eq(11, api.nvim_win_get_cursor(source)[1])
+  input(p.win, "j"); T.eq(9, api.nvim_win_get_cursor(source)[1])
+  input(p.win, "k"); T.eq(4, api.nvim_win_get_cursor(source)[1])
+  input(p.win, "3j"); T.eq(11, api.nvim_win_get_cursor(source)[1])
   T.eq(8, api.nvim_win_call(source, function() return vim.fn.foldclosedend(4) end))
   p:close()
 end)
@@ -1422,7 +1526,7 @@ T.test("expanded prose selects real old-only deleted lines without changing pair
   local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { selected } })
   p:detail(1)
   local before = {}; for _, win in ipairs({ old, new }) do before[win] = api.nvim_win_call(win, vim.fn.winsaveview) end
-  motion(p.win, "3j")
+  input(p.win, "3j")
   T.eq(6, api.nvim_win_get_cursor(old)[1]); T.eq(3, api.nvim_win_get_cursor(new)[1])
   input(p.win, "<C-e>")
   T.eq(2, api.nvim_win_call(old, vim.fn.winsaveview).topline)
@@ -1723,23 +1827,20 @@ T.test("unchanged sticky placement does not rewrite context or reset the reading
   p:close()
 end)
 
-T.test("sticky renderer observes the final viewport rather than an intermediate reposition", function()
+T.test("sticky reposition settles before repeated native redraws", function()
   local lines = {}; for row = 1, 180 do lines[row] = "source line " .. row end
   local source = setup(lines)
   local selected = note(40)
   local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
   motion(p.win, "40Gzz"); p:detail(); motion(source, "60Gzt")
   motion(p.win, (p.detail_layout.first + 3) .. "Gzt")
-  local seen = {}
-  p.render_detail = function(win)
-    seen[#seen + 1] = api.nvim_win_call(win, vim.fn.winsaveview)
-    vim.cmd("redraw!")
-  end
   motion(source, "39Gzt")
   local view = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  for _ = 1, 3 do
+    vim.cmd("redraw!"); api.nvim_exec_autocmds("SafeState", {})
+    T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
+  end
   p:close()
-  assert(#seen > 0)
-  for _, rendered in ipairs(seen) do T.eq(view, rendered) end
 end)
 
 T.test("sticky geometry follows fold changes and preserves logical prose cursor across width changes", function()
@@ -3716,44 +3817,27 @@ T.test("large deletion filler has bounded animated geometry and source closure c
   vim.cmd("diffoff!")
 end)
 
+T.test("Markdown detail preserves JSON quotes backslashes and fences without a renderer", function()
+  local win = setup({ 'return user.role == "editor"' })
+  local snapshot = { mode = "code", windows = { buffer = win },
+    files = { { path = "test.lua", side = "buffer", lines = { 'return user.role == "editor"' } } },
+    target = { anchors = { { path = "test.lua", side = "buffer", start_line = 1, end_line = 1 } } } }
+  local result = assert(require("explainr.model").validate([[{"version":1,"notes":[{
+    "summary":"Checks the editor role","detail":"Reads `user.role`.\n\n```lua\nreturn user.role == \"editor\"\n```\n\nA literal backslash: `\\`.",
+    "anchors":[{"path":"test.lua","side":"buffer","start_line":1,"end_line":1}],
+    "intent_basis":"inferred","evidence":[]}]}]], snapshot))
+  local expected = 'Reads `user.role`.\n\n```lua\nreturn user.role == "editor"\n```\n\nA literal backslash: `\\`.'
+  T.eq(expected, result.notes[1].detail)
+  local p = ui.open(win, snapshot, result)
+  p:detail()
+  T.eq(expected, table.concat(vim.list_slice(detail_lines(p), 4, #detail_lines(p) - 1), "\n"))
+  p:close()
+end)
+
 -- Opt in by adding render-markdown + parser directories to runtimepath and
 -- sourcing its normal plugin entrypoint before tests/run.lua. No setup needed.
 if vim.g.loaded_render_markdown then
-  T.test("Markdown detail preserves JSON code escapes and renders inline and fenced code", function()
-    local win = setup({ 'return user.role == "editor"' })
-    local snapshot = { mode = "code", windows = { buffer = win },
-      files = { { path = "test.lua", side = "buffer", lines = { 'return user.role == "editor"' } } },
-      target = { anchors = { { path = "test.lua", side = "buffer", start_line = 1, end_line = 1 } } } }
-    local result = assert(require("explainr.model").validate([[{"version":1,"notes":[{
-      "summary":"Checks the editor role","detail":"Reads `user.role`.\n\n```lua\nreturn user.role == \"editor\"\n```\n\nA literal backslash: `\\`.",
-      "anchors":[{"path":"test.lua","side":"buffer","start_line":1,"end_line":1}],
-      "intent_basis":"inferred","evidence":[]}]}]], snapshot))
-    local expected = 'Reads `user.role`.\n\n```lua\nreturn user.role == "editor"\n```\n\nA literal backslash: `\\`.'
-    T.eq(expected, result.notes[1].detail)
-    local p = ui.open(win, snapshot, result)
-    p:detail()
-    T.eq(expected, table.concat(vim.list_slice(detail_lines(p), 4, #detail_lines(p) - 1), "\n"))
-    local ns = api.nvim_get_namespaces()["render-markdown.nvim"]
-    assert(vim.wait(1000, function()
-      local inline, block = false, false
-      for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, ns, 0, -1, { details = true })) do
-        if m[2] == 3 and m[4].hl_group == "RenderMarkdownCodeInline" then inline = true end
-        if m[2] == 6 and m[4].hl_group == "RenderMarkdownCode" then block = true end
-      end
-      return inline and block
-    end), "inline code and fenced snippet must both be styled")
-    api.nvim__inspect_cell(1, 0, 0)
-    vim.cmd("redraw")
-    local code = vim.fn.screenpos(p.detail_win, 7, 8) -- Plain identifier after 'return '.
-    local info = vim.fn.getwininfo(p.detail_win)[1]
-    local text_bg = api.nvim__inspect_cell(1, code.row - 1, code.col - 1)[2].background
-    local eol_bg = api.nvim__inspect_cell(1, code.row - 1, info.wincol + info.width - 2)[2].background
-    T.eq(api.nvim_get_hl(0, { name = "RenderMarkdownCode", link = false }).bg, text_bg)
-    T.eq(text_bg, eol_bg) -- Same code background behind text and EOL, despite syntax foregrounds.
-    p:close()
-  end)
-
-  T.test("installed renderer really renders first frame and scrolls detail without changing summary rows", function()
+  T.test("installed renderer leaves explainr alone throughout navigation but still renders Markdown", function()
     local win = setup({ "one", "two", "three" })
     local n = note(1, "==Marked== **bold**")
     n.detail = string.rep("## Reason\n\nA **semantic** explanation.\n\n", 40)
@@ -3763,21 +3847,17 @@ if vim.g.loaded_render_markdown then
     local ns = api.nvim_get_namespaces()["render-markdown.nvim"]
     assert(ns)
     local function marks(buf) return api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true }) end
-    assert(vim.wait(1000, function() return #marks(p.buf) > 0 end), "summary renderer never drew marks")
-    for _, m in ipairs(marks(p.buf)) do assert(not m[4].virt_lines and not m[4].conceal_lines) end
+    vim.wait(150, function() return false end)
+    T.eq({}, marks(p.buf))
     T.eq(false, vim.wo[p.win].wrap)
     T.eq(3, api.nvim_buf_line_count(p.buf))
     T.eq(1, api.nvim_win_text_height(p.win, { start_row = 0, end_row = 0 }).all)
     local rows = vim.deepcopy(p.rows)
     p:detail(); local detail = api.nvim_win_get_buf(p.detail_win)
-    assert(vim.wait(1000, function() return #marks(detail) > 0 and vim.wo[p.detail_win].conceallevel == 3 end),
-      "first detail render was swallowed by automatic attachment")
+    T.eq("explainr", vim.bo[detail].filetype); T.eq(0, vim.wo[p.win].conceallevel)
     api.nvim_win_call(p.detail_win, function() vim.cmd.normal({ p.detail_layout.last .. "G", bang = true }) end)
     api.nvim_exec_autocmds("WinScrolled", { buffer = detail })
-    assert(vim.wait(1000, function()
-      for _, m in ipairs(marks(detail)) do if m[2] > 100 then return true end end
-      return false
-    end), "renderer did not follow detail scrolling")
+    vim.wait(150, function() return false end); T.eq({}, marks(detail))
     -- Reading updates the authoritative source projection for sticky events;
     -- rebuilding the hidden overview must retain that current snapshot.
     T.eq(ui.project(win), p.projection)
@@ -3785,12 +3865,7 @@ if vim.g.loaded_render_markdown then
     p:render(); T.eq(projection, p.projection); T.eq(rows, p.rows)
     local handlers = #api.nvim_get_autocmds({ group = p.group })
     key(detail, "n"); T.eq(detail, p.detail_buf); T.eq(3, api.nvim_win_get_cursor(win)[1])
-    assert(vim.wait(1000, function()
-      local current = marks(detail)
-      if #current == 0 then return false end
-      for _, mark in ipairs(current) do if mark[2] >= p.detail_layout.last then return false end end
-      return true
-    end), "renderer retained decorations from the previous long explanation")
+    vim.wait(150, function() return false end); T.eq({}, marks(detail))
     assert(detail_lines(p)[4]:find("second", 1, true))
     key(detail, "p"); T.eq(detail, p.detail_buf); T.eq(1, api.nvim_win_get_cursor(win)[1])
     T.eq(handlers, #api.nvim_get_autocmds({ group = p.group }))
@@ -3799,6 +3874,63 @@ if vim.g.loaded_render_markdown then
     T.eq(p.win, detail_win); T.eq(false, api.nvim_buf_is_valid(detail))
     T.eq(p.buf, api.nvim_win_get_buf(p.win)); T.eq(false, vim.wo[p.win].wrap)
     p:close(); T.eq(false, api.nvim_win_is_valid(detail_win))
+    local _, ordinary = setup({ "# Ordinary Markdown", "", "Use `code`." })
+    vim.bo[ordinary].filetype = "markdown"
+    vim.treesitter.start(ordinary, "markdown")
+    assert(vim.wait(1000, function() return #marks(ordinary) > 0 end), "ordinary Markdown must still render")
+    T.eq("markdown", vim.bo[ordinary].filetype)
+  end)
+end
+
+if pcall(vim.treesitter.language.add, "markdown") and pcall(vim.treesitter.language.add, "markdown_inline")
+    and pcall(vim.treesitter.language.add, "lua") then
+  T.test("optional Markdown syntax highlights headings inline code and fenced Lua without hiding text", function()
+    local win = setup({ "one", "two" })
+    local selected = note(1)
+    selected.detail = "## Reason\n\nUse `value`.\n\n```lua\nreturn true\n```"
+    local p = ui.open(win, { windows = { buffer = win } }, { notes = { selected } })
+    p:detail(); vim.treesitter.get_parser(p.detail_buf):parse(true); vim.cmd("redraw!")
+    local first = p.detail_layout.first - 1
+    for _, expected in ipairs({ { 3, 3, "markdown", "markup.heading" },
+      { 5, 5, "markdown_inline", "markup.raw" }, { 8, 1, "lua", "keyword.return" } }) do
+      local found = false
+      for _, capture in ipairs(vim.treesitter.get_captures_at_pos(p.detail_buf, first + expected[1], expected[2])) do
+        if capture.lang == expected[3] and capture.capture:find(expected[4], 1, true) then found = true end
+      end
+      assert(found, vim.inspect(expected))
+    end
+    T.eq(0, vim.wo[p.win].conceallevel)
+    for _, row in ipairs({ 3, 5, 7, 9 }) do
+      local line = api.nvim_buf_get_lines(p.detail_buf, first + row, first + row + 1, false)[1]
+      local pos = vim.fn.screenpos(p.win, first + row + 1, 1)
+      local text = ""
+      for col = pos.col, pos.col + #line - 1 do text = text .. vim.fn.screenstring(pos.row, col) end
+      T.eq(line, text)
+    end
+    p:close()
+  end)
+end
+
+if pcall(vim.treesitter.language.add, "markdown") then
+  T.test("missing injected parsers retain readable detail and available Markdown syntax", function()
+    local add = vim.treesitter.language.add
+    local ok, err = xpcall(function()
+      vim.treesitter.language.add = function(lang, ...)
+        if lang == "markdown_inline" or lang == "lua" then error("parser unavailable") end
+        return add(lang, ...)
+      end
+      local win = setup({ "one" })
+      local selected = note(1); selected.detail = "## Heading\n\n`inline`\n\n```lua\nreturn true\n```"
+      local p = ui.open(win, { windows = { buffer = win } }, { notes = { selected } })
+      p:detail(); vim.treesitter.get_parser(p.detail_buf):parse(true); vim.cmd("redraw!")
+      local languages = {}
+      vim.treesitter.get_parser(p.detail_buf):for_each_tree(function(_, tree) languages[tree:lang()] = true end)
+      T.eq({ markdown = true }, languages)
+      T.eq(selected.detail, table.concat(vim.list_slice(detail_lines(p), 4, #detail_lines(p) - 1), "\n"))
+      T.eq(0, vim.wo[p.win].conceallevel); p:close()
+    end, debug.traceback)
+    vim.treesitter.language.add = add
+    assert(ok, err)
   end)
 end
 

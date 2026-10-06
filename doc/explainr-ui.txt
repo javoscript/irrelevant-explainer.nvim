@@ -26,7 +26,7 @@ out of view; accepted anchors and explanations remain unchanged.
 Old-side deletion notes render in virtual filler and
 are reachable at the following surviving source line, or the last line at EOF.
 
-In the explanation pane: >
+In the collapsed explanation pane: >
   j / k             Next / previous line, including added/deleted diff sections
   n / p             Next / previous explanation (counts, stops at either end)
   N (Shift-n)       Previous explanation, like p (also in expanded detail)
@@ -142,7 +142,8 @@ display-only labels. Neighboring summaries are not parsed or wrapped as Markdown
 Surrounding context and the empty area outside the explanation have a strongly
 dimmed backdrop; the expanded body has a subtle theme-derived surface tint.
 Summary/range/metadata backgrounds and wrapped prose margins match the card;
-Markdown fenced-code backgrounds remain distinct. The tint blends the active
+code fences remain visible, with syntax colors when their parser is installed.
+The tint blends the active
 colorscheme's CursorLine background halfway toward Normal, falling back to
 NormalFloat or a faint blend of normal text if neither has a background. No
 diagnostic color is used. Dark/light themes and custom highlight overrides work.
@@ -208,12 +209,18 @@ focus, even when every anchor leaves the screen. Bounds use the card's height,
 not its blank anchored continuation. Dimmed neighbors remain navigable where
 space permits. Resize, wrapping, folds and diff geometry recompute placement
 without replacing the Markdown buffer or resetting reading.
+Normal-mode j/k in expanded detail move by displayed row, including counts: 4j
+moves four screen rows, not four buffer lines. The buffer-local mappings bypass
+global j/k remappings. Native gj/gk, other motions, and overview/source mappings
+remain unchanged.
 Ctrl-e/Ctrl-y still accept counts. In overview, code and notes scroll together;
 with detail open, source scrolling uses sticky placement instead of equal prose
 movement. Explanation-driven scrolling continues to move code while pinned.
 At the reader's upper buffer limit, Ctrl-y scrolls code upward even with no
-earlier prose rows. k on a summary at the top screen edge likewise scrolls code
-without collapsing into stale context. Counts use native source display rows;
+earlier prose rows. k on the summary's first displayed segment at the top screen
+edge likewise scrolls code without collapsing into stale context. Later summary
+segments use ordinary gk movement, even when clipped to the top edge.
+Counts for the top-edge shortcut use native source display rows;
 both controls stop at the source's beginning. Other prose/context motion remains
 ordinary cursor movement.
 Wraps, folds, diff filler and source scrolloff (including unequal diff margins)
@@ -246,11 +253,15 @@ The default ExplainrActiveRange foreground can be customized by your theme.
 Markers respect the source's 'signcolumn' setting; priority 5 gives Git and
 diagnostic signs precedence when space is limited. Use 'signcolumn' "auto:2"
 to allow another sign alongside them. Explainr does not change this setting.
-Installed render-markdown.nvim is used optionally through its public render
-API with per-buffer configuration; user setup and other Markdown buffers are
-not reset. Markdown/markdown_inline
-Tree-sitter parsers enable richer rendering. Native highlights are available
-without the renderer or parsers. Prompts request Markdown detail, including
+Overview and detail both use filetype 'explainr', associated with the Markdown
+Tree-sitter parser. Optional markdown/markdown_inline parsers highlight structure
+and inline code; installed language parsers highlight fenced snippets. Markdown
+markers remain visible with window-local 'conceallevel' zero. Detail wraps
+natively without renderer borders or padding. Missing parsers retain readable
+semantic styling; Explainr never installs parsers or invokes render-markdown.nvim.
+User renderer setup and ordinary Markdown buffers are unchanged. Explicit user
+integrations targeting 'explainr' remain under the user's control.
+Prompts request Markdown detail, including
 backtick inline code and language-tagged fenced snippets; summaries stay compact
 single-line plain text. The response itself remains JSON, not a Markdown document.
 Detail is already part of the returned answer:

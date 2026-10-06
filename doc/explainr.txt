@@ -271,8 +271,11 @@ Ctrl-f/b/d/u/e/y and mouse wheel scroll the source then align the notes.
 Folds combine notes; wrapped continuations and diff filler retain their display
 rows. Long summaries end in an expansion indicator. Source window diff/fold/
 wrap/binding options remain unchanged. Intent accents are D (documented), ~
-(inferred), and ? (unknown). Optional render-markdown.nvim renders Markdown
-without resetting user configuration; native styling works without it.
+(inferred), and ? (unknown). Overview and detail use the 'explainr' filetype
+with optional Markdown Tree-sitter highlighting and visible Markdown markers.
+Missing parsers leave readable semantic styling; Explainr does not invoke
+render-markdown.nvim or change its user configuration. Expanded j/k, including
+counts, move by displayed row; see |explainr-ui.txt| for the top-edge k shortcut.
 vim.b.explainr_status exposes pane status for an optional lualine component.
 
 If the terminal cursor flickers during loading, keep 'termsync' enabled (its

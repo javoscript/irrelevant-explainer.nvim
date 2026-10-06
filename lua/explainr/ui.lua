@@ -115,38 +115,6 @@ local function loading_rail(chunks, width, frame, coordinate)
   return result
 end
 
--- Seed the public API's first-use buffer cache BEFORE FileType can attach.
--- Never call setup: that would reset the user's config and all buffer caches.
-local function markdown(buf, summary)
-  local ok, renderer = pcall(require, "render-markdown")
-  if not ok or type(renderer.render) ~= "function" then return end
-  -- Automatic attachment can queue an update before the buffer has a window.
-  -- Disable debounce here so that update cannot swallow our first valid render.
-  local config = { debounce = 0, render_modes = true, anti_conceal = { enabled = false },
-    win_options = { wrap = { default = not summary, rendered = not summary },
-      conceallevel = { default = 0, rendered = summary and 0 or 3 },
-      concealcursor = { default = "", rendered = "nc" } } }
-  if summary then
-    -- Inline styling only. No component may hide or insert display rows, even
-    -- when a user has enabled padded headings, tables, code borders or LaTeX.
-    for _, component in ipairs({ "heading", "code", "pipe_table", "document", "latex", "paragraph",
-      "dash", "bullet", "checkbox", "quote", "sign", "indent", "html", "yaml", "link" }) do
-      config[component] = { enabled = false }
-    end
-  else
-    -- Details should not require special heading/list glyphs to be readable.
-    config.heading = { icons = { "▎ " }, sign = false }
-    config.bullet = { icons = { "-" } }
-  end
-  if pcall(renderer.render, { buf = buf, win = {}, config = config }) then
-    return function(win)
-      if api.nvim_buf_is_valid(buf) and api.nvim_win_is_valid(win) then
-        pcall(renderer.render, { buf = buf, win = win, config = config })
-      end
-    end
-  end
-end
-
 local function start_markdown(buf)
   -- Parser installation is optional; native semantic marks remain the fallback.
   pcall(vim.treesitter.start, buf, "markdown")
@@ -272,7 +240,6 @@ function M.open(source, snapshot, result, on_close, keymaps)
   local win, buf = api.nvim_get_current_win(), api.nvim_create_buf(false, true)
   highlights()
   vim.treesitter.language.register("markdown", "explainr")
-  local render_summary = markdown(buf, true)
   -- The aligned overview stays alive while its window displays Markdown.
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].filetype = "explainr"
@@ -281,6 +248,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   api.nvim_win_set_buf(win, buf)
   start_markdown(buf)
   local options = { diff = false, scrollbind = false, cursorbind = false, wrap = false,
+    conceallevel = 0,
     number = false, relativenumber = false, signcolumn = "yes:1", statuscolumn = "  ", foldcolumn = "0", foldenable = true,
     foldmethod = "manual", foldminlines = 0, foldlevel = 0,
     foldtext = "get(b:explainr_loading_folds, string(v:foldstart), get(b:explainr_foldtext, string(v:foldstart), getline(v:foldstart)))",
@@ -1147,7 +1115,6 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- or applying overview window options/decorations to the Markdown buffer.
     if self.detail_win then self.rendering = false; return end
     local aligned = self:align()
-    if aligned ~= false and render_summary then render_summary(self.win) end
     self.rendering = false
     if aligned == false then self:render() end
   end
@@ -1266,7 +1233,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
         else api.nvim_win_set_cursor(self.win, { math.min(row, api.nvim_buf_line_count(self.buf)), 0 }) end
       end)
     end
-    self.detail_win, self.detail_buf, self.detail_index, self.overview, self.render_detail = nil, nil, nil, nil, nil
+    self.detail_win, self.detail_buf, self.detail_index, self.overview = nil, nil, nil, nil
     self.detail_layout = nil
     self.detail_context_cache = nil
     self.detail_folds_dirty, self.fold_prefix = nil, nil
@@ -1447,7 +1414,6 @@ function M.open(source, snapshot, result, on_close, keymaps)
     view.topfill = 0
     api.nvim_win_call(self.win, function() vim.fn.winrestview(view) end)
     self:decorate_detail_context()
-    if self.render_detail then self.render_detail(self.win) end
     for candidate in pairs(self:windows()) do self.scroll_views[candidate] = api.nvim_win_call(candidate, vim.fn.winsaveview) end
     self.scroll_views[self.win] = api.nvim_win_call(self.win, vim.fn.winsaveview)
     if untouched then layout.initial = vim.deepcopy(self.scroll_views[self.win]) end
@@ -1612,13 +1578,11 @@ function M.open(source, snapshot, result, on_close, keymaps)
     vim.bo[detail].modifiable = false
     if not navigating then
       vim.bo[detail].bufhidden = "wipe"
-      self.render_detail = markdown(detail, false)
-      vim.bo[detail].filetype = "markdown"
+      vim.bo[detail].filetype = "explainr"
       start_markdown(detail)
     end
-    local render_detail = self.render_detail
     for row, line in ipairs(lines) do
-      -- Base focus tint must not override Markdown code-block backgrounds.
+      -- Base focus tint must not override syntax highlighting.
       api.nvim_buf_set_extmark(detail, ns, row - 1, 0, { end_row = row, end_col = 0,
         hl_group = "ExplainrDetailActive", hl_eol = true, priority = 0 })
       if line:match("^#") then mark(detail, row - 1, 0, #line, "ExplainrHeading")
@@ -1671,19 +1635,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     self:header(ids)
     vim.wo[self.detail_win].wrap = true
     vim.wo[self.detail_win].linebreak = true
-    if render_detail then
-      local detail_win = self.detail_win
-      render_detail(detail_win)
-      -- The API does not auto-attach custom filetypes. Explicitly support the
-      -- detail viewport lifecycle without touching the renderer's internals.
-      if not navigating then
-        api.nvim_create_autocmd({ "CursorMoved", "WinScrolled", "BufWinEnter", "ModeChanged" }, {
-          group = self.group, buffer = detail, callback = function()
-            if not self.syncing and not self.rendering then render_detail(detail_win) end
-          end,
-        })
-      end
-    end
+    vim.wo[self.detail_win].conceallevel = 0
     -- Near the bottom, make room for the first body line instead of expanding
     -- entirely below the viewport. Trim only leading context, never move code.
     local height = api.nvim_win_text_height(self.win, { start_row = 0, end_row = headers[1].body }).all
@@ -1747,7 +1699,6 @@ function M.open(source, snapshot, result, on_close, keymaps)
       vim.fn.winrestview({ topline = 1, topfill = 0, lnum = layout.first, col = 0 })
     end)
     self:decorate_detail_context()
-    if render_detail then render_detail(self.win) end
     layout.card_height = api.nvim_win_text_height(self.win, { start_row = layout.first - 1, end_row = layout.last - 1 }).all
     self.scroll_views[self.win] = api.nvim_win_call(self.win, vim.fn.winsaveview)
     layout.initial = vim.deepcopy(self.scroll_views[self.win])
@@ -1765,19 +1716,27 @@ function M.open(source, snapshot, result, on_close, keymaps)
       local keys = api.nvim_replace_termcodes(lhs, true, false, true)
       vim.keymap.set("n", lhs, function() self:scroll(vim.v.count1 .. keys, self.win) end, { buffer = detail })
     end
-    vim.keymap.set("n", "k", function()
-      local count = vim.v.count1
-      -- Above a top-edge summary, old leading rows no longer describe the
-      -- code beside the reader. Scroll back before permitting context motion;
-      -- at buffer row 1 there is no native k motion to observe at all.
-      if api.nvim_win_get_cursor(self.win)[1] == self.detail_layout.first
-          and api.nvim_win_call(self.win, vim.fn.winline) == 1 then
-        self:scroll(api.nvim_replace_termcodes(count .. "<C-y>", true, false, true), self.win)
-      else
-        api.nvim_win_call(self.win, function() vim.cmd.normal({ count .. "k", bang = true }) end)
-        self:sync(self.win)
-      end
-    end, { buffer = detail })
+    for _, lhs in ipairs({ "j", "k" }) do
+      vim.keymap.set("n", lhs, function()
+        local count = vim.v.count1
+        -- Above the summary's first display row, scroll code instead of
+        -- entering stale leading context. A clipped later wrap is still prose.
+        if lhs == "k" and api.nvim_win_get_cursor(self.win)[1] == self.detail_layout.first
+            and api.nvim_win_call(self.win, function()
+              return vim.fn.winline() == 1 and vim.fn.winsaveview().skipcol == 0
+            end) then
+          self:scroll(api.nvim_replace_termcodes(count .. "<C-y>", true, false, true), self.win)
+        else
+          api.nvim_win_call(self.win, function()
+            vim.cmd.normal({ count .. "g" .. lhs, bang = true })
+            -- Settle native smoothscroll/skipcol before forwarding the viewport
+            -- delta; a later screen-row query can otherwise shift it again.
+            vim.fn.winline()
+          end)
+          self:sync(self.win)
+        end
+      end, { buffer = detail })
+    end
     for lhs, direction in pairs({ n = 1, p = -1, N = -1 }) do
       vim.keymap.set("n", lhs, function()
         local position = 1
