@@ -1064,10 +1064,74 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:set(value, status)
     if self.closed then return end
+    self.selection = nil
     self:back(true)
     self.result, self.status = value, status or "Ready"
     self:animate()
     self:render()
+  end
+
+  -- Detail context owns exact comparison coordinates; prose owns a bounded
+  -- display position. Both cursor motion and explicit collapse use this target.
+  function pane:detail_target()
+    local layout = self.detail_layout
+    local context = layout.rows[api.nvim_win_get_cursor(self.win)[1]]
+    if context and context.item then
+      local item = context.item
+      local coordinate = (self.overflow[item.line] or self:coordinates(layout.source)[item.line]) + (item.offset or 0)
+      local candidate, target = layout.source, self:locate(coordinate, layout.source)
+      if target.offset then
+        for source_win in pairs(self:windows()) do
+          local real = self:locate(coordinate, source_win)
+          if not real.offset then candidate, target = source_win, real; break end
+        end
+      end
+      local first = api.nvim_win_call(candidate, function() return vim.fn.foldclosed(target.row) end)
+      return { win = candidate, line = first >= 0 and first or target.row }
+    end
+    local screen_row = api.nvim_win_call(self.win, vim.fn.winline)
+    local sources = { layout.source }
+    for candidate in pairs(self:windows()) do
+      if candidate ~= layout.source then sources[#sources + 1] = candidate end
+    end
+    local target, distance, display_row
+    for _, candidate in ipairs(sources) do
+      local coordinates = self:coordinates(candidate)
+      for row, item in ipairs(M.project(candidate)) do
+        if not item.empty and not item.filler then
+          local first, last = coordinates[item.line], coordinates[item.last]
+          for _, range in ipairs(layout.ranges) do
+            if first <= range[2] and last >= range[1] then
+              local delta = math.abs(row - screen_row)
+              if not distance or delta < distance or delta == distance and row < display_row then
+                target, distance, display_row = { win = candidate, line = item.line }, delta, row
+              end
+              break
+            end
+          end
+        end
+      end
+    end
+    return target
+  end
+
+  function pane:select_source(target)
+    local syncing, views = self.syncing, {}
+    self.syncing = true
+    for candidate in pairs(self:windows()) do views[candidate] = api.nvim_win_call(candidate, vim.fn.winsaveview) end
+    local column = api.nvim_win_get_cursor(target.win)[2]
+    local text = api.nvim_buf_get_lines(api.nvim_win_get_buf(target.win), target.line - 1, target.line, false)[1]
+    api.nvim_win_set_cursor(target.win, { target.line, math.min(column, math.max(0, #text - 1)) })
+    self:sync_sources(target.line, target.win)
+    -- Selection must not add a scrolloff/diff-bind viewport shift on top of
+    -- scrolling already synchronized by the detail reader.
+    for candidate, view in pairs(views) do
+      local selected = api.nvim_win_get_cursor(candidate)
+      view.lnum, view.col = selected[1], selected[2]
+      api.nvim_win_call(candidate, function() vim.fn.winrestview(view) end)
+      self.scroll_views[candidate] = api.nvim_win_call(candidate, vim.fn.winsaveview)
+    end
+    self.syncing = syncing
   end
 
   function pane:back(replacing)
@@ -1075,6 +1139,21 @@ function M.open(source, snapshot, result, on_close, keymaps)
     self.display_generation = (self.display_generation or 0) + 1
     clear_detail_marks()
     local saved, detail = self.overview, self.detail_buf
+    local target, row
+    if not replacing then
+      local layout = self.detail_layout
+      local view = api.nvim_win_call(self.win, vim.fn.winsaveview)
+      local moved = layout.reading or not vim.deep_equal(view, layout.initial)
+      if moved then target = self:detail_target() end
+      target = target or { win = self.source, line = api.nvim_win_get_cursor(self.source)[1] }
+      self:select_source(target)
+      if self.source ~= target.win then self.source, self.folds = target.win, {} end
+      row = target.line
+      -- An untouched overflow summary still represents this source position.
+      local overflow = not moved and self.overflow[saved.view.lnum]
+      if overflow and self:locate(overflow).row == row then row = saved.view.lnum end
+      self.syncing = true
+    end
     -- Clear the guard only after swapping: BufWinEnter must not synchronize a
     -- Markdown cursor against code, nor wipe our hidden summary.
     if api.nvim_win_is_valid(self.win) and api.nvim_buf_is_valid(self.buf) then
@@ -1083,7 +1162,8 @@ function M.open(source, snapshot, result, on_close, keymaps)
       api.nvim_win_call(self.win, function()
         vim.cmd("silent! normal! zE")
         for first, last in pairs(self.folds) do vim.cmd(string.format("%d,%dfold", first, last)) end
-        vim.fn.winrestview(saved.view)
+        if replacing then vim.fn.winrestview(saved.view)
+        else api.nvim_win_set_cursor(self.win, { math.min(row, api.nvim_buf_line_count(self.buf)), 0 }) end
       end)
     end
     self.detail_win, self.detail_buf, self.detail_index, self.overview, self.render_detail = nil, nil, nil, nil, nil
@@ -1093,19 +1173,55 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- A new result (including invalidation on a Diffview file switch) must
     -- rebuild geometry before focusing; the old projection belongs to old text.
     if not replacing then
-      if saved.scrolled or api.nvim_win_get_cursor(self.source)[1] ~= saved.view.lnum then self:sync(self.win)
-      else self:state(); self:focus() end
+      self:render()
+      self.syncing = false
     end
   end
 
   function pane:detail(index)
     if self.closed or not self.result then return end
+    self.selection = nil
     index = type(index) == "number" and index or nil
     if index and not self.result.notes[index] then return end
     local ids = index and { index } or {}
     if not index then
       if self.detail_win then return end
       ids = self:note_ids()
+      if #ids == 0 then
+        local row = api.nvim_win_get_cursor(self.win)[1]
+        local last = api.nvim_win_call(self.win, function() return vim.fn.foldclosedend(row) end)
+        local coordinates = self:coordinates(self.source)
+        local first, finish = coordinates[row], coordinates[last >= row and last or row]
+        local locals, overviews = {}, {}
+        for _, id in ipairs(self.note_order) do
+          local note = self.result.notes[id]
+          for _, range in ipairs(self:ranges(note.anchors, self.snapshot.windows)) do
+            if first and finish and first <= range[2] and finish >= range[1] then
+              local candidates = note.kind == "overview" and overviews or locals
+              candidates[#candidates + 1] = id
+              break
+            end
+          end
+        end
+        if #locals == 1 then ids = locals
+        else
+          ids = vim.list_extend(locals, overviews)
+          if #ids > 1 then
+            local selection, result, snapshot = {}, self.result, self.snapshot
+            self.selection = selection
+            vim.ui.select(ids, { prompt = "Expand explanation:", format_item = function(id)
+              local note = result.notes[id]
+              return (note.kind == "overview" and "Overview · " or "") .. reference(note) .. single_line(note.summary)
+            end }, function(id)
+              if self.closed or self.selection ~= selection or self.result ~= result or self.snapshot ~= snapshot
+                  or self.detail_win or api.nvim_get_current_win() ~= self.win then return end
+              self.selection = nil
+              if id then self:detail(id) end
+            end)
+            return
+          end
+        end
+      end
     end
     if #ids == 0 then return end
     local navigating = self.detail_win ~= nil
@@ -1330,7 +1446,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- parse or wrap neighboring summaries. Only prose is Markdown content.
     local leading, tail, active = {}, {}, {}
     local layout = { source = self.source, rows = {}, first = #self.overview.context + 1,
-      last = #self.overview.context + #lines }
+      last = #self.overview.context + #lines, ranges = ranges }
     local function context_row(row, chunks, projected)
       local hl = chunks[1][2]
       local focused = hl == "ExplainrDetailActive" or type(hl) == "table"
@@ -1368,6 +1484,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
       vim.fn.winrestview({ topline = 1, topfill = 0, lnum = layout.first, col = 0 })
     end)
     self.scroll_views[self.win] = api.nvim_win_call(self.win, vim.fn.winsaveview)
+    layout.initial = vim.deepcopy(self.scroll_views[self.win])
     if navigating then return end
     local function close_detail()
       self:back()
@@ -1403,6 +1520,8 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local after = api.nvim_win_call(from, vim.fn.winsaveview)
     local changed = from ~= self.win and not vim.deep_equal(before, after)
     if self.detail_win then
+      local layout = self.detail_layout
+      if from == self.win and layout.initial and not vim.deep_equal(after, layout.initial) then layout.reading = true end
       local delta = before.topfill - after.topfill
       if before.topline ~= after.topline then
         local first, last = math.min(before.topline, after.topline), math.max(before.topline, after.topline)
@@ -1442,21 +1561,24 @@ function M.open(source, snapshot, result, on_close, keymaps)
       local layout = self.detail_layout
       local context = from == self.win and layout and layout.rows[api.nvim_win_get_cursor(self.win)[1]]
       if context and context.item then
-        local item = context.item
-        local coordinate = (self.overflow[item.line] or self:coordinates(layout.source)[item.line]) + (item.offset or 0)
-        local candidate, target = layout.source, self:locate(coordinate, layout.source)
-        if target.offset then
-          for source_win in pairs(self:windows()) do
-            local real = self:locate(coordinate, source_win)
-            if not real.offset then candidate, target = source_win, real; break end
-          end
-        end
+        local target = self:detail_target()
         if context.active then self:scroll(nil, from) else self:back(true) end
-        local first = api.nvim_win_call(candidate, function() return vim.fn.foldclosed(target.row) end)
-        api.nvim_win_set_cursor(candidate, { first >= 0 and first or target.row, 0 })
-        self:sync_sources(api.nvim_win_get_cursor(candidate)[1], candidate)
-        if not context.active then self:sync(candidate) end
-      else self:scroll(nil, from) end
+        api.nvim_win_set_cursor(target.win, { target.line, 0 })
+        self:sync_sources(target.line, target.win)
+        if not context.active then self:sync(target.win) end
+      else
+        local cursor = api.nvim_win_get_cursor(self.win)
+        local previous = self.scroll_views and self.scroll_views[self.win]
+        -- Opening/navigating detail can emit a deferred cursor event. Only
+        -- actual reading motion maps prose; source-driven scrolling stays free.
+        local moved = from == self.win and previous
+          and (cursor[1] ~= previous.lnum or cursor[2] ~= previous.col)
+        self:scroll(nil, from)
+        if moved and layout and cursor[1] >= layout.first and cursor[1] <= layout.last then
+          local target = self:detail_target()
+          if target then self:select_source(target) end
+        end
+      end
       return
     end
     self.syncing = true

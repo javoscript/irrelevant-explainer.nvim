@@ -98,7 +98,8 @@ omitting the title when necessary. Themes can override these highlight groups.
 In the explainer pane, focusing a collapsed summary applies the same dimming and
 theme-derived tint as expanded detail: its full anchor ranges stay emphasized in both
 the explainer and source buffers. Moving to a blank row or a different window
-clears collapsed focus. Expand/collapse keeps focus on the same explanation.
+clears collapsed focus. After collapse, focus follows the destination row's
+summary, if any, rather than forcing the cursor back to the expanded explanation.
 The full anchor range is retained for references and expanded detail. **n/p** jump
 to the next/previous explanation, including off-screen notes, with counts,
 stopping at the first/last explanation without wrapping. Successful jumps center
@@ -109,6 +110,14 @@ marks, screen motions and counted scrolling, synchronize the overview and source
 in both directions without remapping those actions. **K** or **Enter** expands
 detail beneath the selected summary, retaining its visible position when space
 allows, range/intent styling and dimmed overview context above and below it.
+You can also expand from any row within an explanation's original anchor ranges,
+including context before a relocated diff summary. A visible summary takes
+precedence; on a blank row, a single local explanation opens directly even when
+a whole-file overview also covers it. Multiple local explanations open a
+`vim.ui.select` chooser with summaries and original range labels, local notes
+first and the overview last. Cancelling leaves the pane collapsed. If only the
+overview covers the row, it opens directly; closed summary folds still expand
+together. Expansion itself never moves the source cursor or viewport.
 Following notes keep their aligned rows when space allows; a longer card puts
 them below its body instead of hiding them. A fixed gutter with one padding
 space prevents horizontal shifts on expansion/collapse.
@@ -130,23 +139,35 @@ marked with a muted gutter rail; text outside the anchors is dimmed in the sourc
 buffers (both sides in diff mode). Anchored syntax colors, Git diff backgrounds
 and existing signs stay intact. Native diff foregrounds take precedence over
 dimming, so changed text can remain brighter outside the anchors.
-Focus follows **n/p** and stays on the summary after collapse; it clears on a
-blank row, departure from collapsed notes, stale data or closure.
+Focus follows **n/p** and the collapsed destination; it clears on a blank row,
+departure from collapsed notes, stale data or closure.
 Themes can customize `ExplainrSourceContext` (foreground
 only), `ExplainrDetailContext`, `ExplainrDetailBackdrop` and `ExplainrDetailActive`.
 **K/Enter** or **q/Esc**
-collapses onto the currently expanded explanation, not the original entry point.
+collapses at the current source-aligned line, not the summary or original entry
+point, while preserving source viewports and pane focus within native geometry
+limits. Wrapped prose uses its display position, never its Markdown line number;
+outside visible anchors the nearest eligible position is used. With all anchors
+off-screen, the native source position is retained. Immediately collapsing
+without reading motion keeps the source position established on opening or n/p
+navigation. Enter/K in detail never opens the overlap chooser.
 **n/p** browses entries and synchronizes the source cursor and viewport with the
 selected explanation, including both diff sides and old-only deletions.
 Detail shows the explanation and intent basis, without
 context warnings or separate evidence/anchor lists; range labels and source
 gutter markers still identify the referenced lines.
-No extra AI call or popup is involved. **Ctrl-e/Ctrl-y** scroll content and notes
+Detail needs no extra AI call or popup. **Ctrl-e/Ctrl-y** scroll content and notes
 together from any paired source or the explainer, even with detail expanded;
 counts work too. Native expanded-detail scrolling (including **zz/zt/zb** and
 cursor motions that scroll the viewport) moves source panes by the same displayed
-row distance, within native buffer limits. The detail cursor remains free for
-reading; paragraph lines are never mistaken for source line numbers.
+row distance, within native buffer limits. Moving through expanded summaries,
+metadata or prose also selects the source line beside the cursor's display row,
+including wrapped prose, source wraps, folds and old-only diff deletions. Targets
+stay within the expanded anchors: prose beyond them selects the nearest visible
+anchored row, with ties choosing the earlier row. If all anchors scroll off-screen,
+reading continues without snapping code back. Paragraph buffer line numbers are
+never treated as source line numbers. Blank anchored continuation still follows
+code; entering surrounding context outside the anchors collapses at that destination.
 In overview, **q/Esc** closes the pane.
 
 In diff mode, both overview and expanded detail inherit Diffview's file navigation

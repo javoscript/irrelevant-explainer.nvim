@@ -14,6 +14,103 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state:match("^range%-") then
+  local api = vim.api
+  local source = api.nvim_get_current_win()
+  local lines = {}; for row = 1, 40 do lines[row] = "-- request preparation context " .. row end
+  lines[10], lines[18], lines[24] = "local function prepare(payload)", "  validate(payload)", "end"
+  api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  vim.bo.filetype = "lua"
+  vim.wo.number, vim.wo.cursorline, vim.wo.wrap = true, true, false
+  vim.wo.winbar = " SOURCE · preparation.lua "
+  api.nvim_set_hl(0, "CursorLine", { bg = "#34485c" })
+  local function note(first, last, summary, detail, kind)
+    return { kind = kind, summary = summary, detail = detail, intent_basis = "inferred",
+      anchors = { { path = "preparation.lua", side = "new", start_line = first, end_line = last } } }
+  end
+  _G.capture_pane = require("explainr.ui").open(source, { windows = { new = source } }, { notes = {
+    note(1, 40, "Prepare and validate incoming requests.", "The file provides safe request preparation.", "overview"),
+    note(10, 24, "Prepare the request without blocking.",
+      "The preparation function validates the payload before forwarding it.\n\nExisting validation remains in place."),
+    note(18, 22, "Validate required payload fields.", "Reject incomplete payloads before preparing the request."),
+  } })
+  api.nvim_set_current_win(capture_pane.win)
+  local chooser = vim.g.capture_state == "range-chooser"
+  api.nvim_win_set_cursor(capture_pane.win, { chooser and 20 or 14, 0 })
+  capture_pane:sync(capture_pane.win)
+  if chooser then
+    api.nvim_win_call(source, function() vim.cmd("normal! 20Gzz") end)
+    capture_pane:sync(source)
+    vim.cmd("redraw!")
+  end
+  api.nvim_feedkeys(api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
+  if chooser then
+    assert(not capture_pane.detail_buf and api.nvim_win_get_cursor(source)[1] == 20)
+    return
+  end
+  assert(capture_pane.detail_index == 2 and api.nvim_win_get_cursor(source)[1] == 14,
+    "range opening must select the local note without moving the source")
+  if vim.g.capture_state ~= "range-open" then
+    vim.cmd.normal({ "22G0", bang = true })
+    api.nvim_exec_autocmds("CursorMoved", { buffer = capture_pane.detail_buf })
+    assert(api.nvim_win_get_cursor(source)[1] == 22, "continuation must select source line 22")
+    if vim.g.capture_state == "range-after-collapse" then
+      api.nvim_feedkeys(api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
+      assert(not capture_pane.detail_buf and api.nvim_win_get_cursor(capture_pane.win)[1] == 22)
+      assert(api.nvim_win_get_cursor(source)[1] == 22, "collapse must not jump to summary line 10")
+    end
+  end
+  assert(api.nvim_get_current_win() == capture_pane.win)
+  return
+end
+if vim.g.capture_state:match("^diff%-prose") then
+  local api = vim.api
+  local old = api.nvim_get_current_win()
+  local lines = {}; for row = 1, 90 do lines[row] = "# Route context " .. row end
+  local route = { "@http.route(", '    "/example/inbound/prepare",', '    type="json",', '    auth="bearer",',
+    '    methods=["POST"],', "    save_session=False,", ")", "def prepare(self, **payload):",
+    '    return self._call("prepare", payload)', "", "@http.route(", '    "/example/inbound/status",',
+    '    type="json",', '    auth="bearer",', '    methods=["POST"],', "    readonly=True,", ")",
+    "def status(self, **payload):", '    return self._call("status", payload)' }
+  for row, text in ipairs(route) do lines[36 + row] = text end
+  local before = vim.deepcopy(lines); before[37] = '@http.route("/legacy/prepare")'
+  api.nvim_buf_set_lines(0, 0, -1, false, before)
+  vim.cmd("belowright vsplit")
+  local new = api.nvim_get_current_win()
+  api.nvim_win_set_buf(new, api.nvim_create_buf(false, true))
+  api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  api.nvim_set_hl(0, "CursorLine", { bg = "#34485c" })
+  for side, win in pairs({ old = old, new = new }) do
+    vim.bo[api.nvim_win_get_buf(win)].filetype = "python"
+    vim.wo[win].winbar = " " .. side:upper() .. " · routes.py "
+    vim.wo[win].number, vim.wo[win].cursorline, vim.wo[win].wrap = true, true, false
+    api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end)
+  end
+  vim.cmd("diffupdate")
+  local wrapped = vim.g.capture_state:find("wrapped", 1, true) ~= nil
+  local boundary = vim.g.capture_state == "diff-prose-boundary"
+  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } }, { notes = { {
+    summary = "Both routes require bearer auth.",
+    detail = wrapped and string.rep("Both routes use bearer auth and forward their payload to a shared service. ", 5)
+      or "Both routes use bearer authentication.\n\nEach handler forwards its payload to the shared service.",
+    intent_basis = "inferred", anchors = { { path = "routes.py", side = "new", start_line = 37,
+      end_line = boundary and 40 or 58 } },
+  } } })
+  api.nvim_set_current_win(capture_pane.win)
+  vim.cmd.normal({ "37Gzz", bang = true }); capture_pane:sync(capture_pane.win)
+  capture_pane:detail()
+  vim.cmd.normal({ wrapped and (capture_pane.detail_layout.first + 3) .. "G02gj" or "5j", bang = true })
+  api.nvim_exec_autocmds("CursorMoved", { buffer = capture_pane.detail_buf })
+  assert(api.nvim_win_get_cursor(new)[1] == (boundary and 40 or 42), "prose must select the expected source row")
+  assert(api.nvim_get_current_win() == capture_pane.win and capture_pane.detail_index == 1)
+  if vim.g.capture_state == "diff-prose-wrapped-collapse" then
+    api.nvim_feedkeys(api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
+    assert(not capture_pane.detail_buf and api.nvim_win_get_cursor(capture_pane.win)[1] == 42)
+    assert(api.nvim_win_get_cursor(new)[1] == 42, "wrapped prose collapse must keep source line 42")
+    assert(api.nvim_get_current_win() == capture_pane.win)
+  end
+  return
+end
 if vim.g.capture_state:match("^detail%-highlight") then
   if vim.g.capture_state:match("^detail%-highlight%-rose%-pine") then
     require("rose-pine").setup({ dim_inactive_windows = true })

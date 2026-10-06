@@ -42,6 +42,281 @@ local function key(buf, lhs)
   error("missing mapping " .. lhs)
 end
 
+T.test("range expansion preserves source views and prefers local notes without changing collapsed focus", function()
+  local lines = {}; for row = 1, 50 do lines[row] = "source line " .. row end
+  for _, overview in ipairs({ false, true }) do
+    local source = setup(lines)
+    local local_note = note(20, "Local range"); local_note.anchors[1].end_line = 40
+    local notes = { local_note }
+    if overview then
+      local file = note(1, "Whole file"); file.kind = "overview"; file.anchors[1].end_line = 50
+      notes[#notes + 1] = file
+    end
+    local p = ui.open(source, { windows = { buffer = source } }, { notes = notes })
+    for _, row in ipairs({ 20, 21, 31, 40, 41 }) do
+      motion(p.win, row .. "G0")
+      if row ~= 20 then T.eq({}, p.focus_ids) end
+      local before = api.nvim_win_call(source, vim.fn.winsaveview)
+      key(p.buf, row % 2 == 0 and "K" or "<CR>")
+      if row <= 40 or overview then
+        T.eq(row <= 40 and 1 or 2, p.detail_index)
+        T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+        p:back()
+      else T.eq(nil, p.detail_buf) end
+    end
+    p:close()
+  end
+end)
+
+T.test("range ambiguity offers locals before overview and preserves direct summary precedence", function()
+  local select = vim.ui.select
+  local ok, err = xpcall(function()
+    local lines = {}; for row = 1, 50 do lines[row] = "source line " .. row end
+    for _, choice in ipairs({ 0, 1, 2, 3 }) do
+      local source = setup(lines)
+      local file, broad, narrow = note(1, "Whole file"), note(20, "Function"), note(28, "Validation")
+      file.kind = "overview"; file.anchors[1].end_line = 50
+      broad.anchors[1].end_line = 40; narrow.anchors[1].end_line = 32
+      local p = ui.open(source, { windows = { buffer = source } }, { notes = { file, narrow, broad } })
+      local calls = 0
+      vim.ui.select = function(items, opts, callback)
+        calls = calls + 1; T.eq({ 3, 2, 1 }, items)
+        assert(opts.format_item(items[1]):find("[buffer:20–40]", 1, true))
+        assert(opts.format_item(items[2]):find("Validation", 1, true))
+        assert(opts.format_item(items[3]):find("Overview", 1, true))
+        callback(choice > 0 and items[choice] or nil)
+      end
+      motion(p.win, "30G0")
+      local before = api.nvim_win_call(source, vim.fn.winsaveview)
+      key(p.buf, "K"); T.eq(1, calls)
+      T.eq(choice > 0 and ({ 3, 2, 1 })[choice] or nil, p.detail_index)
+      T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+      if p.detail_buf then p:back() end
+      motion(p.win, "28G0"); key(p.buf, "<CR>"); T.eq(2, p.detail_index); T.eq(1, calls)
+      p:close()
+    end
+  end, debug.traceback)
+  vim.ui.select = select
+  assert(ok, err)
+end)
+
+T.test("delayed range choices cannot expand replaced closed or superseded panes or steal focus", function()
+  local select = vim.ui.select
+  local ok, err = xpcall(function()
+    for _, action in ipairs({ "cancel", "replace", "file", "close", "expand", "newer", "leave" }) do
+      local source = setup({ "one", "two", "three", "four", "five", "six" })
+      local a, b = note(1), note(2); a.anchors[1].end_line = 5; b.anchors[1].end_line = 6
+      local p = ui.open(source, { windows = { buffer = source } }, { notes = { a, b } })
+      local callbacks = {}
+      vim.ui.select = function(_, _, callback) callbacks[#callbacks + 1] = callback end
+      motion(p.win, "4G0"); key(p.buf, "K"); T.eq(1, #callbacks)
+      local before = api.nvim_win_call(source, vim.fn.winsaveview)
+      if action == "replace" then p:set(p.result) -- Even replacement with the same object invalidates the request.
+      elseif action == "file" then
+        local buf = api.nvim_create_buf(false, true)
+        api.nvim_buf_set_lines(buf, 0, -1, false, { "different file" })
+        api.nvim_win_set_buf(source, buf); p.snapshot = { windows = { buffer = source } }; p:set(nil, "Pending")
+      elseif action == "close" then p:close()
+      elseif action == "expand" then p:detail(2); p:back()
+      elseif action == "newer" then key(p.buf, "<CR>")
+      elseif action == "leave" then api.nvim_set_current_win(source) end
+      if action == "cancel" then callbacks[1](nil) else callbacks[1](1) end
+      T.eq(nil, p.detail_buf)
+      if action == "newer" then callbacks[2](2); T.eq(2, p.detail_index) end
+      if action == "cancel" or action == "leave" then T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview)) end
+      if action == "leave" then T.eq(source, api.nvim_get_current_win()) end
+      p:close()
+    end
+  end, debug.traceback)
+  vim.ui.select = select
+  assert(ok, err)
+end)
+
+T.test("range lookup respects wraps fold extents and disjoint gaps", function()
+  local lines = {}; for row = 1, 40 do lines[row] = "source line " .. row end
+  lines[5] = string.rep("wrapped ", 45)
+  local source, buf = setup(lines)
+  vim.wo[source].wrap = true
+  local selected = note(2); selected.anchors[1].end_line = 8
+  selected.anchors[2] = { path = "test.lua", side = "buffer", start_line = 16, end_line = 20 }
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(source, "5G$"); api.nvim_set_current_win(p.win)
+  local before = api.nvim_win_call(source, vim.fn.winsaveview)
+  key(p.buf, "K"); T.eq(1, p.detail_index); T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview)); p:back()
+  motion(p.win, "12G0"); key(p.buf, "K"); T.eq(nil, p.detail_buf)
+  motion(p.win, "20G0"); key(p.buf, "K"); T.eq(1, p.detail_index); p:back()
+  vim.wo[source].foldmethod, vim.wo[source].foldenable = "manual", true
+  api.nvim_win_call(source, function() vim.cmd("12,18fold") end); p:render()
+  motion(p.win, "12G0"); key(p.buf, "<CR>"); T.eq(1, p.detail_index)
+  T.eq(18, api.nvim_win_call(source, function() return vim.fn.foldclosedend(12) end))
+  T.eq(lines, api.nvim_buf_get_lines(buf, 0, -1, false)); T.eq(true, vim.wo[source].wrap)
+  p:close()
+end)
+
+T.test("range lookup uses original diff context and real deletion coordinates on either side", function()
+  local lines = {}; for row = 1, 35 do lines[row] = "source line " .. row end
+  local old = setup(lines); vim.o.columns = 210
+  vim.cmd("belowright vsplit")
+  local new, buf = api.nvim_get_current_win(), api.nvim_create_buf(false, true)
+  api.nvim_win_set_buf(new, buf)
+  local after = vim.deepcopy(lines); after[6] = "changed line"; table.remove(after, 12); table.remove(after, 11)
+  api.nvim_buf_set_lines(buf, 0, -1, false, after)
+  for _, win in ipairs({ old, new }) do api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end) end
+  vim.cmd("diffupdate")
+  local context, deleted = note(3, "Changed block", "new"), note(10, "Deletion", "old")
+  context.anchors[1].end_line = 8; deleted.anchors[1].end_line = 13
+  context.anchors[2] = { side = "old", path = "test.lua", start_line = 3, end_line = 8 }
+  local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { context, deleted } })
+  T.eq({ row = 6 }, p.locations[1])
+  motion(p.win, "3G0"); key(p.buf, "K"); T.eq(1, p.detail_index); p:back()
+  motion(p.win, "8G0"); key(p.buf, "K"); T.eq(1, p.detail_index); p:back()
+  motion(p.win, "9G0"); key(p.buf, "K"); T.eq(nil, p.detail_buf)
+  motion(p.win, "10G0"); key(p.buf, "j"); T.eq(old, p.source)
+  T.eq(11, api.nvim_win_get_cursor(old)[1]); key(p.buf, "K"); T.eq(2, p.detail_index)
+  T.eq(true, vim.wo[old].diff); T.eq(true, vim.wo[new].diff); T.eq(false, vim.wo[p.win].diff)
+  T.eq(lines, api.nvim_buf_get_lines(api.nvim_win_get_buf(old), 0, -1, false))
+  T.eq(after, api.nvim_buf_get_lines(buf, 0, -1, false)); p:close(); vim.cmd("diffoff!")
+end)
+
+T.test("all explicit collapse keys retain the current continuation and destination focus", function()
+  local lines = {}; for row = 1, 60 do lines[row] = "source line " .. row end
+  for _, lhs in ipairs({ "K", "<CR>", "q", "<Esc>" }) do
+    for _, destination in ipairs({ 31, 32 }) do
+      local source = setup(lines); vim.o.lines = 65
+      local selected = note(20, "Function"); selected.anchors[1].end_line = 40
+      selected.detail = "Short prose."
+      local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected, note(32, "Neighbor") } })
+      motion(p.win, "25G0"); key(p.buf, "K")
+      motion(p.win, destination .. "G0"); T.eq(destination, api.nvim_win_get_cursor(source)[1])
+      api.nvim_win_set_cursor(source, { destination, 5 })
+      local before = api.nvim_win_call(source, vim.fn.winsaveview)
+      key(p.detail_buf, lhs)
+      T.eq(destination, api.nvim_win_get_cursor(p.win)[1]); T.eq({ destination, 5 }, api.nvim_win_get_cursor(source))
+      T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview)); T.eq(p.win, api.nvim_get_current_win())
+      T.eq(destination == 32 and { 2 } or {}, p.focus_ids); T.eq(nil, p.detail_buf)
+      for _ = 1, 2 do
+        api.nvim_exec_autocmds("CursorMoved", { buffer = p.buf })
+        api.nvim_exec_autocmds("WinScrolled", {}); api.nvim_exec_autocmds("SafeState", {})
+        vim.wait(10, function() return false end)
+      end
+      T.eq(destination, api.nvim_win_get_cursor(p.win)[1]); T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+      p:close()
+    end
+  end
+end)
+
+T.test("untouched range and entry initialization collapse keeps native source position", function()
+  local lines = {}; for row = 1, 70 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(20); selected.anchors[1].end_line = 40
+  local next_note = note(55); next_note.anchors[1].end_line = 68
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected, next_note } })
+  motion(p.win, "31G0"); key(p.buf, "K")
+  local before = api.nvim_win_call(source, vim.fn.winsaveview)
+  api.nvim_exec_autocmds("CursorMoved", { buffer = p.detail_buf }); key(p.detail_buf, "<CR>")
+  T.eq(31, api.nvim_win_get_cursor(p.win)[1]); T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+  key(p.buf, "K"); key(p.detail_buf, "n")
+  before = api.nvim_win_call(source, vim.fn.winsaveview)
+  key(p.detail_buf, "q"); T.eq(55, api.nvim_win_get_cursor(p.win)[1]); T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+  key(p.buf, "K"); motion(p.win, "3j"); key(p.detail_buf, "q")
+  T.eq(58, api.nvim_win_get_cursor(p.win)[1]); T.eq(58, api.nvim_win_get_cursor(source)[1])
+  p:close()
+end)
+
+T.test("collapse after paired scrolling preserves scrolloff views and does not replay movement", function()
+  local lines = {}; for row = 1, 100 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local scrolloff = vim.wo[source].scrolloff; vim.wo[source].scrolloff = 5
+  local selected = note(20); selected.anchors[1].end_line = 60; selected.detail = string.rep("Prose\n", 40)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "20Gzz"); key(p.buf, "K")
+  key(p.detail_buf, "<C-e>"); key(p.detail_buf, "<C-e>")
+  motion(p.win, "5j")
+  local row = api.nvim_win_call(p.win, vim.fn.winline)
+  local before = api.nvim_win_call(source, vim.fn.winsaveview)
+  local expected = before.topline + row - 1 -- Plain, unfolded source: native display row gives the independent target.
+  assert(expected > 20 and expected < 60)
+  key(p.detail_buf, "<CR>")
+  T.eq(expected, api.nvim_win_get_cursor(p.win)[1]); T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+  for _ = 1, 2 do
+    api.nvim_exec_autocmds("CursorMoved", { buffer = p.buf }); api.nvim_exec_autocmds("WinScrolled", {})
+    api.nvim_exec_autocmds("SafeState", {}); vim.wait(10, function() return false end)
+  end
+  T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview)); T.eq(p.win, api.nvim_get_current_win())
+  p:close(); vim.wo[source].scrolloff = scrolloff
+end)
+
+T.test("collapse resolves wrapped prose against current geometry even with a stale source cursor", function()
+  local lines = {}; for row = 1, 50 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(4); selected.anchors[1].end_line = 25
+  selected.detail = string.rep("wrapped words ", 20)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "4G0"); key(p.buf, "K")
+  motion(p.win, (p.detail_layout.first + 3) .. "G0"); motion(p.win, "2gj")
+  T.eq(9, api.nvim_win_get_cursor(source)[1])
+  api.nvim_win_set_cursor(source, { 4, 5 }) -- Collapse must resolve prose, not trust this stale cursor.
+  local before = api.nvim_win_call(source, vim.fn.winsaveview)
+  key(p.detail_buf, "<CR>")
+  T.eq(9, api.nvim_win_get_cursor(p.win)[1]); T.eq({ 9, 5 }, api.nvim_win_get_cursor(source))
+  local after = api.nvim_win_call(source, vim.fn.winsaveview)
+  T.eq({ before.topline, before.topfill, before.skipcol }, { after.topline, after.topfill, after.skipcol })
+  p:close()
+end)
+
+T.test("prose collapse clamps disjoint gaps and EOF but preserves off-screen native position", function()
+  for _, case in ipairs({ { 6, 3 }, { 7, 9 }, { 20, 10 } }) do
+    local lines = {}; for row = 1, 12 do lines[row] = "source line " .. row end
+    local source = setup(lines)
+    local selected = note(2); selected.anchors[1].end_line = 3
+    selected.anchors[2] = { path = "test.lua", side = "buffer", start_line = 9, end_line = 10 }
+    selected.detail = string.rep("Prose\n", 20)
+    local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+    motion(p.win, "2G0"); key(p.buf, "K"); motion(p.win, case[1] .. "G0")
+    key(p.detail_buf, "q"); T.eq(case[2], api.nvim_win_get_cursor(source)[1]); T.eq(case[2], api.nvim_win_get_cursor(p.win)[1])
+    p:close()
+  end
+  local lines = {}; for row = 1, 700 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(150); selected.detail = string.rep("Prose\n", 600)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "150G0"); key(p.buf, "K"); motion(p.win, "200Gzt")
+  local before = api.nvim_win_call(source, vim.fn.winsaveview)
+  assert(before.topline > 150)
+  key(p.detail_buf, "q"); T.eq(before.lnum, api.nvim_win_get_cursor(p.win)[1]); T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+  p:close()
+end)
+
+T.test("prose collapse retains fold starts and real old-side deletions", function()
+  local lines = {}; for row = 1, 40 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  vim.wo[source].foldmethod, vim.wo[source].foldenable = "manual", true
+  api.nvim_win_call(source, function() vim.cmd("4,8fold") end)
+  local selected = note(6); selected.anchors[1].end_line = 12; selected.detail = "One.\nTwo.\nThree."
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "4G0"); key(p.buf, "K"); motion(p.win, "j"); motion(p.win, "k")
+  key(p.detail_buf, "q"); T.eq(4, api.nvim_win_get_cursor(p.win)[1]); T.eq(4, api.nvim_win_get_cursor(source)[1])
+  T.eq(8, api.nvim_win_call(source, function() return vim.fn.foldclosedend(4) end)); p:close()
+
+  local old = setup(lines); vim.o.columns = 210
+  vim.cmd("belowright vsplit")
+  local new, buf = api.nvim_get_current_win(), api.nvim_create_buf(false, true)
+  api.nvim_win_set_buf(new, buf)
+  local after = vim.deepcopy(lines); for row = 12, 3, -1 do table.remove(after, row) end
+  api.nvim_buf_set_lines(buf, 0, -1, false, after)
+  for _, win in ipairs({ old, new }) do api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end) end
+  vim.cmd("diffupdate")
+  selected = note(3, "Deleted range", "old"); selected.anchors[1].end_line = 12; selected.detail = "One.\n\nTwo."
+  p = ui.open(new, { windows = { old = old, new = new } }, { notes = { selected } })
+  p:detail(1); motion(p.win, "3j")
+  local before = {}; for _, win in ipairs({ old, new }) do before[win] = api.nvim_win_call(win, vim.fn.winsaveview) end
+  key(p.detail_buf, "q")
+  T.eq(6, api.nvim_win_get_cursor(p.win)[1]); T.eq(6, api.nvim_win_get_cursor(old)[1]); T.eq(3, api.nvim_win_get_cursor(new)[1])
+  T.eq(old, p.source); T.eq(p.win, api.nvim_get_current_win())
+  for _, win in ipairs({ old, new }) do T.eq(before[win], api.nvim_win_call(win, vim.fn.winsaveview)) end
+  T.eq(false, vim.wo[p.win].diff); p:close(); vim.cmd("diffoff!")
+end)
+
 T.test("header reservation starts before results and survives every request state", function()
   for _, kind in ipairs({ "overview", "block" }) do
     local source = setup({ string.rep("wrapped ", 30), "two", "three", "four", "five" })
@@ -928,6 +1203,153 @@ T.test("native overview positioning follows the current segment of a screen-fill
   p:close()
 end)
 
+T.test("expanded prose movement syncs the visible source row without scrolling", function()
+  local lines = {}; for row = 1, 100 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  vim.wo[source].winbar = "Source"
+  local selected = note(37, "Route configuration", "new"); selected.anchors[1].end_line = 58
+  selected.detail = "First paragraph.\n\nSecond paragraph."
+  local p = ui.open(source, { windows = { new = source } }, { notes = { selected } })
+  motion(p.win, "37Gzz"); p:detail()
+  local before = api.nvim_win_call(source, vim.fn.winsaveview)
+  motion(p.win, "5j"); vim.cmd("redraw!")
+  T.eq(42, api.nvim_win_get_cursor(source)[1])
+  T.eq(vim.fn.screenpos(source, 42, 1).row,
+    vim.fn.screenpos(p.win, api.nvim_win_get_cursor(p.win)[1], 1).row)
+  local after = api.nvim_win_call(source, vim.fn.winsaveview)
+  T.eq({ before.topline, before.topfill, before.skipcol }, { after.topline, after.topfill, after.skipcol })
+  T.eq(1, p.detail_index); T.eq(p.win, api.nvim_get_current_win())
+  p:close()
+end)
+
+T.test("expanded prose clamps to visible disjoint anchors and ignores EOF space", function()
+  local lines = {}; for row = 1, 12 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(2); selected.anchors[1].end_line = 3
+  selected.anchors[2] = { path = "test.lua", side = "buffer", start_line = 9, end_line = 10 }
+  selected.detail = string.rep("Prose\n", 15)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "2G0"); p:detail()
+  for _, pair in ipairs({ { 6, 3 }, { 7, 9 }, { 20, 10 }, { 3, 3 } }) do
+    motion(p.win, pair[1] .. "G0")
+    T.eq(pair[2], api.nvim_win_get_cursor(source)[1])
+    T.eq(1, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+    T.eq(1, p.detail_index)
+  end
+  p:close()
+end)
+
+T.test("expanded prose maps later wraps of the same paragraph to distinct source lines", function()
+  local lines = {}; for row = 1, 40 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(4); selected.anchors[1].end_line = 25
+  selected.detail = string.rep("wrapped words ", 20)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "4G0"); p:detail()
+  motion(p.win, (p.detail_layout.first + 3) .. "G0")
+  local paragraph = api.nvim_win_get_cursor(p.win)[1]
+  T.eq(7, api.nvim_win_get_cursor(source)[1])
+  motion(p.win, "2gj")
+  T.eq(paragraph, api.nvim_win_get_cursor(p.win)[1])
+  T.eq(9, api.nvim_win_get_cursor(source)[1])
+  motion(p.win, "gk"); T.eq(8, api.nvim_win_get_cursor(source)[1])
+  p:close()
+end)
+
+T.test("expanded prose follows wrapped source lines and preserves source columns", function()
+  local lines = {}; for row = 1, 40 do lines[row] = "source line " .. row end
+  lines[5] = string.rep("x", 140)
+  local source = setup(lines)
+  vim.wo[source].wrap = true
+  local selected = note(4); selected.anchors[1].end_line = 20
+  selected.detail = "One.\nTwo.\nThree.\nFour."
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "4G0"); p:detail()
+  api.nvim_win_set_cursor(source, { 4, 6 })
+  local height = api.nvim_win_text_height(source, { start_row = 4, end_row = 4 }).all
+  assert(height > 1)
+  motion(p.win, "j") -- Metadata is beside the first segment of source line 5.
+  T.eq({ 5, 6 }, api.nvim_win_get_cursor(source))
+  motion(p.win, "j") -- The next display row is still source line 5.
+  T.eq({ 5, 6 }, api.nvim_win_get_cursor(source))
+  motion(p.win, (p.detail_layout.first + height + 1) .. "G0")
+  T.eq({ 6, 6 }, api.nvim_win_get_cursor(source)); T.eq(true, vim.wo[source].wrap)
+  p:close()
+end)
+
+T.test("expanded prose resolves partial folds and the anchors of combined entries", function()
+  local lines = {}; for row = 1, 40 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  vim.wo[source].foldmethod, vim.wo[source].foldenable = "manual", true
+  api.nvim_win_call(source, function() vim.cmd("4,8fold") end)
+  local a, b = note(6), note(7); b.anchors[1].end_line = 12
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { a, b } })
+  motion(p.win, "4G0"); p:detail()
+  assert(table.concat(detail_lines(p), "\n"):find("Note 7", 1, true))
+  motion(p.win, "j"); T.eq(9, api.nvim_win_get_cursor(source)[1])
+  motion(p.win, "k"); T.eq(4, api.nvim_win_get_cursor(source)[1])
+  motion(p.win, "3j"); T.eq(11, api.nvim_win_get_cursor(source)[1])
+  T.eq(8, api.nvim_win_call(source, function() return vim.fn.foldclosedend(4) end))
+  p:close()
+end)
+
+T.test("expanded prose selects real old-only deleted lines without changing paired views", function()
+  local lines = {}; for row = 1, 35 do lines[row] = "source line " .. row end
+  local old = setup(lines)
+  vim.o.columns = 210
+  vim.cmd("belowright vsplit")
+  local new, buf = api.nvim_get_current_win(), api.nvim_create_buf(false, true)
+  api.nvim_win_set_buf(new, buf)
+  local after = vim.deepcopy(lines); for row = 12, 3, -1 do table.remove(after, row) end
+  api.nvim_buf_set_lines(buf, 0, -1, false, after)
+  for _, win in ipairs({ old, new }) do api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end) end
+  vim.cmd("diffupdate")
+  local selected = note(3, "Deleted range", "old"); selected.anchors[1].end_line = 12
+  selected.detail = "First paragraph.\n\nSecond paragraph."
+  local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { selected } })
+  p:detail(1)
+  local before = {}; for _, win in ipairs({ old, new }) do before[win] = api.nvim_win_call(win, vim.fn.winsaveview) end
+  motion(p.win, "3j")
+  T.eq(6, api.nvim_win_get_cursor(old)[1]); T.eq(3, api.nvim_win_get_cursor(new)[1])
+  for _, win in ipairs({ old, new }) do
+    local view = api.nvim_win_call(win, vim.fn.winsaveview)
+    T.eq({ before[win].topline, before[win].topfill }, { view.topline, view.topfill })
+    T.eq(true, vim.wo[win].diff)
+  end
+  T.eq(false, vim.wo[p.win].diff); T.eq(p.win, api.nvim_get_current_win())
+  p:close(); vim.cmd("diffoff!")
+end)
+
+T.test("expanded prose cursor events preserve initialization source motion and scrolloff views", function()
+  local lines = {}; for row = 1, 100 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local original = vim.wo[source].scrolloff; vim.wo[source].scrolloff = 5
+  local selected = note(4); selected.anchors[1].end_line = 18
+  selected.detail = string.rep("Prose\n", 15)
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected, note(40) } })
+  motion(p.win, "4G0"); p:detail()
+  local before = api.nvim_win_call(source, vim.fn.winsaveview)
+  api.nvim_exec_autocmds("CursorMoved", { buffer = p.detail_buf })
+  T.eq(before, api.nvim_win_call(source, vim.fn.winsaveview))
+  motion(p.win, "17G0"); T.eq(17, api.nvim_win_get_cursor(source)[1])
+  local view = api.nvim_win_call(source, vim.fn.winsaveview)
+  T.eq(before.topline, view.topline)
+  for _ = 1, 2 do
+    api.nvim_exec_autocmds("CursorMoved", { buffer = p.detail_buf })
+    api.nvim_exec_autocmds("WinScrolled", {})
+    api.nvim_exec_autocmds("SafeState", {})
+  end
+  T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
+  motion(source, "12G0"); T.eq(12, api.nvim_win_get_cursor(source)[1])
+  T.eq(17, api.nvim_win_get_cursor(p.win)[1])
+  motion(p.win, "k"); T.eq(16, api.nvim_win_get_cursor(source)[1])
+  motion(p.win, "0"); key(p.detail_buf, "n")
+  api.nvim_exec_autocmds("CursorMoved", { buffer = p.detail_buf })
+  T.eq(40, api.nvim_win_get_cursor(source)[1]); T.eq(2, p.detail_index)
+  key(p.detail_buf, "<CR>"); T.eq(40, api.nvim_win_get_cursor(p.win)[1])
+  p:close(); vim.wo[source].scrolloff = original
+end)
+
 T.test("native expanded viewport actions scroll code by display rows without mapping prose to source lines", function()
   local lines = {}; for row = 1, 700 do lines[row] = "line " .. row end
   local source = setup(lines)
@@ -949,6 +1371,12 @@ T.test("native expanded viewport actions scroll code by display rows without map
       T.eq(driver, api.nvim_get_current_win()); T.eq(1, p.detail_index)
     end
   end
+  motion(source, "400Gzt")
+  assert(top(source) > 150, "the only anchor must be off-screen")
+  local cursor, code_top, detail_top = api.nvim_win_get_cursor(source), top(source), top(p.win)
+  motion(p.win, "j")
+  T.eq(cursor, api.nvim_win_get_cursor(source))
+  T.eq(code_top, top(source)); T.eq(detail_top, top(p.win)); T.eq(1, p.detail_index)
   p:close()
 end)
 
@@ -1370,7 +1798,7 @@ T.test("native detail movement reaches blank anchors and collapses at the destin
   T.eq(detail, api.nvim_win_get_buf(p.win)); T.eq(14, api.nvim_win_get_cursor(p.win)[1])
   T.eq(14, api.nvim_win_get_cursor(source)[1]); T.eq("", api.nvim_get_current_line())
   key(detail, "<CR>")
-  T.eq(4, api.nvim_win_get_cursor(p.win)[1]); T.eq(4, api.nvim_win_get_cursor(source)[1])
+  T.eq(14, api.nvim_win_get_cursor(p.win)[1]); T.eq(14, api.nvim_win_get_cursor(source)[1])
   key(p.buf, "K"); detail = p.detail_buf; motion(p.win, "14G0")
   motion(p.win, "4j"); T.eq(18, api.nvim_win_get_cursor(source)[1]); T.eq(detail, p.detail_buf)
   motion(p.win, "j")

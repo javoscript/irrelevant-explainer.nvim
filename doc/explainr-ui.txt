@@ -110,15 +110,24 @@ together. Navigation and detail never issue another inference request.
 Focusing a collapsed explanation uses the same dimming/theme-derived tint as detail.
 Its full anchor ranges stay emphasized in the explainer and source buffers;
 continuation rails connect them. Moving to a blank row or leaving the explainer
-clears collapsed focus. Expanding/collapsing retains the current explanation's
-focus. A whole-file overview refers to all supplied file content, including both
-available diff sides, but displays at the file start rather than a changed hunk.
+clears collapsed focus. Collapse derives focus from the destination row's summary,
+if any, without moving back to retain a highlight. A whole-file overview refers
+to all supplied file content, including both available diff sides, but displays
+at the file start rather than a changed hunk.
 Focusing it emphasizes all content, not only line 1.
 
 K/Enter expands from the selected summary in the same right-hand pane. Visible
 entries retain their screen-row position when space allows, range labels and
 D/~/? accents; faint preceding overview rows provide context above the expanded
-body. Context and highlighted continuation use real, navigable blank rows with
+body. K/Enter also expands from summary-free rows anywhere inside original
+anchor ranges, including context before a changed-line summary. Visible summaries
+take precedence over covering ranges. With no summary, one local note opens
+directly even if a file overview covers the same row; an overview alone opens
+directly. Multiple local notes offer a chooser with summaries and original
+side/range labels, locals first and overviews last, rather than automatically
+choosing the shortest range. Cancelling changes no position. Closed summary
+folds keep their combined expansion, and opening alone never moves code.
+Context and highlighted continuation use real, navigable blank rows with
 display-only labels. Neighboring summaries are not parsed or wrapped as Markdown.
 Surrounding context and the empty area outside the explanation have a strongly
 dimmed backdrop; the expanded body has a subtle theme-derived surface tint.
@@ -159,17 +168,26 @@ movement onto another note does not auto-expand it: use K/Enter explicitly, or
 n/p/N to browse while keeping details open. Source-driven scrolling does not
 auto-collapse the reading view.
 
-In detail, K/Enter or Esc/q explicitly collapses onto the currently expanded explanation.
+In detail, K/Enter or Esc/q explicitly collapses at the current source-aligned
+position, never forcing a return to the summary or invocation row. Source-backed
+continuation retains its exact position; prose resolves by current visual-row
+geometry bounded to visible anchors, with nearest-target and earlier-row tie
+rules. If no anchored target remains visible, collapse keeps the current native
+source position. Without reading motion after opening or n/p initialization, it
+also keeps the source position rather than remapping the newly placed header.
+Source viewports and explanation focus remain unchanged within native geometry
+limits; removing prose can change layout, but does not select a summary for you.
+Enter/K in detail never opens the ambiguity chooser.
 n/p browses entries in source order (counts, stopping at either end), moving the source
 cursor and viewport to the selected note and synchronizing its diff counterpart.
-The destination is centered with native zz before expanding its detail; collapse
-retains that centered view. Native file-edge limits and detail space still apply.
+The destination is centered with native zz before expanding its detail; further
+movement/scrolling updates the current position retained on collapse.
+Native file-edge limits and detail space still apply.
 Deleted rows use the old source when the new side has only virtual filler.
 Entry navigation updates the existing Markdown buffer in place; it does not
 switch through the overview or retrigger buffer/filetype attachment events.
 Statusline plugins retain the same buffer throughout expanded navigation.
-Each navigation updates the collapse position; it never returns to an earlier
-entry point. Entries expand at their current overview position when space allows.
+Entries expand at their current overview position when space allows.
 Ctrl-e/Ctrl-y scroll content and explanations together, including when detail is
 expanded, with counts. Scrolling either diff source also scrolls its counterpart
 and the expanded detail by the same number of display rows. Wraps, folds and
@@ -188,9 +206,9 @@ and existing signs are preserved; only outside text foregrounds change.
 Native diff foregrounds take precedence over dimming, so changed text outside
 the anchors can remain brighter to preserve Git cues.
 ExplainrSourceContext customizes that foreground. Focus and markings follow
-entry navigation and remain on the collapsed summary after collapse. They
-disappear on stale data or pane closure, and when collapsed focus leaves the
-explanation.
+entry navigation and the collapsed destination row's summary, if any. They
+disappear on blank collapsed rows, stale data or pane closure, and when collapsed
+focus leaves the explanation.
 The default ExplainrActiveRange foreground can be customized by your theme.
 Markers respect the source's 'signcolumn' setting; priority 5 gives Git and
 diagnostic signs precedence when space is limited. Use 'signcolumn' "auto:2"

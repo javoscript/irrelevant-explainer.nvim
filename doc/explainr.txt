@@ -182,20 +182,39 @@ end). N (Shift-n) also goes to the previous explanation in both views. K or
 Enter expands below the selected summary, retaining its visible position when
 space allows and dimmed overview context above and below it. Following notes
 keep their source rows when space allows, otherwise follow the card instead of
-disappearing. Both views reserve a gutter and one padding space, so expansion
-does not shift text horizontally. A matching gutter rail surrounds the
-expanded explanation, including wrapped lines. Near the bottom it lifts to expose
-the first explanation line without moving code. K/Enter or Esc/q collapses to the
-currently expanded note in the overview; Esc/q in overview closes notes.
+disappearing. Enter/K also works on summary-free rows within original anchors.
+A displayed summary takes precedence; otherwise one local note opens directly,
+even with a covering file overview. Multiple local notes offer summaries and
+range labels in a chooser, locals first and overviews last; cancellation does
+nothing. An overview alone opens directly, and folded summaries still open
+together. Opening does not move code. Both views reserve a gutter and one
+padding space, so expansion does not shift text horizontally. A matching gutter
+rail surrounds the expanded explanation, including wrapped lines. Near the bottom it lifts to expose
+the first explanation line without moving code. K/Enter or Esc/q collapses at
+the current source-aligned line, not the summary or original entry point;
+source views and explanation focus are preserved within native geometry limits.
+Prose collapse uses display-row geometry bounded to visible anchors; with all
+anchors off-screen it keeps the native source position. Without reading motion,
+collapse keeps the source position established on opening or n/p navigation.
+Enter/K in detail only collapses, without a chooser. Esc/q in overview closes notes.
 Referenced code gets temporary
 muted gutter markers. Text outside anchors dims; anchored syntax and Git diff
 backgrounds/signs remain intact. Native diff foregrounds may remain brighter.
 Collapsed summaries apply the same focus styling when selected; blank rows or
-leaving collapsed notes clears it. Collapse retains focus on the same summary.
+leaving collapsed notes clears it. Collapse follows the destination row's focus,
+including clearing focus when it lands on a blank row.
 In detail, n/p browses existing entries without inference and synchronizes the
-selected source line/viewport and both diff sides. Collapse retains that entry.
+selected source line/viewport and both diff sides. Subsequent reading motion
+updates the collapse destination; collapse never forces a return to that summary.
 Ctrl-e/Ctrl-y scroll all paired buffers, even with detail expanded, with counts.
-Ordinary detail j/k and page motions remain independent of code.
+Ordinary motion through expanded summary, metadata and prose selects the source
+line beside the cursor's display row, accounting for wraps, folds and diff filler.
+Prose beyond the anchors selects the nearest visible anchored row (earlier on
+ties). When all anchors scroll off-screen, reading continues without snapping
+code back. Markdown buffer line numbers are never used as source line numbers.
+Blank anchored continuation follows code; entering surrounding context outside
+the anchors collapses at that destination. Native expanded viewport actions keep
+paired scrolling by displayed-row distance, within native buffer limits.
 In diff mode, overview and detail also inherit Diffview's file/explorer bindings:
 Tab/Shift-Tab selects the next/previous diff file, <leader>e focuses the explorer,
 and <leader>b toggles it by default. Configured remaps and disabled mappings are

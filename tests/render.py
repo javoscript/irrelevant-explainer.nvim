@@ -102,12 +102,23 @@ for state in args.states:
     nvim.ui_attach(width, height, rgb=True, ext_linegrid=True)
     nvim.vars["capture_runtime"] = args.runtime
     nvim.vars["capture_state"] = state
-    nvim.command("luafile tests/visual.lua")
+    chooser = state == "range-chooser"
+    # Native vim.ui.select blocks in inputlist; consume its live redraws before
+    # sending cancellation rather than waiting for the fixture RPC to finish.
+    nvim.command("luafile tests/visual.lua", async_=chooser)
     if args.frame is not None:
         nvim.exec_lua("capture_pane:stop_spinner(); capture_pane.frame = ...; capture_pane:state()", args.frame)
     frames = []
-    for _ in range(48 if args.animate else 1):
-        nvim.exec_lua("""
+    if chooser:
+        while not any("Expand explanation:" in "".join(cell[0] for cell in row) for row in screen.cells):
+            message = nvim.next_message()
+            if message.type == "notification" and message.name == "redraw":
+                screen.redraw(message.args)
+        frames.append(screen.draw(font))
+        nvim.input("0\r")
+    else:
+        for _ in range(48 if args.animate else 1):
+            nvim.exec_lua("""
           local channel, delay = ...
           vim.wait(delay)
           vim.cmd('redraw!')
@@ -115,13 +126,13 @@ for state in args.states:
             vim.rpcnotify(channel, 'capture_done')
           end)
         """, nvim.channel_id, 100 if args.animate else 250)
-        while True:
-            message = nvim.next_message()
-            if message.type == "notification" and message.name == "capture_done":
-                break
-            if message.type == "notification" and message.name == "redraw":
-                screen.redraw(message.args)
-        frames.append(screen.draw(font))
+            while True:
+                message = nvim.next_message()
+                if message.type == "notification" and message.name == "capture_done":
+                    break
+                if message.type == "notification" and message.name == "redraw":
+                    screen.redraw(message.args)
+            frames.append(screen.draw(font))
     path = out / f"explainr-{state}.{'gif' if args.animate else 'png'}"
     if args.animate:
         # A shared palette avoids introducing color flicker in unchanged text.
