@@ -3106,6 +3106,62 @@ T.test("whole-file diff overview stays at the start instead of its first changed
   p:close(); T.eq("", vim.wo[old].winbar); T.eq("", vim.wo[new].winbar); vim.cmd("diffoff!")
 end)
 
+T.test("comment virtual lines in a shared buffer do not invalidate native diff coordinates", function()
+  local old = setup({ "header", "deleted one", "deleted two", "tail", "end" })
+  vim.cmd("belowright vsplit")
+  local new, buf = api.nvim_get_current_win(), api.nvim_create_buf(false, true)
+  api.nvim_win_set_buf(new, buf)
+  api.nvim_buf_set_lines(buf, 0, -1, false, { "header", "tail", "end" })
+  for _, win in ipairs({ old, new }) do api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end) end
+  vim.cmd("diffupdate")
+  local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { note(2, "Retained tail", "new") } })
+  local tab = api.nvim_get_current_tabpage()
+  local namespace = api.nvim_create_namespace("test.source.comments")
+  local renders, render = 0, p.render
+  p.render = function(self, ...)
+    renders = renders + 1
+    assert(renders <= 3, "virtual lines caused repeated diff-coordinate rebuilds")
+    return render(self, ...)
+  end
+  local ok, err = xpcall(function()
+    vim.cmd("tabnew")
+    api.nvim_win_set_buf(0, buf)
+    local editing = api.nvim_get_current_win()
+    -- A comment decoration belongs to the buffer, including its hidden diff
+    -- window, but must not become part of the old/new comparison coordinates.
+    api.nvim_buf_set_extmark(buf, namespace, 1, 0, { virt_lines_above = true,
+      virt_lines = { { { "Comment author" } }, { { "Comment body" } }, { { "Comment footer" } } } })
+    for _, current in ipairs({ editing, new }) do
+      api.nvim_set_current_win(current)
+      T.eq(2, api.nvim_win_call(new, function() return vim.fn.diff_filler(2) end))
+      T.eq(5, api.nvim_win_call(new, function()
+        return api.nvim_win_text_height(new, { start_row = 1, end_row = 1 }).fill
+      end))
+      renders = 0
+      p:align()
+      T.eq(0, renders)
+      T.eq({ 1, 4, 5, 6 }, p:coordinates(new))
+      T.eq({ row = 2 }, p.locations[1])
+      T.eq(current, api.nvim_get_current_win())
+    end
+    -- The scheduled full rebuild must also work while editing the other tab.
+    api.nvim_set_current_win(editing)
+    api.nvim_buf_set_lines(buf, 3, 3, false, { "appended line" })
+    vim.v.errmsg = ""
+    renders = 0
+    api.nvim_exec_autocmds("TextChanged", { buffer = buf })
+    assert(vim.wait(200, function() return p.source_count == 4 end, 10))
+    T.eq("", vim.v.errmsg)
+    T.eq(false, p.rendering)
+    T.eq(editing, api.nvim_get_current_win())
+  end, debug.traceback)
+  p.render = render
+  api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
+  api.nvim_set_current_tabpage(tab)
+  p:close(); vim.cmd("diffoff! | tabonly!")
+  assert(ok, err)
+end)
+
 T.test("collapsed diff focus colors deleted filler without highlighting unrelated hunks or moving anchors", function()
   setup({ "" })
   local fixture = dofile("tests/multihunk.lua").open()

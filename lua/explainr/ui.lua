@@ -828,7 +828,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if vim.wo[self.source].diff then
       local coordinates = self:coordinates(self.source)
       for line in pairs(visible) do
-        local fill = api.nvim_win_text_height(self.source, { start_row = line - 1, end_row = line - 1 }).fill
+        -- Match comparison_lines' diff-only coordinates. text_height.fill also
+        -- counts plugin virtual lines, which rebuilding can never reconcile.
+        local fill = api.nvim_win_call(self.source, function() return math.max(0, vim.fn.diff_filler(line)) end)
         if coordinates[line] - (coordinates[line - 1] or 0) - 1 ~= fill then
           -- Native linematch can refine an off-screen hunk when it becomes
           -- visible, without changing text or emitting DiffUpdated. Validate
