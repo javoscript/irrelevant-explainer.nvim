@@ -17,6 +17,37 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state:match("^source%-window%-") then
+  local api = vim.api
+  local source, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
+  api.nvim_buf_set_lines(buf, 0, -1, false, {
+    "-- Context stays bright in other views.", "local subtotal = 120", "local tax = 24", "",
+    "local total = subtotal + tax", "print(total)", "", "-- More unrelated context.", "return total",
+  })
+  vim.bo.filetype = "lua"
+  vim.cmd("syntax enable")
+  vim.wo.signcolumn, vim.wo.winbar = "yes:1", " ORIGINAL · explained window "
+  local p = require("explainr.ui").open(source, { source_buf = buf, windows = { buffer = source } }, { notes = {
+    { summary = "Calculate the total", detail = "Add tax to the subtotal and print the result.", intent_basis = "inferred",
+      anchors = { { path = "example.lua", side = "buffer", start_line = 5, end_line = 6 } } },
+  } })
+  p:detail(1)
+  api.nvim_set_current_win(source)
+  if vim.g.capture_state == "source-window-tab" then
+    vim.cmd("tab split")
+    vim.wo.winbar = " OTHER TAB · same buffer, no dimming or rails "
+  else
+    vim.cmd("leftabove vsplit")
+    vim.wo.winbar = " OTHER SPLIT · same buffer "
+    api.nvim_set_current_win(p.win)
+    if vim.g.capture_state == "source-window-collapsed" then
+      p:back(); vim.wait(100)
+      vim.cmd("normal! 5G"); p:sync(p.win)
+    end
+  end
+  vim.cmd("redraw!")
+  return
+end
 if vim.g.capture_state == "gutter-cleanup" then
   local api = vim.api
   local source = api.nvim_get_current_win()

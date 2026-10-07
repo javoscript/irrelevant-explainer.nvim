@@ -136,7 +136,8 @@ dimmed. A whole-file overview therefore covers the whole visible file extent.
 Near the bottom, the card lifts enough to show the
 first explanation line without moving code. The referenced code is temporarily
 marked with a muted gutter rail; text outside the anchors is dimmed in the source
-buffers (both sides in diff mode). Anchored syntax colors, Git diff backgrounds
+windows (both sides in diff mode). Other splits or tabs showing the same buffers
+remain undecorated. Anchored syntax colors, Git diff backgrounds
 and existing signs stay intact. Native diff foregrounds take precedence over
 dimming, so changed text can remain brighter outside the anchors.
 Focus follows **n/p** and the collapsed destination; it clears on a blank row,

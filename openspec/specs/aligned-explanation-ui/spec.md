@@ -354,7 +354,17 @@ Explanation-driven movement through expanded summary, metadata and prose SHALL s
 
 ### Requirement: Focus and range styling
 
-Focused collapsed and expanded notes SHALL emphasize their full anchor ranges and dim surrounding explanation/source text. Expanded tint and rails SHALL cover at least the visible anchored extent and all prose, not merely its text height. Source styling SHALL use muted gutter markers and outside-anchor foreground dimming, preserving anchored syntax, Git backgrounds and existing signs without underlining code. Explicit collapse SHALL derive collapsed focus from the destination row without moving to a summary to retain focus.
+Focused collapsed and expanded notes SHALL emphasize their full anchor ranges and dim surrounding explanation/source text. Expanded tint and rails SHALL cover at least the visible anchored extent and all prose, not merely its text height. Source styling SHALL use muted gutter markers and outside-anchor foreground dimming, preserving anchored syntax, Git backgrounds and existing signs without underlining code. Source decorations SHALL be scoped to the captured source windows (both comparison windows in diff mode), not every window displaying the same buffers. Explicit collapse SHALL derive collapsed focus from the destination row without moving to a summary to retain focus.
+
+#### Scenario: Shared-buffer split stays undecorated
+- **WHEN** a collapsed summary is focused or its detail is expanded and another split displays the same source buffer
+- **THEN** dimming and anchor gutter rails appear only in the captured source window, including when the other split is opened after focus styling is applied
+- **AND** the other split retains its normal syntax colors and existing signs without Explainr source decorations
+
+#### Scenario: Shared-buffer tab stays undecorated
+- **WHEN** expanded detail is open and the user opens the same source buffer in another tab
+- **THEN** the new tab shows neither Explainr source dimming nor anchor gutter rails
+- **AND** returning to the original tab retains the expanded explanation and its source decorations until normal focus cleanup
 
 #### Scenario: Short detail covers a long range
 - **WHEN** an explanation is shorter than its visible anchor span
@@ -363,6 +373,7 @@ Focused collapsed and expanded notes SHALL emphasize their full anchor ranges an
 #### Scenario: Focus in a two-sided diff
 - **WHEN** a note has old/new anchors, or only an old anchor
 - **THEN** both sources dim outside their respective anchors; a side without an anchor dims entirely, while native diff foregrounds and higher-priority Git/diagnostic signs retain precedence
+- **AND** other windows displaying either comparison buffer do not inherit that explanation's source decorations
 
 #### Scenario: Theme-derived neutral tint
 - **WHEN** focused detail is displayed in a dark or light colorscheme

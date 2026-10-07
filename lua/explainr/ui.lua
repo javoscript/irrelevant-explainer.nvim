@@ -314,6 +314,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   function pane:source_focus(ids)
     clear_detail_marks()
     if #ids == 0 then return end
+    local source_windows = {}
     -- Include the paired diff buffer even for a one-sided addition/deletion.
     -- Never decorate a replacement buffer after the review changes files.
     for side, source_win in pairs(self.snapshot and self.snapshot.windows or {}) do
@@ -321,9 +322,16 @@ function M.open(source, snapshot, result, on_close, keymaps)
         local source_buf = api.nvim_win_get_buf(source_win)
         local captured = self.snapshot.capture and self.snapshot.capture.state.panes[side]
         local expected = captured and captured.buf or self.snapshot.source_buf
-        if not expected or expected == source_buf then detail_sources[source_buf] = {} end
+        if not expected or expected == source_buf then
+          detail_sources[source_buf] = {}
+          source_windows[#source_windows + 1] = source_win
+        end
       end
     end
+    -- Extmarks belong to buffers, but focus belongs to the captured windows.
+    -- Other splits/tabs displaying those buffers must remain undecorated.
+    api.nvim__ns_set(detail_ns, { wins = source_windows })
+    api.nvim__ns_set(focus_ns, { wins = source_windows })
     for _, id in ipairs(ids) do
       for _, a in ipairs(self.result.notes[id].anchors) do
         local source_win = self.snapshot and self.snapshot.windows[a.side]

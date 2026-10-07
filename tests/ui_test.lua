@@ -3258,6 +3258,44 @@ T.test("expanded range decorations update for entries, clear on set/close and pr
   T.eq({}, api.nvim_buf_get_extmarks(source_buf, other_focus_ns, 0, -1, {})); p:close()
 end)
 
+T.test("source decorations stay in their owning windows across shared-buffer splits and tabs", function()
+  local source, source_buf = setup({ "before", "anchored", "after" })
+  vim.wo[source].signcolumn = "yes:1"
+  local p = ui.open(source, { source_buf = source_buf, windows = { buffer = source } }, { notes = { note(2) } })
+  api.nvim__inspect_cell(1, 0, 0)
+  local function appearance(win)
+    vim.cmd("redraw!")
+    local context, anchor = vim.fn.screenpos(win, 1, 1), vim.fn.screenpos(win, 2, 1)
+    return {
+      api.nvim__inspect_cell(1, context.row - 1, context.col - 1)[2].foreground,
+      vim.fn.screenstring(anchor.row, anchor.col - 2),
+    }
+  end
+  local plain = appearance(source)
+  p:detail(1)
+  local focused = appearance(source)
+  assert(focused[1] ~= plain[1], "source context must be dimmed")
+  T.eq("▎", focused[2])
+  -- Create a second view *after* applying focus, like :split / :tab split.
+  api.nvim_set_current_win(source); vim.cmd("leftabove vsplit")
+  local duplicate = api.nvim_get_current_win()
+  T.eq(source_buf, api.nvim_win_get_buf(duplicate))
+  T.eq(plain, appearance(duplicate))
+  T.eq(focused, appearance(source))
+  -- Collapsed summary focus uses the same window restriction.
+  p:back(); motion(p.win, "2G"); p:focus()
+  T.eq(focused, appearance(source)); T.eq(plain, appearance(duplicate))
+  p:detail(1)
+  api.nvim_set_current_win(source); vim.cmd("tab split")
+  local tab_copy = api.nvim_get_current_win()
+  T.eq(source_buf, api.nvim_win_get_buf(tab_copy))
+  T.eq(plain, appearance(tab_copy))
+  vim.cmd("tabclose")
+  T.eq(focused, appearance(source))
+  p:close()
+  T.eq(plain, appearance(source)); T.eq(plain, appearance(duplicate))
+end)
+
 T.test("source focus dims only the complement of overlapping and disjoint anchors without modifying text", function()
   local source, source_buf = setup({ "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven" })
   local selected = note(7)
