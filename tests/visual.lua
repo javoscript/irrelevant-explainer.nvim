@@ -17,6 +17,24 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state == "gutter-cleanup" then
+  local api = vim.api
+  local source = api.nvim_get_current_win()
+  api.nvim_buf_set_lines(0, 0, -1, false, { "local value = 1", "return value" })
+  local p = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = {
+    { summary = "Return the value", detail = "The source returns its local value.", intent_basis = "inferred",
+      anchors = { { path = "example.lua", side = "buffer", start_line = 2, end_line = 2 } } },
+  } })
+  p:detail(1)
+  api.nvim_win_close(source, true)
+  assert(vim.wait(1000, function() return p.closed end))
+  assert(not vim.wo.statuscolumn:find("explainr_detail_active", 1, true))
+  api.nvim_buf_set_lines(0, 0, -1, false, { "-- Ordinary editor buffer after reader cleanup.",
+    "local value = 2", "return value" })
+  vim.bo.filetype = "lua"
+  vim.cmd("redraw!"); assert(vim.v.errmsg == "", vim.v.errmsg)
+  return
+end
 if vim.g.capture_state:match("^boundary%-") then
   local api = vim.api
   local source = api.nvim_get_current_win()
@@ -674,7 +692,32 @@ if vim.g.capture_state:match("^diff") then
   local session = plugin.diff(focused and "hunk" or "file")
   assert(vim.wait(5000, function() return session.pane.result ~= nil end), session.pane.status)
   _G.capture_pane = session.pane
-  if vim.g.capture_state:match("^diff%-auto") then
+  if vim.g.capture_state:match("^diff%-gutter") then
+    local api = vim.api
+    capture_pane.result.notes[1].detail = string.rep("Read the changed permission check alongside its source. ", 6)
+    api.nvim_set_current_win(capture_pane.win)
+    capture_pane:jump(1); capture_pane:detail(1)
+    plugin.toggle_auto_explain()
+    if vim.g.capture_state ~= "diff-gutter-detail" then
+      if vim.g.capture_state == "diff-gutter-collapsed-switch" then capture_pane:back() end
+      local actions, panel = require("diffview.actions"), capture_review.view.panel
+      actions.focus_files()
+      for _, entry in ipairs(panel:ordered_file_list()) do
+        if entry.path == "openspec/spec.md" then panel:highlight_file(entry); break end
+      end
+      -- Use the general fixture response for the newly selected Markdown file.
+      plugin.config.ai.command = { "python3", script, "explain" }
+      actions.select_entry()
+      assert(vim.wait(5000, function()
+        return session.snapshot and session.snapshot.target.path == "openspec/spec.md"
+          and capture_pane.status:match("^Ready")
+      end), capture_pane.status)
+      assert(capture_pane.detail_buf == nil)
+      assert(not vim.wo[capture_pane.win].statuscolumn:find("explainr_detail_active", 1, true))
+      assert(api.nvim_get_current_win() == panel.winid)
+    end
+    vim.cmd("redraw!"); assert(vim.v.errmsg == "", vim.v.errmsg)
+  elseif vim.g.capture_state:match("^diff%-auto") then
     plugin.toggle_auto_explain()
     vim.api.nvim_set_current_win(capture_pane.win)
     capture_pane:jump(1)

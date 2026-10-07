@@ -673,6 +673,95 @@ local function toggle_fixture(run)
   assert(ok, err)
 end
 
+for _, auto in ipairs({ false, true }) do
+  for _, collapse in ipairs({ false, true }) do
+    T.test(string.format("explorer file selection isolates detail gutters (auto=%s, collapsed=%s)", auto, collapse), function()
+      toggle_fixture(function(f, fixture, plugin)
+        plugin.setup()
+        local actions, panel = require("diffview.actions"), fixture.view.panel
+        local gutters = { [fixture.state.windows.old] = "L ", [fixture.state.windows.new] = "R ",
+          [panel.winid] = "T " }
+        for win, gutter in pairs(gutters) do vim.wo[win].statuscolumn = gutter end
+        local function select(path)
+          actions.focus_files(); T.eq(panel.winid, api.nvim_get_current_win())
+          local entry
+          for _, item in ipairs(panel:ordered_file_list()) do if item.path == path then entry = item; break end end
+          panel:highlight_file(assert(entry)); T.eq(entry, panel:get_item_at_cursor())
+          actions.select_entry()
+          assert(vim.wait(5000, function()
+            fixture.state = adapter.current(fixture.view.cur_layout.b.id)
+            return fixture.state and fixture.state.selected.path == path
+          end), "explorer selection did not load " .. path)
+          T.eq(panel.winid, api.nvim_get_current_win())
+        end
+        -- Diffview first loads working files in a temporary explorer-derived
+        -- window. Compare native inheritance without Explainr, leaving the
+        -- actual destination unopened for the regression below.
+        select("docs/adr.md")
+        local native_gutters = {}
+        for win in pairs(gutters) do native_gutters[win] = vim.wo[win].statuscolumn end
+        select("policy.lua")
+        api.nvim_set_current_win(fixture.state.source)
+        local s = plugin.diff("file"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+        local p, accepted = s.pane, vim.deepcopy(s.pane.result)
+        vim.wo[p.win].statuscolumn = "O "
+        local observed, errors = {}, {}
+        local watch = api.nvim_create_autocmd("BufWinEnter", { callback = function()
+          local win = api.nvim_get_current_win()
+          if api.nvim_get_current_tabpage() ~= fixture.view.tabpage then return end
+          local gutter = vim.wo[win].statuscolumn
+          observed[#observed + 1] = { win = win, gutter = gutter }
+          api.nvim_eval_statusline(gutter, { winid = win, use_statuscol_lnum = 1 })
+          if vim.v.errmsg ~= "" then errors[#errors + 1] = vim.v.errmsg end
+        end })
+        local ok, err = xpcall(function()
+          vim.v.errmsg = ""
+          for visit = 1, 2 do
+            api.nvim_set_current_win(p.win); p:detail(1)
+            local detail = p.detail_buf
+            if collapse then p:back() end
+            if auto and visit == 1 then
+              T.eq(true, plugin.toggle_auto_explain()); f.events(); T.eq(1, #f.jobs)
+            end
+            select("openspec/spec.md")
+            if auto then
+              if visit == 1 then
+                local request = f.job(2)
+                T.eq("file", request.target.scope); T.eq("openspec/spec.md", request.target.path)
+                f.answer(request)
+              end
+              f.ready(s, "openspec/spec.md")
+            else
+              assert(vim.wait(5000, function() return not s.restoring and p.status:match("^No explanations") end))
+            end
+            T.eq(nil, p.detail_buf); T.eq(false, api.nvim_buf_is_valid(detail))
+            T.eq("O ", vim.wo[p.win].statuscolumn)
+            -- Old prose positions must not be applied after the file switch.
+            local cursors = {}
+            for _, win in pairs(fixture.state.windows) do
+              api.nvim_win_set_cursor(win, { 2, 0 }); cursors[win] = api.nvim_win_get_cursor(win)
+            end
+            f.events(); vim.cmd("redraw!")
+            for win, cursor in pairs(cursors) do T.eq(cursor, api.nvim_win_get_cursor(win)) end
+            for win, gutter in pairs(native_gutters) do T.eq(gutter, vim.wo[win].statuscolumn) end
+            T.eq(panel.winid, api.nvim_get_current_win()); T.eq(auto and 2 or 1, #f.jobs)
+            select("policy.lua"); f.ready(s, "policy.lua")
+            T.eq("Ready · restored", p.status); T.eq(accepted, p.result)
+            T.eq("O ", vim.wo[p.win].statuscolumn); T.eq(auto and 2 or 1, #f.jobs)
+          end
+          assert(#observed > 0, "must observe buffer transitions")
+          for _, item in ipairs(observed) do
+            if gutters[item.win] then assert(not item.gutter:find("explainr_detail_active", 1, true)) end
+          end
+          T.eq({}, errors); T.eq("", vim.v.errmsg)
+        end, debug.traceback)
+        api.nvim_del_autocmd(watch)
+        assert(ok, err)
+      end)
+    end)
+  end
+end
+
 T.test("runtime toggle affects subsequent Diffview navigation, not current notes or active inference", function()
   toggle_fixture(function(f, fixture, plugin)
     plugin.setup()

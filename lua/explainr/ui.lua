@@ -1636,7 +1636,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- Both views reserve a rail and one space: expansion never shifts text.
     -- Give the gutter its own background so the content tint cannot spill into
     -- the rail/padding, including wrapped rows.
-    vim.wo[self.win].statuscolumn = "%#ExplainrDetailGutter#%{get(b:explainr_detail_active, string(v:lnum), 0) ? '▎ ' : '  '}"
+    -- Buffer transitions can evaluate the gutter before detail data exists.
+    -- Do not make it the window's default for newly displayed buffers.
+    vim.wo[self.win][0].statuscolumn = "%#ExplainrDetailGutter#%{exists('b:explainr_detail_active') && get(b:explainr_detail_active, string(v:lnum), 0) ? '▎ ' : '  '}"
     self:header(ids)
     vim.wo[self.detail_win].wrap = true
     vim.wo[self.detail_win].linebreak = true

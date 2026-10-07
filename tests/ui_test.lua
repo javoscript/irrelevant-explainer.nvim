@@ -2918,6 +2918,66 @@ T.test("expanded diff focus also covers anchored context before the changed-line
   p:close(); vim.cmd("diffoff!")
 end)
 
+T.test("detail gutter tolerates replacement buffers without decoration data", function()
+  local source = setup({ "one", "two", "three", "four", "five", "six" })
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { note(2) } })
+  p:detail(1)
+  local gutter = vim.wo[p.win].statuscolumn
+  local replacement = api.nvim_create_buf(false, true)
+  api.nvim_buf_set_lines(replacement, 0, -1, false, { "replacement", "inactive" })
+  api.nvim_win_set_buf(p.win, replacement)
+  local values, errors = {}, {}
+  for _, case in ipairs({ { row = 1 }, { data = {}, row = 1 },
+    { data = { ["1"] = 1 }, row = 1 }, { data = { ["1"] = 1 }, row = 2 }, { row = 1 } }) do
+    vim.b[replacement].explainr_detail_active = case.data
+    vim.v.errmsg = ""
+    values[#values + 1] = vim.trim(api.nvim_eval_statusline(gutter,
+      { winid = p.win, use_statuscol_lnum = case.row }).str)
+    errors[#errors + 1] = vim.v.errmsg
+  end
+  p:back(true); p:close()
+  api.nvim_buf_delete(replacement, { force = true })
+  T.eq({ "", "", "", "", "" }, errors)
+  T.eq({ "", "", "▎", "", "" }, values)
+end)
+
+T.test("detail gutter restores across collapse replacement and last-window cleanup", function()
+  vim.cmd("tabnew") -- Isolate the other reader options inherited by :new.
+  local source = setup({ "one", "two", "three", "four", "five", "six" })
+  vim.wo[source].statuscolumn = "S "
+  local result = { notes = { note(2) } }
+  local p = ui.open(source, { windows = { buffer = source } }, result)
+  vim.wo[p.win].statuscolumn = "O "
+  for _, replace in ipairs({ false, true }) do
+    p:detail(1)
+    local detail = p.detail_buf
+    T.eq("S ", vim.wo[source].statuscolumn)
+    if replace then p:set(result, "Ready") else p:back() end
+    T.eq("O ", vim.wo[p.win].statuscolumn)
+    T.eq(false, api.nvim_buf_is_valid(detail))
+  end
+  p:detail(1)
+  -- A fresh buffer must not inherit the detail-only window default.
+  local replacement = api.nvim_create_buf(false, true)
+  api.nvim_win_set_buf(p.win, replacement)
+  local replacement_gutter = vim.wo[p.win].statuscolumn
+  p:back(true)
+  api.nvim_buf_delete(replacement, { force = true })
+  p:detail(1)
+  local detail = p.detail_buf
+  vim.v.errmsg = ""
+  api.nvim_win_close(source, true)
+  assert(vim.wait(500, function() return p.closed end))
+  vim.cmd("redraw!")
+  local remaining = api.nvim_get_current_win()
+  local gutter, errors = vim.wo[remaining].statuscolumn, vim.v.errmsg
+  -- Restore the fixture even when an assertion fails below.
+  vim.cmd("tabclose!")
+  T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(false, api.nvim_buf_is_valid(p.buf))
+  T.eq("O ", replacement_gutter)
+  T.eq("O ", gutter); T.eq("", errors)
+end)
+
 T.test("Enter toggles focused detail with a continuous gutter and leaves Tab unmapped", function()
   local source = setup({ "one", "two", "three", "four", "five", "six" })
   local selected = note(4, "Selected explanation")
