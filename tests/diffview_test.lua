@@ -673,6 +673,34 @@ local function toggle_fixture(run)
   assert(ok, err)
 end
 
+T.test("notes navigation preserves source window defaults for unopened Diffview files", function()
+  for _, expanded in ipairs({ false, true }) do
+    toggle_fixture(function(f, fixture, plugin)
+      plugin.setup()
+      local source = fixture.state.source
+      local expected = { number = true, relativenumber = true, wrap = false, signcolumn = "auto:2", statuscolumn = "" }
+      for name, value in pairs(expected) do vim.wo[source][name] = value end
+      -- Establish native inheritance before Explainr, keeping the destination
+      -- file unopened so Diffview must load it through its temporary window.
+      fixture:switch("docs/adr.md")
+      for name, value in pairs(expected) do T.eq(value, vim.wo[fixture.state.source][name]) end
+      fixture:switch("policy.lua")
+      local s = plugin.diff("file"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+      local p = s.pane
+      api.nvim_set_current_win(p.win)
+      if expanded then p:detail(1) end
+      T.eq(false, vim.wo[p.win].number); T.eq(false, vim.wo[p.win].relativenumber)
+      fixture:switch("openspec/spec.md")
+      assert(vim.wait(5000, function() return not s.restoring and p.status:match("^No explanations") end))
+      for name, value in pairs(expected) do T.eq(value, vim.wo[fixture.state.source][name]) end
+      -- Returning from detail must not contaminate defaults either.
+      api.nvim_set_current_win(p.win)
+      fixture:switch("tests/policy.txt")
+      for name, value in pairs(expected) do T.eq(value, vim.wo[fixture.state.source][name]) end
+    end)
+  end
+end)
+
 for _, auto in ipairs({ false, true }) do
   for _, collapse in ipairs({ false, true }) do
     T.test(string.format("explorer file selection isolates detail gutters (auto=%s, collapsed=%s)", auto, collapse), function()

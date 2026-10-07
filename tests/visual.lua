@@ -706,6 +706,9 @@ if vim.g.capture_state:match("^diff") then
   _G.capture_review = dofile("tests/review.lua").open(true)
   for _, win in pairs(capture_review.state.windows) do
     vim.wo[win].wrap = false
+    if vim.g.capture_state:match("^diff%-numbers") then
+      vim.wo[win].number, vim.wo[win].relativenumber = true, true
+    end
     vim.api.nvim_win_call(win, function() vim.cmd("normal! zR") end)
   end
   local plugin = require("explainr")
@@ -723,7 +726,21 @@ if vim.g.capture_state:match("^diff") then
   local session = plugin.diff(focused and "hunk" or "file")
   assert(vim.wait(5000, function() return session.pane.result ~= nil end), session.pane.status)
   _G.capture_pane = session.pane
-  if vim.g.capture_state:match("^diff%-gutter") then
+  if vim.g.capture_state:match("^diff%-numbers") then
+    local expanded = vim.g.capture_state == "diff-numbers-detail"
+    vim.api.nvim_set_current_win(capture_pane.win)
+    if expanded then capture_pane:detail(1) end
+    capture_review:switch("openspec/spec.md")
+    for _, win in pairs(capture_review.state.windows) do
+      assert(vim.wo[win].number and vim.wo[win].relativenumber)
+    end
+    plugin.config.ai.command = { "python3", script, "explain" }
+    session = plugin.diff("file"); _G.capture_pane = session.pane
+    assert(vim.wait(5000, function() return capture_pane.result ~= nil end))
+    vim.api.nvim_set_current_win(capture_pane.win)
+    if expanded then capture_pane:detail(1) end
+    assert(not vim.wo[capture_pane.win].number and not vim.wo[capture_pane.win].relativenumber)
+  elseif vim.g.capture_state:match("^diff%-gutter") then
     local api = vim.api
     capture_pane.result.notes[1].detail = string.rep("Read the changed permission check alongside its source. ", 6)
     api.nvim_set_current_win(capture_pane.win)

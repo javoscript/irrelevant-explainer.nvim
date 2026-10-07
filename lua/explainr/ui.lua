@@ -253,7 +253,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     foldmethod = "manual", foldminlines = 0, foldlevel = 0,
     foldtext = "get(b:explainr_loading_folds, string(v:foldstart), get(b:explainr_foldtext, string(v:foldstart), getline(v:foldstart)))",
     list = false, scrolloff = 0, sidescrolloff = 0, spell = false, colorcolumn = "", fillchars = "eob: " }
-  for name, value in pairs(options) do vim.wo[win][name] = value end
+  -- Keep the source-derived defaults intact: Diffview can load a new file in
+  -- a temporary window inherited from this pane while notes have focus.
+  for name, value in pairs(options) do vim.wo[win][0][name] = value end
   api.nvim_set_current_win(current)
   local pane = { win = win, buf = buf, source = source, snapshot = snapshot, result = result,
     status = "Ready", rows = {}, closed = false, frame = 1, folds = {} }
@@ -1235,7 +1237,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- Markdown cursor against code, nor wipe our hidden summary.
     if api.nvim_win_is_valid(self.win) and api.nvim_buf_is_valid(self.buf) then
       api.nvim_win_set_buf(self.win, self.buf)
-      for name, value in pairs(saved.options) do vim.wo[self.win][name] = value end
+      for name, value in pairs(saved.options) do vim.wo[self.win][0][name] = value end
       api.nvim_win_call(self.win, function()
         vim.cmd("silent! normal! zE")
         for first, last in pairs(self.folds) do vim.cmd(string.format("%d,%dfold", first, last)) end
@@ -1524,8 +1526,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     self:focus(true)
     if not self.overview then
       self.overview = { view = api.nvim_win_call(self.win, vim.fn.winsaveview), options = {} }
-      for _, name in ipairs({ "wrap", "linebreak", "foldenable", "conceallevel", "concealcursor", "winbar",
-        "signcolumn", "statuscolumn", "winhighlight" }) do
+      for name in pairs(vim.tbl_extend("keep", options, {
+        linebreak = false, concealcursor = "", winbar = "", winhighlight = "",
+      })) do
         self.overview.options[name] = vim.wo[self.win][name]
       end
     end
@@ -1629,9 +1632,12 @@ function M.open(source, snapshot, result, on_close, keymaps)
     self.detail_buf = detail
     if not navigating then
       api.nvim_win_set_buf(self.win, detail)
+      -- A fresh buffer inherits source defaults, not the overview's local
+      -- styling. Carry that styling over without changing those defaults.
+      for name, value in pairs(self.overview.options) do vim.wo[self.win][0][name] = value end
       api.nvim_set_current_win(self.win)
     end
-    vim.wo[self.win].foldenable = false
+    vim.wo[self.win][0].foldenable = false
     local mappings = {}
     for from, to in self.overview.options.winhighlight:gmatch("([^,:]+):([^,]+)") do mappings[from] = to end
     -- Wrapped linebreak gaps use the window background, not hl_eol. Keep it
@@ -1641,7 +1647,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local highlights = {}
     for from, to in pairs(mappings) do highlights[#highlights + 1] = from .. ":" .. to end
     vim.wo[self.win].winhighlight = table.concat(highlights, ",")
-    vim.wo[self.win].signcolumn = "yes:1"
+    vim.wo[self.win][0].signcolumn = "yes:1"
     -- A native gutter repeats on wrapped display rows too, unlike sign extmarks.
     -- Both views reserve a rail and one space: expansion never shifts text.
     -- Give the gutter its own background so the content tint cannot spill into
@@ -1650,9 +1656,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- Do not make it the window's default for newly displayed buffers.
     vim.wo[self.win][0].statuscolumn = "%#ExplainrDetailGutter#%{exists('b:explainr_detail_active') && get(b:explainr_detail_active, string(v:lnum), 0) ? '▎ ' : '  '}"
     self:header(ids)
-    vim.wo[self.detail_win].wrap = true
-    vim.wo[self.detail_win].linebreak = true
-    vim.wo[self.detail_win].conceallevel = 0
+    vim.wo[self.detail_win][0].wrap = true
+    vim.wo[self.detail_win][0].linebreak = true
+    vim.wo[self.detail_win][0].conceallevel = 0
     -- Near the bottom, make room for the first body line instead of expanding
     -- entirely below the viewport. Trim only leading context, never move code.
     local height = api.nvim_win_text_height(self.win, { start_row = 0, end_row = headers[1].body }).all
