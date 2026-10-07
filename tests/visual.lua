@@ -17,6 +17,29 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state:match("^boundary%-") then
+  local api = vim.api
+  local source = api.nvim_get_current_win()
+  local lines = {}; for row = 1, 180 do lines[row] = "local value_" .. row .. " = " .. row end
+  api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  vim.bo.filetype = "lua"
+  vim.wo.wrap, vim.wo.scrolloff = false, 0
+  _G.capture_pane = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = {
+    { summary = "Boundary explanation", detail = "First paragraph.\n\nSecond paragraph.", intent_basis = "inferred",
+      anchors = { { path = "example.lua", side = "buffer", start_line = 40, end_line = 100 } } },
+  } })
+  local p = capture_pane
+  api.nvim_set_current_win(p.win); vim.cmd("normal! 40Gzz"); p:sync(p.win); p:detail(1)
+  local top = vim.g.capture_state == "boundary-top" and 70
+    or 40 - (vim.fn.getwininfo(p.win)[1].height - p.detail_layout.card_height)
+  api.nvim_set_current_win(source)
+  vim.fn.winrestview({ topline = top, lnum = top + 10, col = 0 }); p:scroll(nil, source)
+  api.nvim_set_current_win(p.win)
+  api.nvim_win_set_cursor(p.win, { p.detail_layout.first, 0 })
+  p:sync(p.win)
+  vim.cmd("redraw!")
+  return
+end
 if vim.g.capture_state == "diff-sticky-wrapped-filler" or vim.g.capture_state == "diff-sticky-eof-overflow" then
   local api = vim.api
   local eof = vim.g.capture_state == "diff-sticky-eof-overflow"

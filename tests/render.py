@@ -133,6 +133,40 @@ for state in args.states:
                 if message.type == "notification" and message.name == "redraw":
                     screen.redraw(message.args)
             frames.append(screen.draw(font))
+    if state.startswith("boundary-"):
+        # Inspect every published frame, including those before SafeState's
+        # deferred reconciliation. A final screenshot cannot detect a bounce.
+        frames[0].save(out / f"explainr-{state}-before.png")
+        invalid_frames = []
+        for step in range(3 if state == "boundary-top" else 1):
+            nvim.input("\x05" if state == "boundary-top" else "\x19")
+            nvim.exec_lua("""
+              local channel = ...
+              vim.defer_fn(function() vim.rpcnotify(channel, 'boundary_done') end, 100)
+            """, nvim.channel_id)
+            while True:
+                message = nvim.next_message()
+                if message.type == "notification" and message.name == "boundary_done":
+                    break
+                if message.type == "notification" and message.name == "redraw":
+                    for event in message.args:
+                        screen.redraw([event])
+                        if event[0] == "flush":
+                            frames.append(screen.draw(font))
+                            frames[-1].save(out / f"explainr-{state}-frame-{len(frames) - 1}.png")
+                            if state == "boundary-top" and not any(
+                                "Boundary explanation" in "".join(cell[0] for cell in row)
+                                for row in screen.cells[1:2]
+                            ):
+                                invalid_frames.append(len(frames) - 1)
+        if state == "boundary-top":
+            assert not invalid_frames, f"Displaced card in flushed frames: {invalid_frames}"
+            assert nvim.exec_lua("return vim.api.nvim_win_call(capture_pane.source, vim.fn.winsaveview).topline") == 73
+        else:
+            assert nvim.exec_lua("return capture_pane.detail_buf == nil"), "Ctrl-y did not escape"
+            assert nvim.exec_lua("return vim.api.nvim_win_get_cursor(capture_pane.source)[1]") == 39
+        print(f"{state}: checked {len(frames) - 1} input frames")
+        frames = [frames[-1]]
     path = out / f"explainr-{state}.{'gif' if args.animate else 'png'}"
     if args.animate:
         # A shared palette avoids introducing color flicker in unchanged text.

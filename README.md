@@ -172,6 +172,13 @@ move sources by the actual displayed-row distance, within native buffer limits.
 At the reader's upper buffer limit, **Ctrl-y** still scrolls code upward; **k**
 on the summary's first displayed segment at the top screen edge does the same without collapsing detail
 or jumping to stale context. Both accept counts and stop at the source's beginning.
+If a fitting card has reached its bottom placement limit, a further **Ctrl-y**
+from inside it moves to the source-backed row immediately above the card instead
+of getting stuck. Leaving the active anchors collapses at that destination;
+anchored context stays expanded. A counted command stops at this escape destination
+without applying leftover steps. Simply reaching an edge, scrolling code, or
+hitting a genuine file boundary does not collapse detail. Longer prose remains
+fully scrollable, and top-pinned reading settles without a scroll-and-snap-back frame.
 On later summary wraps, **k** reads the preceding segment instead, even if that
 later segment is clipped to the top edge.
 Source `scrolloff` is respected, including different margins on diff sides,

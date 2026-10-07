@@ -1701,9 +1701,8 @@ T.test("bottom-pinned reading selects the margin target and releases into natura
   input(p.win, p.detail_layout.last .. "G0")
   T.eq(15 + height, api.nvim_win_get_cursor(source)[1])
   input(p.win, "<C-y>")
-  T.eq(15, api.nvim_win_call(source, vim.fn.winsaveview).topline)
-  T.eq(14 + height, api.nvim_win_get_cursor(source)[1])
-  input(p.win, "4G0") -- Leading context inside the current viewport is outside anchors.
+  T.eq(16, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+  T.eq(39, api.nvim_win_get_cursor(source)[1])
   T.eq(nil, p.detail_buf)
   input(p.win, "40Gzz"); p:detail(1); input(source, "70Gzt"); input(p.win, "4G0")
   input(p.win, "30<C-y>") -- Cross the top pin's release point.
@@ -1730,6 +1729,159 @@ T.test("a reading scroll no-op does not overwrite a source-owned cursor", functi
   input(p.win, "<C-e>")
   T.eq(2, api.nvim_win_call(source, vim.fn.winsaveview).topline)
   T.eq(7, api.nvim_win_get_cursor(source)[1]); p:close()
+end)
+
+T.test("top-pinned Ctrl e settles the fitting card before deferred events", function()
+  local lines = {}; for row = 1, 180 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(40); selected.anchors[1].end_line = 100
+  selected.detail = "First paragraph.\n\nSecond paragraph."
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  motion(p.win, "40Gzz"); p:detail(); input(source, "70Gzt")
+  api.nvim_set_current_win(p.win)
+  for step = 1, 3 do
+    key(p.detail_buf, "<C-e>")
+    T.eq(1, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
+    T.eq(70 + step, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+    local views = { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) }
+    api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(source) })
+    api.nvim_exec_autocmds("SafeState", {}); vim.wait(20, function() return false end)
+    T.eq(views, { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) })
+  end
+  p:back(); input(source, "28Gzt"); p:detail(1)
+  assert(p.detail_layout.first > 1)
+  input(p.win, p.detail_layout.first .. "Gzt") -- Reader-positioned top edge, with retained leading rows.
+  local top = api.nvim_win_call(source, vim.fn.winsaveview).topline
+  input(p.win, "<C-e>")
+  T.eq(1, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
+  T.eq(top + 1, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+  p:close()
+end)
+
+T.test("Ctrl y reaches the card boundary then escapes once at the source-backed destination", function()
+  for _, count in ipairs({ 1, 2, 3, 99, 103 }) do
+    local lines = {}; for row = 1, 180 do lines[row] = "source line " .. row end
+    local source = setup(lines)
+    local selected = note(40); selected.anchors[1].end_line = 100
+    selected.detail = "First paragraph.\n\nSecond paragraph."
+    local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected, note(39, "Previous") } })
+    motion(p.win, "40Gzz"); p:detail(1)
+    local edge = 40 - (vim.fn.getwininfo(p.win)[1].height - p.detail_layout.card_height)
+    input(source, (edge + 2) .. "Gzt")
+    input(p.win, p.detail_layout.first .. "G0")
+    if count == 103 then input(p.win, p.detail_layout.first .. "Gzt") end
+    input(p.win, count .. "<C-y>")
+    T.eq(edge + math.max(0, 2 - count), api.nvim_win_call(source, vim.fn.winsaveview).topline)
+    if count <= 2 then
+      assert(p.detail_buf, "reaching the boundary must not collapse")
+      if count == 1 then input(p.win, "<C-y>"); assert(p.detail_buf) end
+      input(p.win, "<C-y>")
+    end
+    T.eq(nil, p.detail_buf); T.eq(39, api.nvim_win_get_cursor(source)[1])
+    T.eq(39, api.nvim_win_get_cursor(p.win)[1]); T.eq(p.win, api.nvim_get_current_win())
+    T.eq(edge, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+    local views = { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) }
+    for _ = 1, 3 do
+      api.nvim_exec_autocmds("CursorMoved", { buffer = p.buf })
+      api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(source) })
+      api.nvim_exec_autocmds("SafeState", {}); vim.wait(10, function() return false end)
+    end
+    T.eq(views, { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) })
+    p:close()
+  end
+end)
+
+T.test("boundary escape retains anchored context and resolves wrapped or folded predecessors", function()
+  for _, kind in ipairs({ "anchored", "wrapped", "folded" }) do
+    local lines = {}; for row = 1, 180 do lines[row] = "source line " .. row end
+    if kind == "wrapped" then lines[39] = string.rep("wrap ", 40) end
+    local source = setup(lines)
+    vim.wo[source].wrap = kind == "wrapped"
+    if kind == "folded" then
+      vim.wo[source].foldmethod, vim.wo[source].foldenable = "manual", true
+      api.nvim_win_call(source, function() vim.cmd("35,39fold") end)
+    end
+    local selected = note(40); selected.anchors[1].end_line = 100
+    selected.detail = "First paragraph.\n\nSecond paragraph."
+    local notes = { selected }
+    if kind == "anchored" then notes[2] = note(40, "Reserve the primary row") end
+    local p = ui.open(source, { windows = { buffer = source } }, { notes = notes })
+    input(p.win, "40Gzz"); p:detail(1)
+    input(source, "10Gzt") -- Pin past the bottom with room before native BOF.
+    input(p.win, p.detail_layout.first .. "G0")
+    local before = api.nvim_win_call(source, vim.fn.winsaveview)
+    input(p.win, "<C-y>")
+    local target = kind == "anchored" and 40 or kind == "folded" and 35 or 39
+    T.eq(target, api.nvim_win_get_cursor(source)[1])
+    if kind == "anchored" then
+      assert(p.detail_buf); T.eq(1, p.detail_index)
+      T.eq(p.detail_layout.first - 1, api.nvim_win_get_cursor(p.win)[1])
+      input(p.win, "k"); T.eq(nil, p.detail_buf); T.eq(39, api.nvim_win_get_cursor(source)[1])
+    else T.eq(nil, p.detail_buf); T.eq(target, api.nvim_win_get_cursor(p.win)[1]) end
+    if kind == "folded" then T.eq(39, api.nvim_win_call(source, function() return vim.fn.foldclosedend(35) end)) end
+    -- A far-pinned target can need native visibility correction, but never
+    -- restores the original expansion view or moves before the current one.
+    assert(api.nvim_win_call(source, vim.fn.winsaveview).topline >= before.topline)
+    T.eq(p.win, api.nvim_get_current_win()); p:close()
+  end
+end)
+
+T.test("boundary escape resolves deleted context on its owning diff side", function()
+  local lines = {}; for row = 1, 120 do lines[row] = "source line " .. row end
+  local old = setup(lines); vim.o.columns = 210
+  vim.cmd("belowright vsplit")
+  local new = api.nvim_get_current_win(); api.nvim_win_set_buf(new, api.nvim_create_buf(false, true))
+  local after = vim.deepcopy(lines); for row = 39, 35, -1 do table.remove(after, row) end
+  api.nvim_buf_set_lines(0, 0, -1, false, after)
+  for _, win in ipairs({ old, new }) do
+    api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end)
+    vim.wo[win].scrolloff = 0
+  end
+  vim.cmd("diffupdate")
+  local selected = note(35, "After deletion", "new"); selected.anchors[1].end_line = 70
+  selected.detail = "First paragraph.\n\nSecond paragraph."
+  local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { selected } })
+  input(new, "35Gzz"); p:detail(1); input(new, "20Gzt")
+  input(p.win, p.detail_layout.first .. "G0")
+  local views = { api.nvim_win_call(old, vim.fn.winsaveview), api.nvim_win_call(new, vim.fn.winsaveview) }
+  input(p.win, "<C-y>")
+  T.eq(nil, p.detail_buf); T.eq(39, api.nvim_win_get_cursor(old)[1])
+  T.eq(old, p.source); T.eq(39, api.nvim_win_get_cursor(p.win)[1])
+  for i, win in ipairs({ old, new }) do
+    local view = api.nvim_win_call(win, vim.fn.winsaveview)
+    T.eq({ views[i].topline, views[i].topfill }, { view.topline, view.topfill })
+    T.eq(true, vim.wo[win].diff)
+  end
+  T.eq(p.win, api.nvim_get_current_win()); p:close(); vim.cmd("diffoff!")
+end)
+
+T.test("boundary limits preserve fitting EOF state and viewport-filling prose", function()
+  local lines = {}; for row = 1, 100 do lines[row] = "source line " .. row end
+  local source = setup(lines)
+  local selected = note(40); selected.anchors[1].end_line = 100
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+  input(source, "40Gzz"); p:detail(1); input(source, "100Gzt")
+  local code, reader = api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview)
+  input(p.win, "<C-e>")
+  T.eq(code, api.nvim_win_call(source, vim.fn.winsaveview))
+  T.eq(reader, api.nvim_win_call(p.win, vim.fn.winsaveview))
+  p:close()
+  for _, extra in ipairs({ 0, 1, 20 }) do
+    source = setup(lines)
+    selected = note(40); selected.anchors[1].end_line = 100
+    p = ui.open(source, { windows = { buffer = source } }, { notes = { selected } })
+    local height = vim.fn.getwininfo(p.win)[1].height
+    selected.detail = table.concat(vim.fn["repeat"]({ "Prose" }, height - 4 + extra), "\n")
+    input(source, "70Gzt"); p:detail(1); p:place_detail()
+    T.eq(height + extra, p.detail_layout.card_height)
+    T.eq(1, p.detail_layout.first)
+    input(p.win, "<C-y>")
+    T.eq(69, api.nvim_win_call(source, vim.fn.winsaveview).topline)
+    T.eq(1, p.detail_index)
+    input(p.win, p.detail_layout.last .. "G")
+    T.eq(p.detail_layout.last, api.nvim_win_get_cursor(p.win)[1])
+    T.eq(1, p.detail_index); p:close()
+  end
 end)
 
 T.test("Ctrl y scrolls code upward when a pinned reader has no earlier buffer rows", function()
@@ -1775,7 +1927,9 @@ T.test("top-edge Ctrl y counts native folded rows and remains a no-op at source 
   T.eq(75, api.nvim_win_call(source, vim.fn.winsaveview).topline)
   T.eq(75, api.nvim_win_get_cursor(source)[1]) -- The pinned summary is beside the closed fold.
   T.eq(80, api.nvim_win_call(source, function() return vim.fn.foldclosedend(75) end))
-  api.nvim_feedkeys(api.nvim_replace_termcodes("999<C-y>", true, false, true), "xt", false)
+  -- k keeps its source-scroll shortcut; reader Ctrl-y would now escape at
+  -- the bottom card boundary before reaching native source BOF.
+  api.nvim_feedkeys("999k", "xt", false)
   vim.cmd("redraw!"); api.nvim_exec_autocmds("SafeState", {}); vim.wait(20, function() return false end)
   T.eq(1, api.nvim_win_call(source, vim.fn.winsaveview).topline)
   local code, prose = api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview)

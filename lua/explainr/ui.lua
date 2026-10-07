@@ -1334,6 +1334,18 @@ function M.open(source, snapshot, result, on_close, keymaps)
     vim.b[self.detail_buf].explainr_detail_active = active
   end
 
+  function pane:detail_position()
+    local location = self.locations[self.detail_index]
+    local row, offset = math.min(location.row, self.source_count), location.offset or 0
+    local first = api.nvim_win_call(self.source, function() return vim.fn.foldclosed(row) end)
+    if first >= 0 then row = first end
+    local rows, _, origin = self:detail_context(self.detail_layout.ranges, row)
+    local line_rows = self.detail_context_cache.lines
+    -- Overflow indices already follow the final wrap and every EOF deletion.
+    local natural = line_rows[location.row > self.source_count and location.row or row] - origin + 1 + offset
+    return rows, line_rows, origin, natural
+  end
+
   function pane:place_detail()
     local layout = self.detail_layout
     if not layout or self.closed or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
@@ -1347,14 +1359,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local count = layout.last - layout.first + 1
     local card_height = api.nvim_win_text_height(self.win, { start_row = layout.first - 1, end_row = layout.last - 1 }).all
     local height = vim.fn.getwininfo(self.win)[1].height
-    local location = self.locations[self.detail_index]
-    local row, offset = math.min(location.row, self.source_count), location.offset or 0
-    local first = api.nvim_win_call(self.source, function() return vim.fn.foldclosed(row) end)
-    if first >= 0 then row = first end
-    local rows, _, origin = self:detail_context(layout.ranges, row)
-    local line_rows = self.detail_context_cache.lines
-    -- Overflow indices already follow the final wrap and every EOF deletion.
-    local natural = line_rows[location.row > self.source_count and location.row or row] - origin + 1 + offset
+    local rows, line_rows, origin, natural = self:detail_position()
     layout.natural, layout.card_height = natural, card_height
     local leading_count = math.max(0, math.min(height - card_height, natural - 1))
     local trimmed = math.max(0, math.min(#rows - origin + 1, natural - 1) - leading_count)
@@ -1714,7 +1719,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     vim.keymap.set("n", "<CR>", close_detail, { buffer = detail })
     for _, lhs in ipairs({ "<C-e>", "<C-y>" }) do
       local keys = api.nvim_replace_termcodes(lhs, true, false, true)
-      vim.keymap.set("n", lhs, function() self:scroll(vim.v.count1 .. keys, self.win) end, { buffer = detail })
+      vim.keymap.set("n", lhs, function() self:scroll(vim.v.count1 .. keys, self.win, lhs == "<C-y>") end, { buffer = detail })
     end
     for _, lhs in ipairs({ "j", "k" }) do
       vim.keymap.set("n", lhs, function()
@@ -1748,12 +1753,47 @@ function M.open(source, snapshot, result, on_close, keymaps)
     end
   end
 
-  function pane:scroll(keys, from)
+  function pane:scroll(keys, from, escape)
     if self.closed or self.syncing or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
     if not self:detail_valid() then return end
     from = from or self.source
     if from == self.win and not self.detail_win then self:sync(from); return end
     if from == self.win and self:detail_reflow() and not keys then return end
+    if escape and self.detail_layout then
+      local layout = self.detail_layout
+      local view = api.nvim_win_call(self.win, vim.fn.winsaveview)
+      local height = vim.fn.getwininfo(self.win)[1].height
+      local count = tonumber(keys:match("^(%d*)\25$")) or 1
+      local _, _, _, natural = self:detail_position()
+      local room = math.max(0, height - layout.card_height + 1 - natural)
+      if layout.card_height < height and view.lnum >= layout.first and view.lnum <= layout.last
+          and view.topline <= layout.first and view.skipcol == 0 and count > room then
+        -- Consume only the portion before the boundary, never the blocked
+        -- step. k's top-edge shortcut does not request this reader-only exit.
+        if room > 0 then self:scroll(room .. "\25", from) end
+        local _, _, _, settled = self:detail_position()
+        local source_view = api.nvim_win_call(self.source, vim.fn.winsaveview)
+        if settled >= height - layout.card_height + 1
+            and (source_view.topline > 1 or source_view.topfill > 0 or source_view.skipcol > 0) then
+          self:place_detail()
+          local context = layout.rows[layout.first - 1]
+          if context and context.item then
+            view = api.nvim_win_call(self.win, vim.fn.winsaveview)
+            view.lnum, view.col = layout.first - 1, 0
+            api.nvim_win_call(self.win, function() vim.fn.winrestview(view) end)
+            layout.reading = true
+            if context.active then
+              self:select_source(self:detail_target())
+              self:sync(self.win)
+            else
+              self:back()
+            end
+            return
+          end
+        end
+        if room > 0 then return end -- Native BOF can be reached before the card edge.
+      end
+    end
     self.syncing = true
     local before = self.scroll_views and self.scroll_views[from] or api.nvim_win_call(from, vim.fn.winsaveview)
     if keys then api.nvim_win_call(from, function() vim.cmd.normal({ keys, bang = true }) end) end
@@ -1761,9 +1801,17 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local changed = from ~= self.win and not vim.deep_equal(before, after)
     local scrolled = before.topline ~= after.topline or before.topfill ~= after.topfill or before.skipcol ~= after.skipcol
     local reading = from == self.win and (scrolled or before.lnum ~= after.lnum or before.col ~= after.col)
+    -- A fitting top-pinned card must settle in this input turn, not in a
+    -- later source/idle callback. Native motion into context still owns its
+    -- viewport, as does prose taller than the window.
+    local fitting_scroll = keys and from == self.win and scrolled and self.detail_layout
+      and self.detail_layout.card_height <= vim.fn.getwininfo(self.win)[1].height
+      and before.topline == self.detail_layout.first and before.skipcol == 0
+      and after.lnum >= self.detail_layout.first and after.lnum <= self.detail_layout.last
     local edge_scroll = false
     if self.detail_win and from == self.win then
       local layout = self.detail_layout
+      local was_reading = layout.reading
       if layout.initial and not vim.deep_equal(after, layout.initial) then layout.reading = true end
       local delta = display_distance(from, before, after)
       -- Sticky layout can remove every leading row. Ctrl-y still needs to
@@ -1803,18 +1851,25 @@ function M.open(source, snapshot, result, on_close, keymaps)
           end
           vim.cmd.normal({ action, bang = true })
         end)
-        if edge_scroll and display_distance(self.source, source_view,
-            api.nvim_win_call(self.source, vim.fn.winsaveview)) ~= 0 then
-          reading, layout.reading = true, true
+        local moved = display_distance(self.source, source_view, api.nvim_win_call(self.source, vim.fn.winsaveview))
+        if fitting_scroll and moved == 0 then
+          -- A native source limit is not a reading action. Undo only the
+          -- speculative reader step and any source scrolloff normalization.
+          api.nvim_win_call(self.source, function() vim.fn.winrestview(source_view) end)
+          api.nvim_win_call(self.win, function() vim.fn.winrestview(before) end)
+          layout.reading = was_reading
+          reading, scrolled, fitting_scroll = false, false, false
+        else
+          if edge_scroll and moved ~= 0 then reading, layout.reading = true, true end
+          self.overview.scrolled = true
+          changed = true
+          scrolled = true
         end
-        self.overview.scrolled = true
-        changed = true
-        scrolled = true
       end
     end
     local driver = from == self.win and self.source or from
     if changed then self:sync_sources(api.nvim_win_get_cursor(driver)[1], driver, scrolled) end
-    if self.detail_win and (edge_scroll or from ~= self.win and (self.source ~= from or scrolled)) then
+    if self.detail_win and (fitting_scroll or edge_scroll or from ~= self.win and (self.source ~= from or scrolled)) then
       if from ~= self.win and self.source ~= from then self.source, self.folds = from, {}; self:render() end
       self:place_detail()
     end

@@ -234,6 +234,13 @@ even while pinned, whereas source-driven scrolling uses sticky placement.
 When the reader has no earlier buffer rows, Ctrl-y still scrolls code upward.
 k on a summary at the top screen edge does the same without collapsing detail
 or jumping to stale context. Counts work; neither scrolls past the source's start.
+Once a fitting card reaches its bottom placement limit, a further reader Ctrl-y
+from inside the card enters the source-backed display row immediately above it.
+An outside-anchor destination collapses detail; an anchored destination keeps it
+expanded. Counts stop at this escape destination, discarding leftover steps.
+Reaching an edge alone, source-driven scrolling, and genuine file limits do not
+trigger the escape. Viewport-filling/long prose remains readable through native
+scrolling; top-pinned reading settles without a displaced corrective frame.
 Source scrolloff and unequal diff margins are respected without drift or an
 extra margin-correction scroll; original source option values are retained.
 Ordinary motion through expanded summary, metadata and prose selects the source
