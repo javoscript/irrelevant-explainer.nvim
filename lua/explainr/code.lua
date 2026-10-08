@@ -50,45 +50,9 @@ local function visual_selection()
   return { type = vim.fn.visualmode(), pos1 = vim.fn.getpos("'<"), pos2 = vim.fn.getpos("'>") }
 end
 
-local function structural(buf, scope)
-  local ft = vim.bo[buf].filetype
-  local lang = vim.treesitter.language.get_lang(ft) or ft
-  assert(vim.tbl_contains({ "lua", "python", "javascript", "typescript" }, lang),
-    "unsupported structural language: " .. (lang == "" and "(no filetype)" or lang))
-  local parser = vim.treesitter.get_parser(buf, lang)
-  assert(parser, "Tree-sitter parser is unavailable for " .. lang)
-  local query = vim.treesitter.query.get(lang, "explainr")
-  assert(query, "explainr Tree-sitter query is unavailable for " .. lang)
-  local trees = parser:parse()
-  assert(trees[1], "Tree-sitter did not produce a syntax tree")
-  local cursor = api.nvim_win_get_cursor(0)
-  local row, col = cursor[1] - 1, cursor[2]
-  local best, size
-  for id, node in query:iter_captures(trees[1]:root(), buf) do
-    if query.captures[id] == scope then
-      local sr, sc, er, ec = node:range()
-      local inside = (row > sr or (row == sr and col >= sc))
-        and (row < er or (row == er and col < ec))
-      -- range byte offsets avoid choosing an outer node on equal line counts.
-      local _, _, sb = node:start()
-      local _, _, eb = node:end_()
-      local length = eb - sb
-      if inside and (not size or length < size) then
-        best, size = { sr, sc, er, ec }, length
-      end
-    end
-  end
-  assert(best, "no enclosing " .. scope .. " matched the " .. lang .. " query")
-  return {
-    type = "v", exclusive = true,
-    pos1 = { buf, best[1] + 1, best[2] + 1, 0 },
-    pos2 = { buf, best[3] + 1, best[4] + 1, 0 },
-  }
-end
-
 local function capture(win, scope, selection)
   assert(api.nvim_win_is_valid(win), "source window is unavailable")
-  assert(vim.tbl_contains({ "file", "function", "class", "selection" }, scope), "unsupported code scope")
+  assert(scope == "file" or scope == "selection", "unsupported code scope: " .. tostring(scope))
   local buf = api.nvim_win_get_buf(win)
   assert(api.nvim_buf_is_loaded(buf) and vim.bo[buf].buftype == "", "source must be an ordinary loaded text buffer")
   return api.nvim_win_call(win, function()
@@ -105,7 +69,7 @@ local function capture(win, scope, selection)
           pos2 = { buf, #lines, 1, 0 }, exclusive = false })
       end
     else
-      descriptor = scope == "selection" and vim.deepcopy(selection or visual_selection()) or structural(buf, scope)
+      descriptor = vim.deepcopy(selection or visual_selection())
       if descriptor.exclusive == nil then descriptor.exclusive = vim.o.selection == "exclusive" end
       text, spans = region(buf, lines, descriptor)
       assert(text ~= "", "there is no selected code")
@@ -132,7 +96,8 @@ function M.collect(win, scope, selection)
   win = win == 0 and api.nvim_get_current_win() or win
   local ok, result = pcall(capture, win, scope, selection)
   if ok then return result end
-  local hint = (scope == "function" or scope == "class") and "; use file or selection scope instead" or ""
+  local hint = (scope == "function" or scope == "class")
+    and "; function/class scopes were removed; use file or selection scope with an explicit Visual region instead" or ""
   return nil, "Code collection failed: " .. tostring(result) .. hint
 end
 

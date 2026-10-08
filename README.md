@@ -2,7 +2,7 @@
 
 AI explanations alongside code and code diffs, with concise row-aligned notes and
 in-pane Markdown detail. Requires **Neovim 0.11+**. Diffview is optional for code mode;
-structural scopes require installed Tree-sitter parsers.
+code file and visual-selection explanations need no syntax parser.
 
 For local development with lazy.nvim:
 
@@ -35,8 +35,6 @@ the configured tool.
 
 ```vim
 :ExplainrCode file
-:ExplainrCode function
-:ExplainrCode class
 :'<,'>ExplainrCode selection
 :ExplainrDiff file
 :ExplainrDiff hunk
@@ -46,6 +44,15 @@ the configured tool.
 :ExplainrCancel
 :ExplainrClose
 ```
+
+The five explanation scopes are **visual selection, code file, diff file, diff
+hunk, and whole review**. Code and diff commands default to `file`.
+
+**Migration:** `ExplainrCode function` / `class` and their Lua equivalents are
+removed. Select the desired function or class yourself, then use
+`:'<,'>ExplainrCode selection`, or use `file` for the whole buffer. Update old
+mappings accordingly; retired scopes report an error and never broaden the target.
+See `:help explainr-commands` for a Visual mapping that captures exact endpoints.
 
 **`:ExplainrDiff review` generates the whole change in one request:** a narrative
 connecting the files, plus notes for every eligible text file. The right-hand
@@ -73,9 +80,8 @@ remain metadata, without fabricated line notes. Custom wrappers must support
 the review's version-2 response; code/file/hunk retain version 1. Incomplete or
 invalid review output is rejected atomically, with no automatic retry or fallback.
 
-Code mode uses current unsaved buffer text; structural scopes support Lua
-functions and Python/JavaScript/TypeScript functions/classes. File and visual
-scopes need no parser. File/hunk diff mode follows a loaded two-way Diffview source and
+Code mode uses current unsaved buffer text, with the whole buffer as context
+for visual selections. File/hunk diff mode follows a loaded two-way Diffview source and
 defaults to the **whole selected coherent comparison** when it fits. Oversized
 reviews automatically use the selected hunk with nearby old/new lines (or the
 complete selected file for file scope), prioritizing affordable changed OpenSpec,
@@ -86,7 +92,7 @@ notes on unchanged sections when they explain a change's effects or rationale.
 Both file scopes also request a short file-purpose overview at the top. Diff
 overviews include the overall purpose of the selected file's changes. The overview
 references the whole file (both available diff versions), so focusing it highlights
-all its content. No overview is requested for function, class, selection or hunk
+all its content. No overview is requested for selection or hunk
 scopes, or when no valid target text exists.
 Staged and working comparisons are kept separate.
 

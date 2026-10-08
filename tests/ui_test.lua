@@ -3842,7 +3842,7 @@ T.test("requested scopes animate only matching visible rows without writes or co
     local rows = {}; for _, m in ipairs(marks(p, "explainr.loading")) do rows[#rows + 1] = m[2] + 1 end
     return rows
   end
-  for _, scope in ipairs({ "selection", "function", "class", "hunk" }) do
+  for _, scope in ipairs({ "selection", "hunk" }) do
     p.pending = { source = source, scope = scope, row = 4, windows = { buffer = source },
       snapshot = { target = { anchors = { { side = "buffer", start_line = 4, end_line = 6 } } } } }
     p:set(result, "Pending · " .. scope)

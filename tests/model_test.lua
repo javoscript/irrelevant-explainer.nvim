@@ -99,7 +99,7 @@ T.test("file overviews cover complete renamed, one-sided and code targets withou
   local rejected, err = model.validate(value, s)
   T.eq(nil, rejected); assert(err:find("whole-file target anchors", 1, true))
   overview.anchors = vim.deepcopy(s.target.anchors)
-  for _, scope in ipairs({ "function", "class", "selection", "hunk" }) do
+  for _, scope in ipairs({ "selection", "hunk" }) do
     s.target.scope = scope
     T.eq(nil, model.validate(value, s))
   end

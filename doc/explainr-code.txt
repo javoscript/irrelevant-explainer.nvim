@@ -9,8 +9,6 @@ window ID (0 means the current window). The source must be an ordinary loaded
 text buffer. No disk text is substituted for unsaved buffer contents. Scopes:
 
     file        Entire buffer; no parser required.
-    function    Smallest enclosing queried function at the window's cursor.
-    class       Smallest enclosing queried class at the window's cursor.
     selection   Exact Visual region; no parser required.
 
 Snapshot fields:
@@ -29,7 +27,7 @@ no anchors or spans and text = "". endofline records the buffer's final-newline
 option; text joins selected lines with "\n", without adding a final newline.
 
 anchors contains one {path, side = "buffer", start_line, end_line} range for
-nonempty file/structural/selection targets (1-based inclusive line numbers).
+nonempty file/selection targets (1-based inclusive line numbers).
 spans retains precise per-line boundaries independently of line-only anchors.
 An empty selection is rejected; no AI is invoked by this module.
 
@@ -83,31 +81,19 @@ be spaces in text, as specified by Neovim, while spans still identifies their
 original position. 'virtualedit', 'tabstop', 'list', and 'selection' semantics
 are those of the source window/buffer at collection time.
 
-STRUCTURAL COMPATIBILITY                               *explainr-code-structures*
+REMOVED STRUCTURAL SCOPES                              *explainr-code-structures*
 
-Requires Neovim 0.11+ and an already installed compatible parser. Explainr
-never installs parsers. Queries shipped as queries/LANGUAGE/explainr.scm:
+Function/class scopes and their language-specific queries have been removed.
+Existing command or Lua calls using those scopes fail before cache lookup or
+inference, with guidance to use file or selection. No alias or automatic
+scope expansion is provided, and fresh accepted notes remain available.
 
-    Lua          function_declaration, function_definition; no classes.
-    Python       function_definition, class_definition.
-    JavaScript   function_declaration, function_expression,
-                 generator_function_declaration, generator_function,
-                 arrow_function, method_definition; class_declaration, class.
-    TypeScript   Same node set as JavaScript.
-
-Selection is based on the cursor's containment in the smallest captured node,
-not just matching line numbers. Target text is the exact node range, including
-internal indentation, not leading indentation outside the node. Python
-decorators outside function_definition/class_definition are contextual text,
-not part of those targets. Other nodes, including TypeScript interfaces and
-abstract classes, are not promised by these queries. Language aliases mapped
-to the supported grammars use those queries; TSX is not in the initial set.
-
-tests/code_test.lua uses installed Lua/Python/JavaScript/TypeScript grammars
-and exact nested fixtures to define this compatibility set. The fixtures were
-verified with Neovim 0.12.5 and the parsers available in the local site/runtime.
-Missing/incompatible parsers, queries, or enclosing nodes produce errors with
-the suggestion to use file or selection scope; there is no broader fallback.
+To explain a function or class, explicitly select its text and use selection
+scope. Include decorators or surrounding lines when you want them in the
+target. See |explainr-commands| for a Visual mapping and
+|explainr-code-selection| for precise descriptors. File and selection work
+without parsers for any ordinary text buffer. Optional Markdown highlighting
+in the explanation reader is unchanged; installed user parsers are untouched.
 
 FRESHNESS                                              *explainr-code-fresh*
 

@@ -1,7 +1,6 @@
 local api = vim.api
 local plugin, sessions, agent = require("explainr"), require("explainr.session"), require("explainr.agent")
 local fixture = vim.fn.getcwd() .. "/tests/fixtures/agent.py"
-vim.opt.runtimepath:append(vim.fn.stdpath("data") .. "/site")
 local function config(mode, limit)
   plugin.setup({ ai = { command = { "python3", fixture, mode or "explain" } }, context = { max_bytes = limit or 262144 } })
 end
@@ -33,8 +32,9 @@ end
 
 T.test("public code commands produce aligned notes and cached detail without inference", function()
   fixture_buffer(function(buf, win, calls)
-    config(); api.nvim_win_set_cursor(win, { 3, 2 })
-    vim.cmd("ExplainrCode function")
+    config(); vim.cmd("normal! 2GV2j" .. string.char(27))
+    api.nvim_win_set_cursor(win, { 3, 2 })
+    vim.cmd("'<,'>ExplainrCode selection")
     local s = sessions.current(); ready(s)
     local rows = api.nvim_buf_get_lines(s.pane.buf, 0, 4, false)
     T.eq("", rows[1]); T.eq("", rows[3])
@@ -51,8 +51,9 @@ T.test("public code commands produce aligned notes and cached detail without inf
     assert(table.concat(lines, "\n"):find("Full fixture explanation", 1, true))
     vim.cmd("ExplainrClose"); T.eq(nil, sessions.current())
     T.eq(false, api.nvim_win_is_valid(s.pane.win))
-    api.nvim_set_current_win(win); vim.cmd("ExplainrCode file")
+    api.nvim_set_current_win(win); vim.cmd("ExplainrCode")
     local file = sessions.current(); ready(file); T.eq(2, calls())
+    T.eq("file", file.snapshot.target.scope)
     vim.cmd("ExplainrCode file"); local cached = sessions.current(); ready(cached)
     T.eq(file, cached); T.eq(file.pane.win, cached.pane.win); T.eq(1, #cached.batches)
     T.eq("Ready · cached", cached.pane.status); T.eq(2, calls())
@@ -111,14 +112,13 @@ T.test("budget and selection errors launch no commands; visual refresh keeps exa
   end)
 end)
 
-T.test("documented class function and Ex visual commands preserve their selected scope", function()
+T.test("explicit selections and Ex visual commands preserve their selected scope", function()
   fixture_buffer(function(buf, win, calls)
     api.nvim_buf_set_lines(buf, 0, -1, false, { "class Account:", "    def cancel(self):", "        permitted = True", "        return permitted", "", "outside = 1" })
     vim.bo[buf].filetype = "python"; config()
-    api.nvim_win_set_cursor(win, { 3, 10 }); vim.cmd("ExplainrCode class")
-    local s = sessions.current(); ready(s)
+    local s = plugin.code("selection", { type = "V", pos1 = { buf, 1, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
     T.eq(1, s.snapshot.target.anchors[1].start_line); T.eq(4, s.snapshot.target.anchors[1].end_line)
-    vim.cmd("ExplainrCode function"); s = sessions.current(); ready(s)
+    s = plugin.code("selection", { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
     T.eq(2, s.snapshot.target.anchors[1].start_line); T.eq(4, s.snapshot.target.anchors[1].end_line)
     plugin.close(); api.nvim_set_current_win(win)
     vim.cmd("normal! 2GVj" .. string.char(27))
@@ -126,6 +126,37 @@ T.test("documented class function and Ex visual commands preserve their selected
     T.eq(2, s.snapshot.target.anchors[1].start_line); T.eq(3, s.snapshot.target.anchors[1].end_line)
     T.eq("    def cancel(self):\n        permitted = True", s.snapshot.target.text)
     T.eq(3, calls())
+  end)
+end)
+
+T.test("retired code scopes reject command and Lua calls before reuse without dropping accepted notes", function()
+  fixture_buffer(function(_, _, calls, errors)
+    config()
+    T.eq({ "file", "selection" }, vim.fn.getcompletion("ExplainrCode ", "cmdline"))
+    T.eq({ "file", "hunk", "review" }, vim.fn.getcompletion("ExplainrDiff ", "cmdline"))
+    local s = plugin.code(); ready(s)
+    T.eq("file", s.snapshot.target.scope)
+    local accepted = vim.deepcopy(s.pane.result)
+    local prompt, builds = require("explainr.prompt"), 0
+    local build = prompt.build
+    prompt.build = function(...) builds = builds + 1; return build(...) end
+    local ok, err = xpcall(function()
+      for _, scope in ipairs({ "function", "class" }) do
+        for _, command in ipairs({ false, true }) do
+          api.nvim_set_current_win(s.pane.win)
+          if command then vim.cmd("ExplainrCode " .. scope)
+          else T.eq(nil, plugin.code(scope)) end
+          assert(errors[#errors]:find("unsupported code scope: " .. scope, 1, true))
+          assert(errors[#errors]:find("scopes were removed; use file or selection", 1, true))
+          T.eq(s, sessions.current()); T.eq(accepted, s.pane.result); T.eq(1, #s.batches)
+          T.eq(1, calls()); T.eq(nil, s.invocation)
+        end
+      end
+      T.eq(4, #errors)
+      T.eq(0, builds) -- Prompt building precedes result-cache lookup in session.launch.
+    end, debug.traceback)
+    prompt.build = build
+    assert(ok, err)
   end)
 end)
 
@@ -218,7 +249,8 @@ end)
 T.test("code scopes accumulate in one pane; cached repeats and refresh replace only their target", function()
   fixture_buffer(function(buf, win, calls)
     config(); api.nvim_win_set_cursor(win, { 3, 0 })
-    local s = plugin.code("function"); ready(s)
+    local region = { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }
+    local s = plugin.code("selection", region); ready(s)
     local first = vim.deepcopy(s.batches[1])
     local pane_win = s.pane.win
     T.eq(s, plugin.code("file")); ready(s)
@@ -228,9 +260,11 @@ T.test("code scopes accumulate in one pane; cached repeats and refresh replace o
     T.eq(s, plugin.code("selection", selection)); ready(s)
     T.eq(3, #s.batches); T.eq(6, #s.pane.result.notes); T.eq(3, calls())
     local selected = vim.deepcopy(s.batches[3])
-    T.eq(s, plugin.code("function")); ready(s)
+    T.eq(s, plugin.code("selection", region)); ready(s)
     T.eq("Ready · cached", s.pane.status); T.eq(3, calls()); T.eq(6, #s.pane.result.notes)
+    api.nvim_win_set_cursor(win, { 5, 0 })
     T.eq(s, plugin.refresh()); ready(s)
+    T.eq(2, s.snapshot.target.anchors[1].start_line); T.eq(4, s.snapshot.target.anchors[1].end_line)
     T.eq(4, calls()); T.eq(3, #s.batches); T.eq(selected, s.batches[3])
     -- Neither callers mutating the view nor UI detail operations mutate batches.
     s.pane.result.notes[1].detail = "view-only mutation"
@@ -251,8 +285,9 @@ T.test("failed collection and budget preserve accepted code, but fresh edits dis
     config(); local s = plugin.code("file"); ready(s)
     local accepted = vim.deepcopy(s.pane.result)
     api.nvim_win_set_cursor(win, { 5, 0 })
-    T.eq(nil, plugin.code("function")); T.eq(accepted, s.pane.result)
-    T.eq(1, calls()); assert(errors[#errors]:find("no enclosing function", 1, true))
+    T.eq(nil, plugin.code("selection", { type = "V", pos1 = { buf, 5, 1, 0 }, pos2 = { buf, 6, 1, 0 } }))
+    T.eq(accepted, s.pane.result)
+    T.eq(1, calls()); assert(errors[#errors]:find("selection position is unset or outside the buffer", 1, true))
     config(nil, 80); T.eq(s, plugin.code("file"))
     T.eq(accepted, s.pane.result); T.eq(nil, s.pane.pending); T.eq(1, calls())
     api.nvim_buf_set_lines(buf, 0, 1, false, { "local changed = 2" })
@@ -768,18 +803,18 @@ T.test("diff revision and mode changes cancel ownership while recreated display 
 end)
 
 T.test("captured config and context preferences key caching without dropping unrelated accepted batches", function()
-  fixture_buffer(function(_, win, calls)
+  fixture_buffer(function(buf, win, calls)
     config(); api.nvim_win_set_cursor(win, { 3, 0 })
-    local s = plugin.code("function"); ready(s)
-    local function_batch = vim.deepcopy(s.batches[1])
+    local s = plugin.code("selection", { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
+    local selection_batch = vim.deepcopy(s.batches[1])
     config("explain-slow"); T.eq(s, plugin.code("file"))
     plugin.setup({ ai = { command = { "python3", fixture, "explain-invalid" } }, context = { radius = 1 } })
-    ready(s); T.eq(2, #s.batches); T.eq(function_batch, s.batches[1]); T.eq(2, calls())
+    ready(s); T.eq(2, #s.batches); T.eq(selection_batch, s.batches[1]); T.eq(2, calls())
     -- Returning to the config captured by the pending request hits its cache.
     config("explain-slow"); T.eq(s, plugin.code("file")); ready(s)
     T.eq("Ready · cached", s.pane.status); T.eq(2, calls())
     plugin.setup({ ai = { command = { "python3", fixture, "explain-slow" } }, context = { radius = 1 } })
     T.eq(s, plugin.code("file")); ready(s); T.eq(3, calls()); T.eq(2, #s.batches)
-    T.eq(function_batch, s.batches[1])
+    T.eq(selection_batch, s.batches[1])
   end)
 end)

@@ -1,8 +1,6 @@
 local code = require("explainr.code")
 local api = vim.api
 local block, esc = string.char(22), string.char(27)
--- -u NONE omits the user site. Use existing parsers only, never install them.
-vim.opt.runtimepath:append(vim.fn.stdpath("data") .. "/site")
 
 local function buffer(lines, ft, run)
   local previous = api.nvim_get_current_buf()
@@ -281,106 +279,29 @@ T.test("code collection uses specified noncurrent window and detects its closure
   end)
 end)
 
-T.test("code Lua nested named and anonymous functions select smallest node", function()
-  buffer({ "local function outer()", " local function inner()", "  return 1", " end", " return inner()", "end" }, "lua", function(buf)
-    api.nvim_win_set_cursor(0, { 3, 3 })
-    local s = collect("function")
-    anchor(s, 2, 4)
-    T.eq("local function inner()\n  return 1\n end", s.target.text)
-    T.eq({ { { buf, 2, 2, 0 }, { buf, 2, 24, 0 } },
-      { { buf, 3, 1, 0 }, { buf, 3, 11, 0 } },
-      { { buf, 4, 1, 0 }, { buf, 4, 4, 0 } } }, s.target.spans)
-    api.nvim_win_set_cursor(0, { 5, 3 })
-    anchor(collect("function"), 1, 6)
-    api.nvim_buf_set_lines(buf, 0, -1, false, { "local outer = function() return function() return 2 end end" })
-    api.nvim_win_set_cursor(0, { 1, 45 })
-    s = collect("function")
-    T.eq("function() return 2 end", s.target.text)
-    T.eq({ { { buf, 1, 33, 0 }, { buf, 1, 55, 0 } } }, s.target.spans)
-  end)
-end)
-
-T.test("code Python nested functions and classes have exact enclosing ranges", function()
-  buffer({ "class Outer:", "    class Inner:", "        def method(self):", "            def nested():",
-    "                return 1", "            return nested()", "    pass" }, "python", function(buf)
-    api.nvim_win_set_cursor(0, { 5, 18 })
-    local fn = collect("function")
-    anchor(fn, 4, 5)
-    T.eq("def nested():\n                return 1", fn.target.text)
-    T.eq({ { { buf, 4, 13, 0 }, { buf, 4, 26, 0 } },
-      { { buf, 5, 1, 0 }, { buf, 5, 24, 0 } } }, fn.target.spans)
-    local cls = collect("class")
-    anchor(cls, 2, 6)
-    T.eq("class Inner:\n        def method(self):\n            def nested():\n                return 1\n            return nested()", cls.target.text)
-    api.nvim_win_set_cursor(0, { 7, 5 })
-    anchor(collect("class"), 1, 7)
-  end)
-end)
-
-for _, lang in ipairs({ "javascript", "typescript" }) do
-  T.test("code " .. lang .. " nested arrow functions methods and classes", function()
-    buffer({ "class Outer {", "  method() {", "    class Inner {", "      method() {", "        const nested = () => 42;",
-      "        return nested();", "      }", "    }", "  }", "}" }, lang, function(buf)
-      api.nvim_win_set_cursor(0, { 5, 29 })
-      local fn = collect("function")
-      T.eq("() => 42", fn.target.text)
-      anchor(fn, 5, 5)
-      T.eq({ { { buf, 5, 24, 0 }, { buf, 5, 31, 0 } } }, fn.target.spans)
-      anchor(collect("class"), 3, 8)
-      api.nvim_win_set_cursor(0, { 6, 10 })
-      fn = collect("function")
-      anchor(fn, 4, 7)
-      T.eq("method() {\n        const nested = () => 42;\n        return nested();\n      }", fn.target.text)
-      T.eq({ { { buf, 4, 7, 0 }, { buf, 4, 17, 0 } },
-        { { buf, 5, 1, 0 }, { buf, 5, 33, 0 } },
-        { { buf, 6, 1, 0 }, { buf, 6, 25, 0 } },
-        { { buf, 7, 1, 0 }, { buf, 7, 7, 0 } } }, fn.target.spans)
-      api.nvim_win_set_cursor(0, { 2, 4 })
-      anchor(collect("class"), 1, 10)
-    end)
-  end)
-
-  T.test("code " .. lang .. " declarations generators expressions and anonymous classes", function()
-    for _, case in ipairs({
-      { "function named() { return 1; }", "function", "function named() { return 1; }" },
-      { "function* named() { yield 1; }", "function", "function* named() { yield 1; }" },
-      { "const f = function() { return 1; };", "function", "function() { return 1; }" },
-      { "const f = function*() { yield 1; };", "function", "function*() { yield 1; }" },
-      { "const C = class { method() {} };", "class", "class { method() {} }" },
-    }) do
-      buffer({ case[1] }, lang, function()
-        api.nvim_win_set_cursor(0, { 1, 20 })
-        local s = collect(case[2])
-        T.eq(case[3], s.target.text)
-        anchor(s, 1, 1)
-      end)
+T.test("code rejects retired scopes without parser lookup and file or selection still work", function()
+  buffer({ "local function inner()", "  return 1", "end", "outside" }, "lua", function()
+    local get_parser, get_query = vim.treesitter.get_parser, vim.treesitter.query.get
+    local lookups = 0
+    local function unexpected()
+      lookups = lookups + 1
+      error("unexpected parser/query lookup")
     end
-  end)
-end
-
-T.test("code unavailable parser query language and enclosing node never broaden scope", function()
-  buffer({ "local x = 1" }, "lua", function()
-    local function unavailable()
-      local s, err = code.collect(0, "function")
-      T.eq(nil, s)
-      assert(err:find("file or selection", 1, true), err)
-      return err
-    end
-    assert(unavailable():find("no enclosing", 1, true))
-    T.eq(nil, code.collect(0, "class")) -- Lua deliberately has no class capture.
-    vim.bo.filetype = "not_a_supported_language"
-    assert(unavailable():find("unsupported structural language", 1, true))
-    T.eq("local x = 1", collect("file").target.text)
-    vim.bo.filetype = "lua"
-    local get_parser = vim.treesitter.get_parser
-    vim.treesitter.get_parser = function() error("fixture: parser unavailable") end
-    local ok, err = pcall(unavailable)
-    vim.treesitter.get_parser = get_parser
-    assert(ok and err:find("parser unavailable", 1, true), err)
-    local get_query = vim.treesitter.query.get
-    vim.treesitter.query.get = function() return nil end
-    ok, err = pcall(unavailable)
-    vim.treesitter.query.get = get_query
-    assert(ok and err:find("query is unavailable", 1, true), err)
+    vim.treesitter.get_parser, vim.treesitter.query.get = unexpected, unexpected
+    local ok, err = xpcall(function()
+      api.nvim_win_set_cursor(0, { 2, 2 })
+      for _, scope in ipairs({ "function", "class" }) do
+        local snapshot, message = code.collect(0, scope)
+        T.eq(nil, snapshot)
+        assert(message:find("unsupported code scope: " .. scope, 1, true), message)
+        assert(message:find("scopes were removed; use file or selection", 1, true), message)
+      end
+      T.eq("local function inner()\n  return 1\nend\noutside", collect("file").target.text)
+      local selection = selected("V", { 0, 2, 1, 0 }, { 0, 3, 1, 0 }, false)
+      T.eq("  return 1\nend", selection.target.text); anchor(selection, 2, 3)
+      T.eq(0, lookups)
+    end, debug.traceback)
+    vim.treesitter.get_parser, vim.treesitter.query.get = get_parser, get_query
+    assert(ok, err)
   end)
 end)

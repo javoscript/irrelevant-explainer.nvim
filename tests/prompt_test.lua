@@ -55,11 +55,9 @@ T.test("file purpose overview is requested only for file scope with whole-file a
   end
   assert(not p:find("prioritize the selected file's changed hunks", 1, true))
   T.eq(p, assert(prompt.build(s, bytes))); T.eq(nil, prompt.build(s, bytes - 1))
-  -- Full file context is still supplied for these scopes, but does not opt them in.
-  for _, scope in ipairs({ "function", "class", "selection" }) do
-    s.target.scope = scope
-    assert(not assert(prompt.build(s, 100000)):find("file overview as the FIRST note", 1, true), scope)
-  end
+  -- Full file context is still supplied for selection, but does not opt it in.
+  s.target.scope = "selection"
+  assert(not assert(prompt.build(s, 100000)):find("file overview as the FIRST note", 1, true))
 end)
 
 T.test("whole comparison prompt includes business evidence unchanged rationale mismatches and hostile data", function()

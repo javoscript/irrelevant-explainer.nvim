@@ -9,8 +9,9 @@ or K opens full detail from that same answer. No source editing or autonomous
 repo exploration is performed by the plugin. Configure your external agent to
 deny unnecessary tools; a prompt alone cannot sandbox arbitrary commands.
 
-Requires Neovim 0.11+. Runtime tested on 0.11.5 and 0.12.5. Tree-sitter is
-needed only for structural scopes; Diffview/Git are needed only for diff mode.
+Requires Neovim 0.11+. Runtime tested on 0.11.5 and 0.12.5. Code collection
+needs no parser; Diffview/Git are needed only for diff mode. Markdown
+Tree-sitter highlighting in the reader remains optional.
 Install the repository using your normal plugin manager, or append a local
 checkout to 'runtimepath' and call setup. No global mappings are installed.
 
@@ -42,7 +43,7 @@ retry automatically. External-agent usage may increase. See |explainr-ui.txt|.
 
 COMMANDS                                                *explainr-commands*
 >
-  :ExplainrCode [file|function|class|selection]
+  :ExplainrCode [file|selection]
   :ExplainrDiff [file|hunk|review]
   :ExplainrReview
   :ExplainrRefresh
@@ -80,7 +81,7 @@ using the currently displayed comparison without changing tree focus/selection.
 File/hunk generation still requires a source pane or its explanation reader.
 Refresh clears active/queued requests, collects a new snapshot and explicitly
 calls the command, even when a result is cached. Selection refresh retains the
-original region; structural/hunk refresh selects the structure/hunk at the
+original region; hunk refresh selects the hunk at the
 source cursor now. Review refresh regenerates the narrative and all file notes;
 File refresh requests only the file/hunk, even for notes distributed by a review.
 Cancel stops active/queued collection/check/inference jobs and preserves
@@ -91,9 +92,13 @@ text/options. Diff requests return a live Pending pane immediately; their
 snapshot becomes available after asynchronous collection succeeds.
 
 Code scope uses unsaved contents and the whole current file as context. File
-and visual scopes need no parser. Lua functions and Python/JavaScript/TypeScript
-functions/classes require installed compatible grammars; there is no automatic
-parser install or fallback to a wider scope. See |explainr-code.txt|.
+and visual scopes need no parser. The five explanation scopes are visual
+selection, code file, diff file, diff hunk and whole review.
+Function/class targeting is removed: replace ExplainrCode function/class or
+require("explainr").code("function"/"class") mappings with an explicit Visual
+selection and ExplainrCode selection, or file scope for the whole buffer.
+Retired scopes report an error without inference or a broader fallback.
+See |explainr-code.txt| for selection descriptors and collection details.
 
 Both file scopes request a concise file-purpose overview before regular notes.
 Diff overviews also describe the selected file's overall change purpose, grounded
@@ -327,8 +332,8 @@ DEVELOPMENT                                               *explainr-testing*
 <
 Use normal headless startup, not -l: editor resize/redraw tests require normal
 screen-grid allocation.
-Offline tests need Python 3 and Git; structural fixture tests use installed
-Lua/Python/JavaScript/TypeScript parsers. Optional Diffview tests report SKIP
+Offline tests need Python 3 and Git; code collection tests need no parsers.
+Optional Diffview tests report SKIP
 when its runtime is absent; see |explainr-diff-compat| for environment overrides.
 No credentials, login or paid inference are required. External CLI event
 contracts are fixture-tested, not an authenticated compatibility smoke test.
