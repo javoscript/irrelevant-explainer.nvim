@@ -302,6 +302,23 @@ T.test("v3 annotation validates independent coordinates evidence and exact unit 
   end
 end)
 
+T.test("v3 unsent range diagnostics identify note anchors and finding evidence without widening coverage", function()
+  for _, case in ipairs({
+    { path = "old.lua", side = "old", first = 5, last = 7, unsent = 7, note = true },
+    { path = "adr.md", side = "new", first = 1, last = 3, unsent = 2 },
+    { path = "adr.md", side = "new", first = 2, last = 2, unsent = 2 },
+  }) do
+    local req, value = phase_fixture()
+    local bad = anchor(case.path, case.side, case.first, case.last)
+    if case.note then value.units[1].notes[1].anchors[1] = bad
+    else value.units[1].findings[1].evidence = { bad } end
+    local accepted, err = model.validate_review(value, req)
+    T.eq(nil, accepted)
+    assert(err:find(string.format("%s %s:%d-%d; first unsent line %d",
+      case.path, case.side, case.first, case.last, case.unsent), 1, true), err)
+  end
+end)
+
 T.test("v3 finite note finding text and exact decoded UTF8 response byte allowances", function()
   local req, value = phase_fixture()
   local raw = vim.json.encode(value)

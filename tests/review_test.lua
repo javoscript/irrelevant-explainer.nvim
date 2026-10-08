@@ -109,7 +109,14 @@ T.test("review planner preserves asymmetric rename sides and split hunk coverage
   for _, invocation in ipairs(plan.annotations) do
     assert(invocation.bytes <= 5100)
     assert(not invocation.prompt:find("PATCH MUST NOT TRAVEL", 1, true))
-    for _, file in ipairs(invocation.request.files) do assert(file.chunks and not file.lines) end
+    for _, file in ipairs(invocation.request.files) do
+      assert(file.chunks and not file.lines)
+      local original = file.side == "old" and old.lines or s.files[1].lines
+      for _, chunk in ipairs(file.chunks) do
+        T.eq(chunk.start_line + #chunk.lines - 1, chunk.end_line)
+        T.eq(vim.list_slice(original, chunk.start_line, chunk.end_line), chunk.lines)
+      end
+    end
   end
   assert(review.validate_coverage(job, plan.units))
   table.remove(plan.units, 2); T.eq(nil, review.validate_coverage(job, plan.units))
@@ -137,6 +144,46 @@ T.test("whole files output packing missing sources empty comparison and indivisi
   for _, key in ipairs({ "request_max_bytes", "response_max_bytes", "max_snapshot_bytes", "max_requests" }) do
     for _, value in ipairs({ 0, -1, 1.1, math.huge, "100" }) do T.eq(nil, review.create(fixture(), { review = { [key] = value } })) end
   end
+end)
+
+T.test("annotation units share the available response budget including the envelope", function()
+  for _, count in ipairs({ 1, 2, 3 }) do
+    local s = fixture(count)
+    local job = assert(review.create(s, {}))
+    local req = review.inspect(job).annotations[1].request
+    T.eq(count, #req.units)
+    assert(req.output_limits.unit_bytes > 8192, "unused output space must be available to assigned units")
+    local value = answer(req)
+    for i, unit in ipairs(req.units) do
+      for n = 1, 8 do
+        value.units[i].notes[n] = { summary = "Behavior " .. n, detail = string.rep("é", 450),
+          anchors = { range(unit.target.path, "new", 1) }, intent_basis = "unknown", evidence = {} }
+      end
+      assert(#vim.json.encode(value.units[i]) > 8192)
+    end
+    assert(model.validate_review(value, req))
+    local maximum = answer(req)
+    for _, entry in ipairs(maximum.units) do
+      entry.padding = ""
+      entry.padding = string.rep("x", req.output_limits.unit_bytes - #vim.json.encode(entry))
+      T.eq(req.output_limits.unit_bytes, #vim.json.encode(entry))
+    end
+    assert(#vim.json.encode(maximum) <= req.output_limits.response_bytes, "unit allocations must fit together")
+  end
+end)
+
+T.test("large configured annotation batches reserve every response array separator", function()
+  local cap = 3145728
+  local job = assert(review.create(fixture(300, 1), { context = { max_bytes = 1000000 },
+    review = { request_max_bytes = 1000000, response_max_bytes = cap } }))
+  local req = review.inspect(job).annotations[1].request
+  T.eq(300, #req.units)
+  local value, entries = answer(req), 0
+  for _, entry in ipairs(value.units) do entries = entries + #vim.json.encode(entry) end
+  -- Derive the actual envelope/commas independently from a serialized answer.
+  local maximum = #vim.json.encode(value) - entries + #req.units * req.output_limits.unit_bytes
+  assert(maximum <= cap, "full allocations plus all separators exceed response cap")
+  assert(maximum + #req.units > cap, "assigned units should share all remaining capacity")
 end)
 
 T.test("affordable changed decision text is evidence only and annotation ownership remains local", function()
@@ -389,15 +436,55 @@ T.test("all notes assemble in unit order with exact duplicates suppressed and do
   T.eq(done.result, assert(review.validate_record(done.record, s, config)))
 end)
 
+T.test("oversized annotation finding bundles split without losing findings or original evidence", function()
+  local s = fixture(1, 1, 2000)
+  local config = { review = { request_max_bytes = 7000, response_max_bytes = 8192 } }
+  local job = assert(review.create(s, config))
+  local seen = {}
+  local function respond(req, _, value)
+    if req.phase == "annotate" then
+      for i, unit in ipairs(req.units) do
+        for n = 1, 4 do value.units[i].findings[n] = { text = n .. string.rep("F", 999), intent_basis = "documented",
+          evidence = unit.target.anchors, file_ids = { unit.file_id } } end
+      end
+    elseif req.phase == "reduce" then
+      for _, child in ipairs(req.inputs) do
+        for _, finding in ipairs(child.findings) do seen[#seen + 1] = finding.text:sub(1, 1) end
+      end
+      T.eq(s.files[1].lines, req.files[1].chunks[1].lines)
+    end
+    return value
+  end
+  local done, calls = run(job, respond)
+  assert(done.result, done.error)
+  T.eq({ "1", "2", "3", "4" }, seen)
+  for _, call in ipairs(calls) do assert(call.bytes <= 7000) end
+  T.eq(done.result, assert(review.validate_record(done.record, s, config)))
+  local _, resumed = run(job); T.eq(0, #resumed)
+  local interrupted, reductions = assert(review.create(s, config)), 0
+  local failed = run(interrupted, function(req, n, value)
+    if req.phase == "reduce" then
+      reductions = reductions + 1
+      if reductions == 2 then return nil, "split reducer failure" end
+    end
+    return respond(req, n, value)
+  end)
+  assert(failed.error:find("split reducer failure", 1, true), failed.error)
+  local checkpoints = review.inspect(interrupted).checkpoints
+  done, resumed = run(assert(review.create(s, config, interrupted)), respond)
+  assert(done.result, done.error)
+  for _, call in ipairs(resumed) do assert(not checkpoints[call.request.request_id]) end
+end)
+
 T.test("indivisible findings and oversized final manifest stop after annotations with size diagnostics", function()
   local s = fixture(1, 1, 2000)
+  -- Annotation only needs its local manifest; reduction needs the whole manifest.
+  s.comparison.manifest[2].path = string.rep("m", 2400)
   local job = assert(review.create(s, { review = { request_max_bytes = 7000, response_max_bytes = 8192 } }))
   local done, calls = run(job, function(req, _, value)
     if req.phase == "annotate" then
-      for i, unit in ipairs(req.units) do
-        for n = 1, 4 do value.units[i].findings[n] = { text = string.rep("F", 1000), intent_basis = "documented",
-          evidence = unit.target.anchors, file_ids = { unit.file_id } } end
-      end
+      value.units[1].findings = { { text = string.rep("F", 1000), intent_basis = "documented",
+        evidence = req.units[1].target.anchors, file_ids = { req.units[1].file_id } } }
     end
     return value
   end)
@@ -416,9 +503,14 @@ T.test("reduction calls consume the same allowance and successful reductions sur
   local done, calls = run(job, findings_answer)
   T.eq(nil, done.result); T.eq(15, #calls); T.eq("reduce", calls[15].request.phase)
   assert(done.error:find("max_requests 15", 1, true))
-  local previous = review.inspect(job).checkpoints
-  local finished, resumed = run(job, findings_answer); assert(finished.result, finished.error)
-  for _, call in ipairs(resumed) do assert(not previous[call.request.request_id]) end
+  repeat
+    local previous = review.inspect(job).checkpoints
+    local resumed
+    done, resumed = run(job, findings_answer)
+    assert(#resumed > 0 and #resumed <= 15)
+    for _, call in ipairs(resumed) do assert(not previous[call.request.request_id]) end
+    if not done.result then assert(done.error:find("max_requests 15", 1, true), done.error) end
+  until done.result
 end)
 
 T.test("cancel while asynchronous freshness waits prevents late checkpoints and installation", function()

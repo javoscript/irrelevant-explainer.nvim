@@ -1,4 +1,4 @@
-local M = { FORMAT_VERSION = 1, PROMPT_VERSION = 1, PLANNER_VERSION = 1 }
+local M = { FORMAT_VERSION = 1, PROMPT_VERSION = 2, PLANNER_VERSION = 2 }
 
 -- Typed keys avoid collisions between array coordinates and object fields.
 -- This is an identity encoding, not a wire JSON representation.

@@ -121,6 +121,9 @@ Return one JSON object, no fences or prose. Echo version=3, phase, request_id an
 snapshot_id exactly. Obey all output_limits (UTF-8 bytes, not provider tokens).
 Use original independent old/new coordinates and exact renamed paths. Gaps are
 unavailable. Evidence must cite ONLY lines in this request's files chunks.
+Chunk lines[i] is original line start_line + i - 1 (i is 1-based), not line i.
+Each chunk supplies only start_line through end_line inclusive. Never extend a
+citation across a gap or to the full hunk/file bounds in manifest metadata.
 Intent is documented, inferred or unknown; documented requires nonempty source
 evidence. Tests show expectations, not proof they ran. Never invent rationale.
 Notes have summary (nonempty single line), detail (nonempty Markdown), anchors,
@@ -145,6 +148,8 @@ intent from documented rationale grounded in currently supplied original evidenc
   if request.phase == "annotate" then
     schema = '"units":[{"unit_id":"assigned ID","notes":[],"findings":[]}]'
     rules = rules .. "Acknowledge exactly every assigned unit ID once; no other units.\n"
+      .. "Counts/text limits are ceilings, not quotas. Keep notes/findings sparse; unit_bytes includes IDs, anchors, evidence and JSON escaping.\n"
+      .. "Fragment anchors stay within unit.target.anchors, even when target.hunks spans a larger original hunk. Cite narrow evidence for local claims.\n"
   elseif request.phase == "reduce" then
     schema = '"child_ids":["every assigned input ID"],"findings":[]'
     rules = rules .. "Acknowledge every assigned child ID once. Reduce findings/evidence bytes strictly; preserve grounding, not every interpretation.\n"

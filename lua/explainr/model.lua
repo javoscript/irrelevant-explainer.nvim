@@ -35,7 +35,8 @@ local function range(value, snapshot, target)
       if chunk.start_line <= next_line and last >= next_line then next_line = last + 1 end
       if next_line > value.end_line then break end
     end
-    assert(next_line > value.end_line, "range includes unsent context lines")
+    assert(next_line > value.end_line, string.format("range includes unsent context lines: %s %s:%d-%d; first unsent line %d",
+      value.path, value.side, value.start_line, value.end_line, next_line))
   else
     assert(file.lines and value.end_line <= #file.lines, "range is absent from supplied context")
   end

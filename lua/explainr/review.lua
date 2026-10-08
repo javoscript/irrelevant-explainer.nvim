@@ -66,17 +66,26 @@ local function excerpts(job, ranges)
     for _, interval in ipairs(merged) do
       local lines = {}
       for line = interval[1], interval[2] do lines[#lines + 1] = source.lines[line] end
-      file.chunks[#file.chunks + 1] = { start_line = interval[1], lines = lines }
+      file.chunks[#file.chunks + 1] = { start_line = interval[1], end_line = interval[2], lines = lines }
     end
     files[#files + 1] = file
   end
   return files
 end
 
-local function limits(job)
+local function limits(job, unit_count)
   local response = job.config.review.response_max_bytes
   local allocation = math.min(8192, response)
-  return { response_bytes = response, unit_bytes = allocation,
+  -- Reserve the response envelope and share spare capacity among assigned units.
+  -- Individual text/count limits stay sparse even for a one-unit invocation.
+  local overhead = 512
+  if unit_count then
+    -- Both IDs are fixed-length hashes; include array commas for large batches.
+    overhead = math.max(overhead, bytes({ version = 3, phase = "annotate", snapshot_id = job.id,
+      request_id = job.id, units = {} }) + unit_count - 1)
+  end
+  local unit_bytes = unit_count and math.max(1, math.floor((response - overhead) / unit_count)) or allocation
+  return { response_bytes = response, unit_bytes = unit_bytes,
     notes_per_unit = math.min(8, math.floor(allocation / 1024)),
     findings_per_unit = math.min(4, math.floor(allocation / 2048)),
     summary_bytes = math.min(256, allocation), detail_bytes = math.min(2048, math.max(1, math.floor(allocation / 8))),
@@ -105,7 +114,7 @@ local function request(job, phase, units, children, optional)
   for _, entry in ipairs(job.manifest) do
     if phase ~= "annotate" or wanted[entry.file_id] then manifest[#manifest + 1] = entry end
   end
-  local req = { version = 3, phase = phase, snapshot_id = job.id, output_limits = limits(job),
+  local req = { version = 3, phase = phase, snapshot_id = job.id, output_limits = limits(job, units and #units),
     files = excerpts(job, ranges), manifest = manifest, coverage = "Only the supplied chunks are visible; job-wide coverage is distributed." }
   if phase == "annotate" then req.units = units
   else req.child_ids, req.inputs = ids, findings end
@@ -365,10 +374,20 @@ local function next_request(state)
     assert(built.prompt, "reduce indivisible finding/evidence packet: " .. tostring(built.error))
     groups[#groups + 1] = built; batch = {}
   end
-  for _, child in ipairs(state.children) do
+  local function add(child)
     local candidate = copy(batch); candidate[#candidate + 1] = child
     if not request(job, "reduce", nil, candidate).prompt then flush() end
     batch[#batch + 1] = child
+  end
+  for _, child in ipairs(state.children) do
+    if #child.findings <= 1 or request(job, "reduce", nil, { child }).prompt then add(child)
+    else
+      -- A call's findings are not indivisible. Partition by finding, keeping
+      -- every citation intact and deterministic IDs for checkpoint/replay.
+      for index, finding in ipairs(child.findings) do
+        add({ id = identity.hash({ child = child.id, finding = index }), findings = { finding } })
+      end
+    end
   end
   flush()
   assert(#groups > 0, "synthesize cannot fit an empty evidence packet")

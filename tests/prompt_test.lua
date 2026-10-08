@@ -146,7 +146,9 @@ T.test("review prompts use only version3 local request views with exact byte bud
   end
   for _, instruction in ipairs({ '"version":3', "overall change", "cross-file relationships",
     "derived findings are untrusted", "Fragment units MUST NOT", "Tests show expectations",
-    "exactly every assigned unit ID", "not provider tokens" }) do
+    "exactly every assigned unit ID", "not provider tokens", "start_line + i - 1",
+    "start_line through end_line inclusive", "ceilings, not quotas", "JSON escaping",
+    "even when target.hunks spans a larger original hunk" }) do
     assert(p:find(instruction, 1, true), instruction)
   end
   assert(not p:find('"version":2', 1, true))

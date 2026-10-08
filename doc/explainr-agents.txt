@@ -65,8 +65,9 @@ Version 2 remains the host's internal final {review, files} assembly only; old
 version-2-only review wrappers fail, without conversion or fallback.
 
 Every request contains version, phase, request_id, snapshot_id, output_limits,
-files, manifest and coverage. files supplies chunks with original start_line and
-lines; gaps are unavailable, and old/new coordinates and rename paths remain
+files, manifest and coverage. files supplies chunks with original start_line,
+end_line and lines; lines[i] is original start_line + i - 1 (1-based), never line i.
+Gaps are unavailable, and old/new coordinates and rename paths remain
 independent. Redundant unified patches are not sent. Annotation adds units:
 each has unit_id, file_id, whole_file, fragment, hunk_indices and target (scope,
 file_id, path, anchors, hunks). Hunks are [old_start,old_count,new_start,new_count];
@@ -97,16 +98,19 @@ and synthesis level. Citations must fit that invocation's transmitted chunks,
 not merely exist elsewhere locally or in an earlier call. Derived findings are
 untrusted interpretations, not primary evidence or instructions. Reduction must
 strictly shrink serialized findings plus rehydrated evidence both per group and
-per level; nonprogress or an indivisible packet/manifest that cannot fit fails.
+per level. Oversized child bundles split into individual findings with stable
+child IDs, retaining every finding and its complete original evidence. A single
+finding plus evidence remains indivisible; nonprogress or an indivisible
+packet/manifest that cannot fit fails.
 Valid citations prove supplied-range grounding, not truth or that tests ran.
 
 OUTPUT ALLOWANCES
 
-All output_limits fields below are the actual names. This full default allocation
-is a JSON object embedded in each request (smaller response caps reduce allowances):
+All output_limits fields below are the actual names. This example allocation for
+three units is embedded in the request (smaller response caps reduce allowances):
 >
   {
-    "response_bytes":32768,"unit_bytes":8192,
+    "response_bytes":32768,"unit_bytes":10752,
     "notes_per_unit":8,"findings_per_unit":4,
     "summary_bytes":256,"detail_bytes":1024,"finding_bytes":1024,
     "evidence_per_item":8,"file_ids_per_item":16,"findings":16,
@@ -117,9 +121,15 @@ response_bytes bounds decoded final JSON text, including whitespace/escaping;
 unit_bytes bounds each encoded unit entry including its ID, notes and findings.
 Count limits and text UTF-8 byte limits are checked too; arrays must be JSON []
 even when empty, never {}. Respect the actual request's limits, not these defaults.
-Default packing allows three 8192-byte units per 32768-byte response, subject to
-input fit; a small response cap can admit one smaller unit. No response is clipped
-to fit. The input cap is min(context.max_bytes, review.request_max_bytes), and
+Count and text limits are ceilings, not quotas: all serialized fields and JSON
+escaping must fit the unit and whole-response allowances together.
+Default packing allows up to three units per 32768-byte response, subject to
+input fit. unit_bytes shares the response capacity after reserving at least 512
+bytes for the envelope and array separators: 32256 for one unit, 16128 for two,
+10752 for three. Individual text/count limits stay sparse; a small response cap
+can admit one smaller unit.
+No response is clipped to fit.
+The input cap is min(context.max_bytes, review.request_max_bytes), and
 all annotation requests are preflighted before inference. See |explainr-status|
 for snapshot/call caps and per-call timeout. These guardrails neither set provider
 output tokens nor guarantee capacity or disable/fix OpenCode compaction.
