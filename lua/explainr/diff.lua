@@ -38,8 +38,11 @@ local function run(work, callback, max_bytes)
   end
   function io.hash(value) return io.main(function() return hash(value) end) end
   function io.size(size)
-    assert(size <= max_bytes, "Complete prompt exceeds context.max_bytes (" .. max_bytes
-      .. "); required content is too large. Nothing was omitted.")
+    if size > max_bytes then
+      error(string.format("Complete prompt requires at least %d UTF-8 bytes; context.max_bytes is %d. "
+        .. "The budget includes complete old/new file contents, patches and request overhead, not only changed lines. "
+        .. "Nothing was omitted. Increase the budget, filter the comparison, or request file/hunk scope.", size, max_bytes), 0)
+    end
   end
   function io.git(cwd, args, unset_config)
     local command = { "git", "--no-optional-locks", "-c", "core.quotepath=false" }
@@ -147,22 +150,45 @@ local function lines(bytes)
 end
 
 local function buffer_bytes(buf, underlying, io)
-  if not io.unbounded then io.size(math.max(0, api.nvim_buf_get_offset(buf, api.nvim_buf_line_count(buf)))) end
-  local content = api.nvim_buf_get_lines(buf, 0, -1, false)
+  if not io.unbounded then io.size(#buf.bytes) end
+  local content = buf.lines
   -- Revision buffers do not reliably preserve the blob's end-of-line flag.
   -- Preserve raw bytes only when the buffer actually displays that version,
   -- never merely because 'modified' is false (e.g. stale external disk edit).
-  if not vim.bo[buf].modified and underlying then
+  if not buf.modified and underlying then
     local expected = lines(underlying)
     if #expected == 0 then expected = { "" } end
     expected = vim.tbl_map(function(line) return line:gsub("\r$", "") end, expected)
     if vim.deep_equal(content, expected) then return underlying end
   end
-  local empty = api.nvim_buf_call(buf, function() return vim.fn.wordcount().bytes == 0 end)
-  if empty then return "" end
-  local separator = vim.bo[buf].fileformat == "dos" and "\r\n" or "\n"
-  local bytes = table.concat(content, separator) .. (vim.bo[buf].endofline and separator or "")
-  return bytes
+  return buf.bytes
+end
+
+-- Freeze mutable editor inputs before the first asynchronous Git read. Buffer
+-- handles are lookup hints only, never content identity or request ownership.
+local function freeze(state)
+  state.buffers, state.local_buffers = {}, {}
+  local mutable = state.pair.new.type ~= "commit" or state.pair.old.type ~= "commit"
+  if not mutable then return state end
+  local root = uv.fs_realpath(state.cwd) or state.cwd
+  for _, buf in ipairs(api.nvim_list_bufs()) do
+    if api.nvim_buf_is_loaded(buf) then
+      local stage = false
+      for _, id in pairs(state.stage_buffers) do if id == buf then stage = true; break end end
+      local name = api.nvim_buf_get_name(buf)
+      local working = state.pair.new.type == "local" and vim.bo[buf].buftype == ""
+        and ((uv.fs_realpath(name) or name):sub(1, #root + 1) == root .. "/")
+      if stage or working then
+        local content = api.nvim_buf_get_lines(buf, 0, -1, false)
+        local separator = vim.bo[buf].fileformat == "dos" and "\r\n" or "\n"
+        local bytes = table.concat(content, separator) .. (vim.bo[buf].endofline and separator or "")
+        if api.nvim_buf_call(buf, function() return vim.fn.wordcount().bytes == 0 end) then bytes = "" end
+        state.buffers[buf] = { lines = content, bytes = bytes, modified = vim.bo[buf].modified }
+        if working then state.local_buffers[#state.local_buffers + 1] = { id = buf, name = name } end
+      end
+    end
+  end
+  return state
 end
 
 local function revision_args(pair)
@@ -253,15 +279,7 @@ local function gather(state, io, strategy)
   local local_buffers = {}
   if pair.new.type == "local" then
     local buffer_root = io.realpath(cwd)
-    local buffers = io.main(function()
-      local result = {}
-      for _, buf in ipairs(api.nvim_list_bufs()) do
-        if api.nvim_buf_is_loaded(buf) and vim.bo[buf].buftype == "" then
-          result[#result + 1] = { id = buf, name = api.nvim_buf_get_name(buf) }
-        end
-      end
-      return result
-    end)
+    local buffers = state.local_buffers
     for number, buffer in ipairs(buffers) do
       io.batch(number)
       local name = io.realpath(buffer.name)
@@ -317,14 +335,16 @@ local function gather(state, io, strategy)
     end
     local buf = rev.type == "local" and local_buffers[path]
       or (rev.type == "stage" and state.stage_buffers[path])
-    if bytes == nil and buf and io.main(function() return not vim.bo[buf].modified end) then buf = nil end
+    buf = buf and state.buffers[buf]
+    if bytes == nil and buf and not buf.modified then buf = nil end
     local underlying_identity = bytes ~= nil and hash(bytes) or "absent"
     if buf then
       assert(bytes ~= nil, "loaded buffer has no required underlying version: " .. path)
       bytes = io.main(function()
-        guards["buffer:" .. side .. ":" .. path] = { buf, api.nvim_buf_get_changedtick(buf), vim.bo[buf].modified,
-          vim.bo[buf].endofline, vim.bo[buf].fileformat, underlying_identity }
-        return buffer_bytes(buf, bytes, io)
+        local overlaid = buffer_bytes(buf, bytes, io)
+        guards["buffer:" .. side .. ":" .. path] = { bytes = buf.bytes, modified = buf.modified,
+          overlaid = overlaid ~= bytes }
+        return overlaid
       end)
     end
     local value = { path = path, side = side, present = bytes ~= nil, mode = mode, oid = oid,
@@ -362,13 +382,13 @@ local function gather(state, io, strategy)
       if item then size = assert(tonumber(git(cwd, { "cat-file", "-s", item.oid })), "missing blob size") end
     end
     local buf = rev.type == "local" and local_buffers[path] or rev.type == "stage" and state.stage_buffers[path]
+    buf = buf and state.buffers[buf]
     if buf then
       size = math.max(size, io.main(function()
         if strategy == "focused" then
-          guards["buffer:" .. side .. ":" .. path] = { buf, api.nvim_buf_get_changedtick(buf), vim.bo[buf].modified,
-            vim.bo[buf].endofline, vim.bo[buf].fileformat }
+          guards["buffer:" .. side .. ":" .. path] = { bytes = buf.bytes, modified = buf.modified }
         end
-        return math.max(0, api.nvim_buf_get_offset(buf, api.nvim_buf_line_count(buf)))
+        return #buf.bytes
       end))
     end
     sizes[key] = size
@@ -449,6 +469,8 @@ local function gather(state, io, strategy)
         local status = oldpath ~= path and "R" or not old.present and "A" or not new.present and "D" or "M"
         local item = { path = path, oldpath = oldpath, status = status, git_status = statuses[path],
           old = vim.deepcopy(old), new = vim.deepcopy(new), full_text = true }
+        item.kind, item.comparison = state.selected.kind, vim.deepcopy(pair)
+        item.file_id = "file-" .. hash({ path, oldpath, item.kind })
         item.old.bytes, item.new.bytes = nil, nil
         if old.binary or new.binary then
           item.binary, item.text_unavailable = true, "binary version (NUL bytes)"
@@ -462,6 +484,9 @@ local function gather(state, io, strategy)
             end
             item.hunks = vim.diff(a, b, { result_type = "indices", algorithm = "myers" })
           end)
+          if #(old.lines or {}) == 0 and #(new.lines or {}) == 0 then
+            item.text_unavailable = "both versions have no text lines"
+          end
         end
         local accepted = strategy ~= "focused" or io.main(function() return io.accept(item, comparison, omitted) end)
         if accepted then manifest[#manifest + 1] = item end
@@ -489,7 +514,7 @@ local function gather(state, io, strategy)
     if item.path == state.selected.path and item.oldpath == state.selected.oldpath then focused = item end
   end
   assert(focused, "selected file is no longer changed in the comparison; refresh Diffview")
-  for _, side in ipairs({ "old", "new" }) do
+  for _, side in ipairs(state.detached and {} or { "old", "new" }) do
     local pane, v = state.panes[side], focused[side]
     assert(pane.path == v.path, "displayed pane has the wrong source path")
     if not v.present or v.binary then
@@ -520,7 +545,7 @@ local function target_for(state, focused, scope, retained, row)
     end
     return vim.deepcopy(retained)
   end
-  local target = { scope = scope, anchors = {}, path = focused.path, oldpath = focused.oldpath }
+  local target = { scope = scope, file_id = focused.file_id, anchors = {}, path = focused.path, oldpath = focused.oldpath }
   local hunk
   if scope == "file" then target.hunks = vim.deepcopy(focused.hunks) end
   if scope == "hunk" then
@@ -592,8 +617,46 @@ local function current(win, max_bytes)
   return state
 end
 
+local function content(value)
+  local copy = vim.deepcopy({ value.cwd, value.files, value.comparison, value.context, value.target })
+  for _, file in ipairs(copy[2]) do file.supplied_from = nil end
+  for _, file in ipairs(copy[3].manifest) do file.old.supplied_from, file.new.supplied_from = nil, nil end
+  return copy
+end
+
+local function same_guards(before, after)
+  for _, guards in ipairs({ before, after }) do
+    for key, guard in pairs(guards) do
+      local other = (guards == before and after or before)[key]
+      if key:sub(1, 7) ~= "buffer:" then
+        if not vim.deep_equal(guard, other) then return false end
+      elseif other then
+        if guard.bytes ~= other.bytes then return false end
+      elseif guard.modified or guard.overlaid then return false end
+    end
+  end
+  return true
+end
+
+local function editor_guards(state)
+  local result = {}
+  local root = uv.fs_realpath(state.cwd) or state.cwd
+  for _, buffer in ipairs(state.local_buffers) do
+    local name = uv.fs_realpath(buffer.name) or buffer.name
+    if name:sub(1, #root + 1) == root .. "/" then
+      result["buffer:new:" .. name:sub(#root + 2)] = state.buffers[buffer.id]
+    end
+  end
+  for _, side in ipairs({ "old", "new" }) do
+    if state.pair[side].type == "stage" then
+      for path, buf in pairs(state.stage_buffers) do result["buffer:" .. side .. ":" .. path] = state.buffers[buf] end
+    end
+  end
+  return result
+end
+
 local function capture(state, scope, retained, row, io, requested)
-  assert(scope == "file" or scope == "hunk", "diff scope must be file or hunk")
+  assert(scope == "file" or scope == "hunk" or scope == "review", "diff scope must be file, hunk or review")
   local hash = io.hash
   local function pass(value, strategy)
     local selected, original_target, target_file_count
@@ -649,8 +712,16 @@ local function capture(state, scope, retained, row, io, requested)
     end
     local comparison, files, focused, guards = gather(value, io, strategy)
     if strategy == "review" then
+      local target
+      if scope == "review" then
+        target = { scope = "review", files = {} }
+        for _, item in ipairs(comparison.manifest) do
+          if not item.text_unavailable then target.files[#target.files + 1] = target_for(value, item, "file") end
+        end
+        assert(#target.files > 0, "comparison has no eligible textual targets; no review can be generated")
+      else target = io.main(function() return target_for(value, focused, scope, retained, row) end) end
       selected = { mode = "diff", files = files, comparison = comparison,
-        target = io.main(function() return target_for(value, focused, scope, retained, row) end),
+        target = target,
         context = { strategy = "review", radius = io.radius, omitted_files = 0 } }
     end
     io.main(function()
@@ -664,31 +735,35 @@ local function capture(state, scope, retained, row, io, requested)
   if not ok and requested == "auto" and tostring(snapshot):find("Complete prompt", 1, true) then
     strategy = "focused"
     snapshot, guards = pass(state, strategy)
-  else assert(ok, snapshot) end
-  local function state_now() return current(state.source, requested == "review" and io.max_bytes or nil) end
+  elseif not ok then error(snapshot, 0) end
+  local function state_now() return freeze(require("explainr.diffview").detached(state)) end
   local again = io.main(state_now)
-  assert(vim.deep_equal(state, again), "Diffview changed during collection")
   io.pause()
   local second, second_guards = pass(again, strategy)
-  assert(hash(snapshot) == hash(second) and vim.deep_equal(guards, second_guards),
+  assert(vim.deep_equal(content(snapshot), content(second)) and same_guards(guards, second_guards),
     "review changed during collection; retry")
   -- Run the final editor guard on the main stack in the SAME turn as delivery,
   -- not before a scheduled coroutine resume. Nonfocused overlays are guarded
   -- too: they can change after their last read in the second pass.
   io.validate = function()
-    assert(vim.deep_equal(state, state_now()), "Diffview changed during collection")
-    for key, guard in pairs(guards) do
+    local latest = editor_guards(state_now())
+    for key, guard in pairs(second_guards) do
       if key:sub(1, 7) == "buffer:" then
-        local buf = guard[1]
-        assert(api.nvim_buf_is_loaded(buf) and api.nvim_buf_get_changedtick(buf) == guard[2]
-          and vim.bo[buf].modified == guard[3] and vim.bo[buf].endofline == guard[4]
-          and vim.bo[buf].fileformat == guard[5], "review changed during collection; retry")
+        local other = latest[key]
+        assert(other and other.bytes == guard.bytes or not other and not guard.modified and not guard.overlaid,
+          "review changed during collection; retry")
       end
+    end
+    local previous = editor_guards(again)
+    for key, other in pairs(latest) do
+      if other.modified and not previous[key] then error("review changed during collection; retry") end
     end
   end
   snapshot.cwd, snapshot.windows, snapshot.source = state.cwd, state.windows, state.source
   snapshot.source_buf = state.panes[state.source == state.windows.old and "old" or "new"].buf
-  snapshot.review_fingerprint = hash({ state.cwd, snapshot.comparison, snapshot.files, snapshot.context })
+  local context_identity = content(snapshot)
+  context_identity[5] = nil -- Target and display/transport provenance are not context identity.
+  snapshot.review_fingerprint = hash(context_identity)
   snapshot.fingerprint = hash({ snapshot.review_fingerprint, snapshot.target })
   snapshot.max_bytes = io.max_bytes
   snapshot.capture = { state = state, guards = guards, target = vim.deepcopy(snapshot.target) }
@@ -699,14 +774,16 @@ function M.collect_async(win, scope, callback, options)
   options = options or {}
   local config = require("explainr").config.context
   local max_bytes, strategy, radius = options.max_bytes or config.max_bytes, options.diff or config.diff, options.radius or config.radius
+  if scope == "review" then strategy = "review" end
   local ok, state, row = pcall(function()
     assert(type(max_bytes) == "number" and max_bytes > 0 and max_bytes < math.huge and max_bytes % 1 == 0,
       "invalid context.max_bytes")
     assert(vim.tbl_contains({ "auto", "review", "focused" }, strategy), "invalid context.diff")
     assert(type(radius) == "number" and radius >= 0 and radius < math.huge and radius % 1 == 0, "invalid context.radius")
     win = (not win or win == 0) and api.nvim_get_current_win() or win
-    local value = current(win, strategy == "review" and max_bytes or nil)
-    return value, api.nvim_win_get_cursor(value.source)[1]
+    local value = options.state and require("explainr.diffview").detached(options.state)
+      or current(win, strategy == "review" and max_bytes or nil)
+    return freeze(value), options.state and 1 or api.nvim_win_get_cursor(value.source)[1]
   end)
   local job = run(function(io)
     assert(ok, state)
@@ -719,14 +796,11 @@ function M.collect_async(win, scope, callback, options)
 end
 
 function M.fresh_async(snapshot, callback)
+  snapshot = snapshot.provenance or snapshot
   return M.collect_async(snapshot.source, snapshot.target.scope, function(current)
-    callback(current ~= nil and current.fingerprint == snapshot.fingerprint and current.review_fingerprint == snapshot.review_fingerprint
-      and vim.deep_equal(current.capture, snapshot.capture) and vim.deep_equal(current.windows, snapshot.windows)
-      and vim.deep_equal(current.target, snapshot.target)
-      and vim.deep_equal(current.files, snapshot.files) and vim.deep_equal(current.comparison, snapshot.comparison)
-      and vim.deep_equal(current.context, snapshot.context)
-      and current.cwd == snapshot.cwd and current.source_buf == snapshot.source_buf)
-  end, { target = snapshot.capture.target, max_bytes = snapshot.max_bytes,
+    callback(current ~= nil and vim.deep_equal(content(current), content(snapshot))
+      and same_guards(snapshot.capture.guards, current.capture.guards))
+  end, { state = snapshot.capture.state, target = snapshot.capture.target, max_bytes = snapshot.max_bytes,
     diff = snapshot.context and snapshot.context.strategy or "review",
     radius = snapshot.context and (snapshot.context.requested_radius or snapshot.context.radius) or 20 })
 end
@@ -735,39 +809,38 @@ end
 -- under the original coverage, keeping strict race guards during this read,
 -- but compare content rather than the old display's buffer/window identities.
 function M.restore_async(snapshot, source, callback)
-  local function content(value)
-    local copy = vim.deepcopy({ value.cwd, value.files, value.comparison, value.context, value.target })
-    for _, file in ipairs(copy[2]) do file.supplied_from = nil end
-    for _, file in ipairs(copy[3].manifest) do
-      file.old.supplied_from, file.new.supplied_from = nil, nil
+  return M.fresh_async(snapshot, function(fresh)
+    if not fresh then callback(nil); return end
+    local ok, state = pcall(current, source)
+    if not ok or snapshot.target.scope ~= "review" and
+      (state.selected.path ~= snapshot.target.path or state.selected.oldpath ~= snapshot.target.oldpath) then
+      callback(nil); return
     end
-    return copy
-  end
-  local supplied = {}
-  for _, file in ipairs(snapshot.comparison.manifest) do
-    for _, side in ipairs({ "old", "new" }) do
-      supplied["buffer:" .. side .. ":" .. file[side].path] = true
-    end
-  end
-  return M.collect_async(source, snapshot.target.scope, function(current)
-    if not current or not vim.deep_equal(content(current), content(snapshot)) then callback(nil); return end
-    local before, after = snapshot.capture.guards, current.capture.guards
-    for _, guards in ipairs({ before, after }) do
-      for key, guard in pairs(guards) do
-        local other = (guards == before and after or before)[key]
-        if key:sub(1, 7) ~= "buffer:" then
-          if not vim.deep_equal(guard, other) then callback(nil); return end
-        elseif not supplied[key] and (guard[3] or other and (other[3] or other[1] == guard[1])) then
-          -- Supplied versions have complete content identities above, even
-          -- for excerpts. Omitted files still need conservative buffer guards.
-          if not vim.deep_equal(guard, other) then callback(nil); return end
+    local rebound = vim.deepcopy(snapshot)
+    rebound.windows, rebound.source = state.windows, state.source
+    rebound.source_buf = state.panes[state.source == state.windows.old and "old" or "new"].buf
+    -- The content check is detached; attachment additionally verifies that the
+    -- newly displayed revision buffers really contain the retained versions.
+    for _, item in ipairs(snapshot.comparison.manifest) do
+      if item.path == state.selected.path and item.oldpath == state.selected.oldpath then
+        for _, side in ipairs({ "old", "new" }) do
+          local version, pane = item[side], state.panes[side]
+          if version.lines then
+            local expected = vim.tbl_map(function(line) return line:gsub("\r$", "") end, version.lines)
+            if #expected == 0 then expected = { "" } end
+            if not vim.deep_equal(expected, pane.lines) then callback(nil); return end
+          elseif not version.present or version.binary then
+            if not pane.nulled and not pane.binary then callback(nil); return end
+          elseif version.chunks then
+            local captured = snapshot.capture.state.panes[side]
+            if not captured or not vim.deep_equal(captured.lines, pane.lines) then callback(nil); return end
+          end
         end
       end
     end
-    callback(current)
-  end, { target = snapshot.capture.target, max_bytes = snapshot.max_bytes,
-    diff = snapshot.context and snapshot.context.strategy or "review",
-    radius = snapshot.context and (snapshot.context.requested_radius or snapshot.context.radius) or 20 })
+    rebound.capture.state, rebound.capture.target = state, vim.deepcopy(rebound.target)
+    callback(rebound)
+  end)
 end
 
 -- Offline compatibility helpers only. Sessions never use these event-loop

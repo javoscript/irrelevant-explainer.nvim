@@ -40,14 +40,42 @@ the configured tool.
 :'<,'>ExplainrCode selection
 :ExplainrDiff file
 :ExplainrDiff hunk
+:ExplainrDiff review
+:ExplainrReview
 :ExplainrRefresh
 :ExplainrCancel
 :ExplainrClose
 ```
 
+**`:ExplainrDiff review` generates the whole change in one request:** a narrative
+connecting the files, plus notes for every eligible text file. The right-hand
+pane opens in **Review** mode, with independently scrollable Markdown. Enter on
+a generated file-reference row selects that exact Diffview entry and shows its
+aligned **File** notes. Enter on ordinary prose does nothing. Esc returns to
+File overview; q closes the reader.
+You can generate or open Review from either source pane or the Diffview file
+tree (`DiffviewFiles`); tree focus and the selected comparison stay unchanged.
+
+**`:ExplainrReview` only opens the narrative** (Lua: `require("explainr").review()`),
+without an AI request. It restores your reading position or shows an explicit
+empty/pending/failed/stale state. The pane-local `<Plug>(ExplainrReview)` action
+is available for user mappings; the plugin adds no global shortcut. For example:
+
+```lua
+vim.keymap.set("n", "<leader>av", "<cmd>ExplainrDiff review<cr>", { desc = "Explain whole diff" })
+vim.keymap.set("n", "<leader>aV", "<cmd>ExplainrReview<cr>", { desc = "Read change narrative" })
+```
+
+Review scope always requires complete context, regardless of `context.diff`.
+If the complete prompt exceeds `context.max_bytes`, no request starts: filter
+Diffview, raise the budget, or choose file/hunk scope. Binary and empty entries
+remain metadata, without fabricated line notes. Custom wrappers must support
+the review's version-2 response; code/file/hunk retain version 1. Incomplete or
+invalid review output is rejected atomically, with no automatic retry or fallback.
+
 Code mode uses current unsaved buffer text; structural scopes support Lua
 functions and Python/JavaScript/TypeScript functions/classes. File and visual
-scopes need no parser. Diff mode follows a loaded two-way Diffview source and
+scopes need no parser. File/hunk diff mode follows a loaded two-way Diffview source and
 defaults to the **whole selected coherent comparison** when it fits. Oversized
 reviews automatically use the selected hunk with nearby old/new lines (or the
 complete selected file for file scope), prioritizing affordable changed OpenSpec,
@@ -198,7 +226,7 @@ never treated as source line numbers. Blank anchored continuation still follows
 code; entering surrounding context outside the anchors collapses at that destination.
 In overview, **q/Esc** closes the pane.
 
-In diff mode, both overview and expanded detail inherit Diffview's file navigation
+In diff mode, Review, File overview and expanded detail inherit Diffview's file navigation
 and explorer bindings: **Tab/Shift-Tab** for next/previous file, **<leader>e** to focus
 the explorer, and **<leader>b** to toggle it. Configured remaps, custom actions and
 disabled bindings are respected; Explainr keeps its own **Enter/K** controls.
@@ -207,8 +235,10 @@ including accumulated hunk requests. Switching files exits detail but does not
 make the previous file's context stale. Unexplained files show an empty pane;
 returning to an explained file rechecks its original context and restores all
 accepted notes without another AI call. Real code, decision-document, index or
-revision changes still invalidate affected results. In-flight requests for the
-file you leave are cancelled; completed results remain available.
+revision changes still invalidate affected results. In-flight requests keep
+running after file navigation, including during collection. Off-screen results
+are retained for their original file and never replace another file's notes.
+Returning to a pending file reconnects to that request without duplicate inference.
 Tab is not an Explainr expansion shortcut in either mode.
 
 Set `diff.auto_explain = true` to request a whole-file explanation automatically
@@ -227,6 +257,10 @@ setting applies across tabs for this Neovim process, with setup providing its
 initial value. Enabling affects **subsequent navigation only**, not the current
 file or an earlier file switch still loading/checking saved notes. Disabling
 preserves notes and already-started requests; use `:ExplainrCancel` to stop work.
+It drops only unstarted automatic candidates. While busy, Auto keeps the latest
+visited unexplained file as one candidate; explicit requests take priority.
+Queued/running reviews suppress redundant automatic requests. Review failure
+does not fan out into per-file retries.
 Manual requests, refresh, and saved-note restoration work in either mode.
 
 Enabled diff panes show **Auto** beside the explanation count in their winbar,
@@ -276,14 +310,20 @@ through `vim.notify` and `:messages`.
 Further requests for the same buffer or loaded comparison accumulate in the
 existing pane. Distinct, overlapping scopes can coexist; repeating or refreshing
 an identical target updates only that target's batch. While a diff request is
-loading, further hunk requests append to a queue without cancelling it. Hunks
+loading, explicit file, hunk and review requests append to a queue without cancelling it. Targets
 and configuration are captured when requested; agent invocations run in order,
-one at a time. All pending ranges animate, and status shows the queued count.
+one at a time, deduplicating equivalent pending requests. Only ranges for the
+displayed file animate; status distinguishes current, background and queued work.
 Each completed result adds its notes immediately; a failed request does not
-block later queued hunks. Other new scopes replace pending work. Cancel and
+block later queued requests. Code requests still replace pending code work. Cancel and
 Refresh clear active/queued work, not accepted notes. Cancellation and ordinary
 failures preserve earlier notes. Changes to their code/review context invalidate them;
-switching files, modes or comparison ownership starts a separate session.
+switching comparison ownership or code/diff modes starts a separate session.
+Refresh acts on the visible mode: Review regenerates narrative and all files;
+File requests only its file/hunk, even when its notes came from a review.
+Background completion preserves open detail and narrative position. A fresh
+replacement for an expanded note appears after you leave detail; stale notes
+are cleared immediately. Cancel/Close stop all owned pending work across files.
 
 The UTF-8 byte budget covers the entire prompt, not just source text. Auto/focused
 requests omit optional context explicitly, never truncate the selected target.

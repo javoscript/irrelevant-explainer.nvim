@@ -243,3 +243,39 @@ T.test("cancel between process completion and scheduled delivery overrides queue
   vim.system = original
   assert(ok, err)
 end)
+
+T.test("all decoders preserve completed v2 output and reject unsuccessful or truncated review output", function()
+  local model = require("explainr.model")
+  local snapshot = { mode = "diff", target = { scope = "review", files = {
+    { scope = "file", file_id = "a", anchors = {} },
+  } }, files = {}, comparison = { manifest = { { file_id = "a" } } } }
+  local payload = { version = 2, review = { title = "Review", sections = {
+    { heading = "Effects", detail = "Unknown rationale.", intent_basis = "unknown", evidence = {}, file_ids = { "a" } },
+  } }, files = { { file_id = "a", notes = {} } } }
+  local final = vim.json.encode(payload)
+  local custom = function(stdout) return stdout end
+  for _, decoder in ipairs({ "plain", "opencode", "codex", custom }) do
+    local function encode(value)
+      if decoder == "opencode" then
+        local middle = math.floor(#value / 2)
+        return wire({ text("early", "p", answer), text("final", "a", value:sub(1, middle)),
+          text("final", "b", value:sub(middle + 1)) })
+      elseif decoder == "codex" then
+        return wire({ item("item.completed", answer), item("item.completed", value), { type = "turn.completed" } })
+      end
+      return value
+    end
+    local decoded = assert(agent.decode(decoder, encode(final), "", 0))
+    T.eq(final, decoded); T.eq(payload, assert(model.validate(decoded, snapshot)))
+    failure(decoder, encode(final), "status 2", 2)
+    local truncated = assert(agent.decode(decoder, encode(final:sub(1, -8)), "", 0))
+    T.eq(nil, model.validate(truncated, snapshot))
+    local legacy = assert(agent.decode(decoder, encode(answer), "", 0))
+    T.eq(nil, model.validate(legacy, snapshot))
+  end
+  failure("opencode", wire({ text("final", "a", final, false) }), "completed final")
+  failure("opencode", wire({ text("final", "a", final), { type = "error", error = { message = "output limit" } } }), "output limit")
+  failure("codex", wire({ item("item.completed", final) }), "completed final turn")
+  failure("codex", wire({ item("item.completed", final), { type = "turn.failed", error = { message = "output limit" } } }), "output limit")
+  failure(function() return nil, "output limit" end, final, "output limit")
+end)

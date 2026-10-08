@@ -5,6 +5,16 @@ local function repo(run)
   local root = vim.fn.tempname() .. " spaces;$'"
   vim.fn.mkdir(root, "p")
   local buffers, windows, original = {}, {}, adapter.current
+  local original_detached = adapter.detached
+  adapter.detached = function(captured)
+    local now = assert(adapter.current(captured.source), "closed source")
+    assert(now.cwd == captured.cwd and vim.deep_equal(now.pair, captured.pair)
+      and now.selected.kind == captured.selected.kind and vim.deep_equal(now.path_args, captured.path_args)
+      and now.show_untracked == captured.show_untracked, "Diffview comparison changed during collection")
+    local value = vim.deepcopy(captured)
+    value.stage_buffers, value.detached = now.stage_buffers, true
+    return value
+  end
   local function git(...)
     local result = vim.system(vim.list_extend({ "git" }, { ... }), { cwd = root }):wait()
     assert(result.code == 0, result.stderr)
@@ -67,6 +77,7 @@ local function repo(run)
   local ok, err = xpcall(function() run({ root = root, git = git, write = write, commit = commit,
     display = display, collect = collect, buf = buf }) end, debug.traceback)
   adapter.current = original
+  adapter.detached = original_detached
   for _, win in ipairs(windows) do if api.nvim_win_is_valid(win) then api.nvim_win_close(win, true) end end
   for _, id in ipairs(buffers) do if api.nvim_buf_is_valid(id) then api.nvim_buf_delete(id, { force = true }) end end
   vim.fn.delete(root, "rf")
@@ -149,7 +160,7 @@ T.test("diff working comparison overlays unsaved focused and previously unchange
     s = r.collect(); r.write("new doc.md", "new untracked decision\n"); T.eq(false, diff.fresh(s))
     s = r.collect(); r.git("add", "--", "quiet.txt"); T.eq(false, diff.fresh(s))
     s = r.collect(); state.selected.path = "doc.md"; state.selected.oldpath = "doc.md"
-    T.eq(false, diff.fresh(s))
+    T.eq(true, diff.fresh(s)) -- Navigation does not change the captured target.
   end)
 end)
 
@@ -237,7 +248,7 @@ T.test("diff rename source recreation is retained and collection races fail cohe
     adapter.current = function(win)
       calls = calls + 1
       local state = original(win)
-      if calls == 3 then state.selected.path = "switched mid-collection" end
+      if calls == 3 then state.path_args = { "switched comparison filter" } end
       return state
     end
     local collected, message = diff.collect(0, "file")
@@ -335,13 +346,15 @@ T.test("async Git startup and polling yield; cancellation and late checks never 
       plugin.cancel(); release(); vim.wait(100)
       T.eq(nil, collecting.pane.result); assert(collecting.pane.status:find("Cancelled"))
 
-      -- Refresh/replacement/close cancel collection and silence late callbacks.
+      -- Another explicit target queues; only Refresh/Close cancel collection.
       api.nvim_win_set_cursor(state.source, { 1, 0 }); held = true
       local old = plugin.refresh(); gate()
       local old_job, generation = old.collection, old.generation
       local replacement = plugin.diff("file")
-      T.eq(old, replacement); assert(replacement.generation > generation)
-      assert(old_job ~= replacement.collection); gate()
+      T.eq(old, replacement); T.eq(generation, replacement.generation)
+      T.eq(old_job, replacement.collection); T.eq(1, #replacement.queue)
+      plugin.refresh(); assert(replacement.generation > generation)
+      assert(old_job ~= replacement.collection); T.eq(0, #replacement.queue); gate()
       plugin.close(); T.eq(true, replacement.closed)
       release(); vim.wait(100)
       T.eq(1, #launches); T.eq(nil, sessions.current())
@@ -821,4 +834,156 @@ T.test("genuinely oversized selected hunk is rejected in auto and focused withou
       T.eq(nil, result); assert(err:find("Mandatory target", 1, true) and err:find("No target was truncated", 1, true), err)
     end
   end)
+end)
+
+T.test("review has deterministic targets for all text entries and metadata IDs for binary and empty files", function()
+  repo(function(r)
+    r.write("a.lua", "old\n"); local a = r.commit()
+    r.write("a.lua", "new\n"); r.write("b.lua", "added\n")
+    r.write("binary.dat", "a\0b"); r.write("empty.txt", ""); local b = r.commit()
+    local state = r.display({ old = rev(a), new = rev(b) }, "a.lua", "old\n", "new\n")
+    local snapshot = assert(diff.collect(state.source, "review", { diff = "focused" }))
+    T.eq("review", snapshot.context.strategy); T.eq(0, snapshot.context.omitted_files)
+    T.eq(4, #snapshot.comparison.manifest); T.eq(2, #snapshot.target.files)
+    local ids = {}
+    for _, item in ipairs(snapshot.comparison.manifest) do
+      assert(type(item.file_id) == "string" and not ids[item.file_id]); ids[item.file_id] = true
+    end
+    for _, target in ipairs(snapshot.target.files) do
+      T.eq("file", target.scope); T.eq(manifest(snapshot, target.path).file_id, target.file_id)
+      assert(#target.anchors > 0)
+    end
+    assert(manifest(snapshot, "binary.dat").text_unavailable)
+    assert(manifest(snapshot, "empty.txt").text_unavailable)
+    local again = assert(diff.collect(state.source, "review", { diff = "auto" }))
+    T.eq(snapshot.target, again.target)
+    local _, _, size = require("explainr.prompt").build(snapshot, math.huge)
+    for _, strategy in ipairs({ "focused", "auto" }) do
+      local missing, err = diff.collect(state.source, "review", { diff = strategy, max_bytes = size - 1 })
+      T.eq(nil, missing); assert(err:find("Complete prompt", 1, true), err)
+    end
+  end)
+end)
+
+T.test("metadata-only review fails before inference", function()
+  repo(function(r)
+    r.write("keep", "same\n"); local a = r.commit(); r.write("empty", ""); local b = r.commit()
+    r.display({ old = rev(a), new = rev(b) }, "empty", nil, "")
+    local snapshot, err = diff.collect(0, "review")
+    T.eq(nil, snapshot); assert(err:find("no eligible textual targets", 1, true), err)
+  end)
+end)
+
+T.test("invocation capture survives A to B before collection and fixed revisions ignore mutable edits", function()
+  repo(function(r)
+    r.write("a.lua", "a old\n"); r.write("b.lua", "b old\n"); local a = r.commit()
+    r.write("a.lua", "a new\n"); r.write("b.lua", "b new\n"); local b = r.commit()
+    local state = r.display({ old = rev(a), new = rev(b) }, "a.lua", "a old\n", "a new\n")
+    local done, snapshot, failure
+    diff.collect_async(state.source, "hunk", function(value, err) snapshot, failure, done = value, err, true end)
+    state.selected.path, state.selected.oldpath = "b.lua", "b.lua"
+    api.nvim_win_set_buf(state.windows.old, r.buf(nil, "b old\n"))
+    api.nvim_win_set_buf(state.windows.new, r.buf(nil, "b new\n"))
+    assert(vim.wait(10000, function() return done end, 5)); assert(snapshot, failure)
+    T.eq("a.lua", snapshot.target.path); T.eq(true, diff.fresh(snapshot))
+    r.write("unrelated", "working\n"); r.git("add", "unrelated")
+    T.eq(true, diff.fresh(snapshot))
+    state.selected.kind = "staged"; T.eq(false, diff.fresh(snapshot)); state.selected.kind = "working"
+    state.path_args = { "b.lua" }; T.eq(false, diff.fresh(snapshot))
+  end)
+end)
+
+T.test("detached working and stage freshness accepts recreated clean buffers but rejects discarded overlays", function()
+  repo(function(r)
+    r.write("a.lua", "old\n"); local a = r.commit(); r.write("a.lua", "new\n")
+    for _, staged in ipairs({ false, true }) do
+      if staged then r.git("add", "a.lua") end
+      local pair = staged and { old = rev(a), new = { type = "stage", stage = 0 } }
+        or { old = { type = "stage", stage = 0 }, new = { type = "local" } }
+      local state, _, new = r.display(pair, "a.lua", "old\n", "new\n")
+      local snapshot = r.collect()
+      api.nvim_win_set_buf(state.windows.new, r.buf(nil, "loading\n"))
+      api.nvim_buf_delete(new, { force = true })
+      local recreated = r.buf(staged and nil or "a.lua", "new\n")
+      api.nvim_win_set_buf(state.windows.new, recreated)
+      if staged then state.stage_buffers["a.lua"] = recreated end
+      T.eq(true, diff.fresh(snapshot))
+      api.nvim_buf_set_lines(recreated, 0, -1, false, { "unsaved" })
+      T.eq(false, diff.fresh(snapshot))
+      snapshot = r.collect()
+      api.nvim_win_set_buf(state.windows.new, r.buf(nil, "loading\n"))
+      api.nvim_buf_delete(recreated, { force = true })
+      if staged then state.stage_buffers["a.lua"] = nil end
+      T.eq(false, diff.fresh(snapshot))
+    end
+  end)
+end)
+
+T.test("normalized review files preserve shared provenance on restore and invalidate with shared evidence", function()
+  repo(function(r)
+    r.write("a.lua", "old\n"); r.write("doc.md", "old rationale\n"); r.commit()
+    r.write("a.lua", "new\n"); r.write("doc.md", "new rationale\n")
+    local state = r.display({ old = { type = "stage", stage = 0 }, new = { type = "local" } }, "a.lua", "old\n", "new\n")
+    local review = r.collect("review")
+    local normalized = vim.deepcopy(review)
+    normalized.target, normalized.provenance = review.target.files[1], review
+    local done, restored
+    diff.restore_async(normalized, state.source, function(value) restored, done = value, true end)
+    assert(vim.wait(10000, function() return done end, 5)); assert(restored)
+    T.eq("file", restored.target.scope); T.eq(review, restored.provenance)
+    T.eq(state.windows, restored.windows); T.eq(state.source, restored.source)
+    r.write("doc.md", "changed shared rationale\n")
+    T.eq(false, diff.fresh(normalized))
+  end)
+end)
+
+T.test("navigation during working collection preserves captured unsaved text and rejects its discard", function()
+  for _, discard in ipairs({ false, true }) do
+    repo(function(r)
+      r.write("a.lua", "old\n"); r.write("b.lua", "old b\n"); r.commit()
+      r.write("a.lua", "saved\n"); r.write("b.lua", "new b\n")
+      local state, _, new = r.display({ old = { type = "stage", stage = 0 }, new = { type = "local" } },
+        "a.lua", "old\n", "saved\n")
+      api.nvim_buf_set_lines(new, 0, -1, false, { "captured unsaved" })
+      local done, snapshot, failure
+      diff.collect_async(state.source, "file", function(value, err) snapshot, failure, done = value, err, true end)
+      state.selected.path, state.selected.oldpath = "b.lua", "b.lua"
+      api.nvim_win_set_buf(state.windows.old, r.buf(nil, "old b\n"))
+      api.nvim_win_set_buf(state.windows.new, r.buf("b.lua", "new b\n"))
+      if discard then api.nvim_buf_delete(new, { force = true }) end
+      assert(vim.wait(10000, function() return done end, 5))
+      if discard then
+        T.eq(nil, snapshot); assert(failure:find("changed during collection", 1, true), failure)
+      else
+        assert(snapshot, failure); T.eq("a.lua", snapshot.target.path)
+        T.eq({ "captured unsaved" }, file(snapshot, "a.lua", "new").lines)
+        T.eq(true, diff.fresh(snapshot))
+      end
+    end)
+  end
+end)
+
+T.test("adapter selects exact renamed comparison entry without guessing a working path", function()
+  local original = package.loaded["diffview.lib"]
+  local revs = { a = { type = 2, commit = "abc" }, b = { type = 2, commit = "def" } }
+  local entries = {
+    { path = "new.lua", oldpath = "old.lua", kind = "working", status = "R", revs = revs },
+    { path = "new.lua", oldpath = "other.lua", kind = "working", status = "R", revs = revs },
+    { path = "new.lua", oldpath = "old.lua", kind = "staged", status = "R", revs = revs },
+  }
+  local selected
+  local view = { valid = true, closing = { check = function() return false end }, cur_entry = entries[1],
+    files = { iter = function() return ipairs(entries) end }, set_file = function(_, entry) selected = entry end }
+  package.loaded["diffview.lib"] = { get_current_view = function() return view end }
+  local ok, err = xpcall(function()
+    local target = { path = "new.lua", oldpath = "old.lua", kind = "working",
+      comparison = { old = rev("abc"), new = rev("def") } }
+    assert(adapter.select(api.nvim_get_current_win(), target)); T.eq(entries[1], selected)
+    selected = nil; target.oldpath = "missing.lua"
+    T.eq(false, adapter.select(api.nvim_get_current_win(), target)); T.eq(nil, selected)
+    target.oldpath = "old.lua"; target.comparison.new.commit = "123"
+    T.eq(false, adapter.select(api.nvim_get_current_win(), target)); T.eq(nil, selected)
+  end, debug.traceback)
+  package.loaded["diffview.lib"] = original
+  assert(ok, err)
 end)

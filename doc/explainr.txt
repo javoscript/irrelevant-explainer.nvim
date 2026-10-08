@@ -43,7 +43,8 @@ retry automatically. External-agent usage may increase. See |explainr-ui.txt|.
 COMMANDS                                                *explainr-commands*
 >
   :ExplainrCode [file|function|class|selection]
-  :ExplainrDiff [file|hunk]
+  :ExplainrDiff [file|hunk|review]
+  :ExplainrReview
   :ExplainrRefresh
   :ExplainrCancel
   :ExplainrClose
@@ -66,18 +67,22 @@ detail winbars, not the editor's statusline. No global keymap is installed: >
 Code and diff commands default to file scope. One agent invocation runs per
 tab. Requests for the same buffer or loaded old/new comparison accumulate in
 the existing pane; repeating an identical target replaces only its batch.
-Distinct overlapping scopes can coexist. Further diff hunk requests append
-while a diff request is pending, rather than cancelling it. Hunks/configuration
+Distinct overlapping scopes can coexist. Explicit diff file/hunk/review requests
+append while a diff request is pending, rather than cancelling it. Targets/configuration
 are captured at invocation; agent calls run in request order. Pending ranges
 animate together and status shows the queued count. Each completion adds notes;
-ordinary failures skip that request and continue the queue. Other new scopes
-replace pending work, not previously accepted notes. Different buffers, modes
+ordinary failures skip that request and continue the queue. Equivalent pending
+requests are deduplicated. Code requests replace pending code work. Different buffers, modes
 or comparison ownership start a new session. Commands invoked from notes/detail
 use the currently followed source window, not the explanation text.
+ExplainrDiff review and ExplainrReview also work from the DiffviewFiles tree,
+using the currently displayed comparison without changing tree focus/selection.
+File/hunk generation still requires a source pane or its explanation reader.
 Refresh clears active/queued requests, collects a new snapshot and explicitly
 calls the command, even when a result is cached. Selection refresh retains the
 original region; structural/hunk refresh selects the structure/hunk at the
-source cursor now.
+source cursor now. Review refresh regenerates the narrative and all file notes;
+File refresh requests only the file/hunk, even for notes distributed by a review.
 Cancel stops active/queued collection/check/inference jobs and preserves
 accepted notes.
 Ordinary failures also preserve accepted notes; freshness checks remain active.
@@ -111,7 +116,7 @@ capture live endpoints, virtual offsets, and the current selection option:
     require("explainr").code("selection", selection)
   end)
 <
-Lua equivalents are code(scope?, selection?), diff(scope?), refresh(), cancel()
+Lua equivalents are code(scope?, selection?), diff(scope?), review(), refresh(), cancel()
 and close() on require("explainr"). The default scopes are "file".
 
 DIFF SCOPE                                               *explainr-review*
@@ -119,6 +124,24 @@ DIFF SCOPE                                               *explainr-review*
 Invoke ExplainrDiff from a loaded old/new two-way Diffview source, not its file
 panel. The selected entry's coherent revision set and explicit path filters
 define the whole comparison. Staged and working sets are never silently mixed.
+ExplainrDiff review explicitly requests one whole-change narrative and all
+eligible files' notes in a single invocation. It always requires complete
+coverage, regardless of context.diff, and never silently falls back or splits
+into multiple requests. Binary/both-empty entries retain metadata but receive
+no invented anchors. No eligible text targets means no inference.
+
+ExplainrReview (or require("explainr").review()) only opens the narrative, without
+inference. Review uses independently scrollable Markdown in the same pane.
+Enter on a generated file-reference row selects that exact Diffview entry and
+shows File notes; prose Enter is inert. Esc returns to File overview; q closes.
+Reopening the same narrative preserves its reading position. Empty, pending,
+failed and stale states are explicit. <Plug>(ExplainrReview) is pane-local;
+there is no global default mapping. See |explainr-ui.txt| for a shortcut example.
+Review responses use version 2; wrappers serving code/file/hunk retain version 1.
+Incomplete or malformed reviews install neither narrative nor partial file notes.
+See |explainr-agents.txt| for the complete contract and output-limit guidance.
+
+For file/hunk scope only:
 context.diff="auto" supplies every textual patch and complete changed text
 version when the review fits the byte budget, including changed OpenSpec
 artifacts, other decisions/ADRs and tests. Otherwise it uses focused coverage:
@@ -161,7 +184,7 @@ headers and user edits are preserved. The editor's statusline is not overwritten
 Pending phases animate the requested rows every 100ms,
 including deletion filler; initial hunk ranges are provisional until collected.
 Ticks only update decorations, not buffer text, collection or inference. Full
-errors use vim.notify and :messages. Edits, file/revision/layout switches and
+errors use vim.notify and :messages. Edits, revision/comparison switches and
 view closure invalidate late output. Stale notes are removed instead of shifted
 onto edited code. No automatic inference
 is issued on edits or scrolling. Source buffer events and a one-second timer
@@ -185,8 +208,16 @@ file for the current run. Navigation alone hides notes, not invalidates them.
 Returning to a file revalidates every retained batch under its original coverage
 and restores it without inference, including incremental hunk explanations.
 Recreated clean buffers and newly loaded identical context files are not edits;
-actual code/context/index changes still prevent restoration. In-flight work for
-the file being left is cancelled. Nothing is persisted across Neovim restarts.
+actual code/context/index changes still prevent restoration. In-flight work
+survives file navigation, including during collection, and remains owned by its
+original target. Off-screen completion preserves other files' detail and focus.
+Fresh replacements of expanded notes are deferred until detail exits. Review
+file results retain all shared-context freshness dependencies.
+Auto keeps at most one unstarted latest-file candidate while busy, behind explicit
+requests. Turning Auto off drops that candidate, not running or explicit work.
+A queued/running review suppresses automatic file candidates; its failure does
+not trigger per-file retries. Cancel/Close stop comparison-wide pending work;
+tab switching alone does not. Nothing is persisted across Neovim restarts.
 External tools may independently retain supplied code or continue attached
 remote generation after their local client is killed; see |explainr-agents.txt|.
 

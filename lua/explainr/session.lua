@@ -1,6 +1,11 @@
 local M = { sessions = {} }
 local api = vim.api
-local contexts, results, retained = {}, {}, {}
+local contexts, results, retained, narratives = {}, {}, {}, {}
+
+local function comparison_key(state)
+  if not state then return end
+  return vim.inspect({ state.cwd, state.pair, state.path_args, state.show_untracked, state.selected.kind })
+end
 
 local function review_key(state)
   if not state then return end
@@ -10,7 +15,8 @@ end
 
 local function remember(session)
   if session.review_key and #session.batches > 0 then
-    retained[session.review_key] = { batches = vim.deepcopy(session.batches), scope = session.scope }
+    retained[session.review_key] = { batches = vim.deepcopy(session.batches), scope = session.scope,
+      comparison = session.comparison_key }
   end
 end
 
@@ -19,18 +25,58 @@ local function notify(err) vim.notify(err, vim.log.levels.ERROR, { title = "Expl
 
 function M.current() return M.sessions[api.nvim_get_current_tabpage()] end
 
+local render
 function M.auto_explain_changed(enabled)
   for _, session in pairs(M.sessions) do
     if not session.closed and session.mode == "diff" then
-      if not enabled then session.auto_explain_navigation = false end
+      if not enabled then
+        session.auto_explain_navigation = false
+        if session.automatic and session.automatic.collection then session.automatic.collection.cancel() end
+        if session.automatic then session.automatic.cancelled = true end
+        session.automatic = nil
+      end
       session.pane.auto_explain = enabled
-      session.pane:header()
+      render(session)
     end
   end
 end
 
 -- Accepted batches are immutable. Only their assembled view is given to UI.
-local function render(session, status)
+render = function(session, status)
+  if session.mode == "diff" then
+    session.file_status = status or session.file_status
+    status = session.file_status or "No explanations · request file or hunk"
+    session.pane.pending, session.pane.queued, session.pane.background = nil, {}, nil
+    local active = session.pending
+    if active then
+      if active.scope ~= "review" and active.key == session.review_key then
+        session.pane.pending = active
+        status = active.status or "Pending · collecting comparison"
+      else
+        session.pane.background = "Running " .. (active.scope == "review" and "review" or active.path or "another file")
+      end
+    end
+    for _, request in ipairs(session.queue or {}) do
+      if request.scope ~= "review" and request.key == session.review_key then
+        session.pane.queued[#session.pane.queued + 1] = request
+      end
+    end
+    if session.automatic and session.automatic.key == session.review_key then
+      session.pane.queued[#session.pane.queued + 1] = session.automatic
+    end
+    if #session.pane.queued > 0 and not session.pane.pending then
+      status = "Pending · queued"
+      session.pane.pending = table.remove(session.pane.queued, 1)
+    end
+    local count = #(session.queue or {}) + (session.automatic and 1 or 0)
+    if count > 0 then
+      session.pane.background = (session.pane.background and session.pane.background .. " · " or "") .. count .. " queued"
+    end
+    local narrative = narratives[session.comparison_key]
+    if session.review_checking then narrative = nil end
+    session.pane:set_review(narrative and narrative.result.review,
+      narrative and narrative.snapshot.comparison.manifest, session.review_status)
+  end
   local value = #session.batches > 0 and { version = 1, notes = {} } or nil
   for _, batch in ipairs(session.batches) do
     for _, note in ipairs(batch.result.notes) do
@@ -38,16 +84,27 @@ local function render(session, status)
     end
   end
   if status == "Ready" and value and #value.notes == 0 then status = "Ready · no notes" end
-  session.pane:set(value, status)
+  if vim.deep_equal(value, session.pane.result) then session.pane:set_status(status)
+  else session.pane:set(value, status) end
+end
+
+local function progress(session, request, status)
+  request.status = status
+  if request.scope == "review" then
+    session.review_status = status .. (request.snapshot and " · " .. #request.snapshot.target.files .. " files" or "")
+  end
+  render(session, session.mode == "code" and status or nil)
 end
 
 local function stop_jobs(session)
-  for _, key in ipairs({ "collection", "checking", "invocation" }) do
+  for _, key in ipairs({ "collection", "checking", "invocation", "restoration" }) do
     if session[key] then session[key].cancel(); session[key] = nil end
   end
   for _, request in ipairs(session.queue or {}) do
     if request.collection then request.collection.cancel() end
   end
+  if session.automatic and session.automatic.collection then session.automatic.collection.cancel() end
+  session.automatic = nil
   session.queue, session.pane.queued = {}, nil
   session.waiters, session.recheck, session.restoring = nil, nil, nil
 end
@@ -73,6 +130,8 @@ end
 function M.cancel()
   local session = M.current()
   if session and not session.closed then
+    session.review_status = "Cancelled · refresh explicitly"
+    session.auto_explain_navigation = false
     discard_pending(session)
     render(session, "Cancelled · refresh explicitly")
   end
@@ -82,7 +141,8 @@ local follow
 local function check(session, callback, dirty)
   if session.closed then return end
   if not api.nvim_tabpage_is_valid(session.tab) then M.close(session); return end
-  if follow(session) then return end
+  follow(session)
+  if session.closed then return end
   if callback then
     session.waiters = session.waiters or {}
     session.waiters[#session.waiters + 1] = callback
@@ -116,19 +176,67 @@ local function check(session, callback, dirty)
   for _, batch in ipairs(session.batches) do
     if not pending_snapshot or not vim.deep_equal(batch.snapshot, pending_snapshot) then add(batch.snapshot) end
   end
+  if pending_snapshot and pending_snapshot.target.scope == "review" then
+    for _, saved in pairs(retained) do
+      if saved.comparison == session.comparison_key then
+        for _, batch in ipairs(saved.batches) do add(batch.snapshot) end
+      end
+    end
+  end
+  local narrative = narratives[session.comparison_key]
+  if narrative and not vim.deep_equal(narrative.snapshot, pending_snapshot) then add(narrative.snapshot) end
   if pending_snapshot then add(pending_snapshot) end
-  local index, stale_batches = 0, false
+  local index, stale, stale_pending = 0, {}, false
   local advance
+  local function invalid(snapshot)
+    for _, previous in ipairs(stale) do
+      if vim.deep_equal(previous, snapshot) or snapshot.provenance and vim.deep_equal(previous, snapshot.provenance) then
+        return true
+      end
+    end
+    return false
+  end
+  local function prune(batches)
+    local kept = {}
+    for _, batch in ipairs(batches) do if not invalid(batch.snapshot) then kept[#kept + 1] = batch end end
+    return kept
+  end
   local function complete()
     if not owned() then return end
     session.checking = nil
-    if stale_batches then
-      if session.review_key then retained[session.review_key] = nil end
-      session.batches = {}
-      session.stale = not session.pending
-      render(session, session.pending and session.pane.status or "Stale · context changed · refresh")
+    if narrative and invalid(narrative.snapshot) then
+      narratives[session.comparison_key] = nil
+      session.review_status = "Stale · context changed · refresh"
     end
+    for key, saved in pairs(retained) do
+      saved.batches = prune(saved.batches)
+      if #saved.batches == 0 then retained[key] = nil end
+    end
+    local kept = prune(session.batches)
+    if #kept ~= #session.batches then
+      session.batches = kept
+      session.stale = true
+      -- Stale detail must not be deferred merely because some other batch is fresh.
+      session.pane.deferred_result = nil
+      session.pane:back(true)
+      session.file_status = "Stale · context changed · refresh"
+    end
+    if stale_pending then
+      if session.pending.scope == "review" then
+        session.review_status = "Stale · context changed · refresh"
+      end
+      session.stale = true
+      discard_pending(session)
+      render(session, "Stale · context changed · refresh")
+      return
+    end
+    if #stale > 0 then render(session, session.mode == "code" and "Stale · context changed · refresh" or nil) end
     if session.recheck then session.recheck = nil; check(session); return end
+    if session.review_checking then
+      session.review_checking = nil
+      if narratives[session.comparison_key] then session.review_status = "Ready · restored" end
+      render(session)
+    end
     local waiters = session.waiters or {}
     session.waiters = nil
     for _, done in ipairs(waiters) do
@@ -144,17 +252,14 @@ local function check(session, callback, dirty)
     local delivered = false
     local function checked(fresh)
       if not owned() or delivered then return end
-      if follow(session) then return end
+      follow(session)
+      if not owned() then return end
       delivered = true
       operation.job = nil
-      if not fresh and snapshot == pending_snapshot then
-        if session.review_key then retained[session.review_key] = nil end
-        session.batches, session.stale = {}, true
-        discard_pending(session)
-        render(session, "Stale · context changed · refresh")
-        return
+      if not fresh then
+        stale[#stale + 1] = snapshot.provenance or snapshot
+        stale_pending = stale_pending or snapshot == pending_snapshot
       end
-      stale_batches = stale_batches or not fresh
       advance()
     end
     if session.mode == "diff" then
@@ -212,23 +317,44 @@ local function identity(mode, snapshot, state)
     paths = vim.tbl_map(function(anchor) return { anchor.path, anchor.side } end, snapshot.target.anchors or {}) } end
 end
 
-follow = function(session)
+local function pending_for(session, key)
+  local requests = session.pending and { session.pending } or {}
+  vim.list_extend(requests, session.queue or {})
+  if session.automatic then requests[#requests + 1] = session.automatic end
+  for _, request in ipairs(requests) do
+    if request.scope == "review" or request.key == key then return true end
+  end
+  return false
+end
+
+follow = function(session, manual)
   if session.mode ~= "diff" then return false end
   local adapter = require("explainr.diffview")
   local selected = adapter.selection(session.pane.source)
   if not selected then return false end
+  if session.comparison_key and comparison_key(selected) ~= session.comparison_key then
+    M.close(session)
+    return true
+  end
   local key = review_key(selected)
   if key ~= session.review_key then
     remember(session)
-    discard_pending(session)
+    if session.restoration then session.restoration.cancel(); session.restoration = nil end
+    if session.automatic then
+      if session.automatic.collection then session.automatic.collection.cancel() end
+      session.automatic.cancelled, session.automatic = true, nil
+    end
+    session.pane:back(true)
+    session.pane:show_file()
     session.review_key, session.batches, session.restoring = key, {}, true
-    session.auto_explain_navigation = require("explainr").config.diff.auto_explain
+    session.auto_explain_navigation = not manual and require("explainr").config.diff.auto_explain
+    session.scope = "file"
     session.snapshot, session.context, session.pane.snapshot = nil, nil, nil
     session.stale = false
     render(session, retained[key] and "Checking saved explanations" or "No explanations · request file or hunk")
   end
   if not session.restoring then return false end
-  if session.checking then return true end
+  if session.restoration then return true end
   -- Diffview advertises the next entry before its replacement buffers load.
   -- Wait for a coherent pair; never navigate Diffview to validate old notes.
   local state = adapter.current(session.pane.source)
@@ -236,16 +362,25 @@ follow = function(session)
   session.pane.snapshot = { windows = state.windows }
   local saved = retained[key]
   if not saved then
-    local auto = session.auto_explain_navigation and require("explainr").config.diff.auto_explain
+    local unavailable
+    local narrative = narratives[session.comparison_key]
+    for _, entry in ipairs(narrative and narrative.snapshot.comparison.manifest or {}) do
+      if entry.path == state.selected.path and entry.oldpath == state.selected.oldpath then
+        unavailable = entry.text_unavailable
+      end
+    end
+    local auto = not unavailable and not pending_for(session, key)
+      and session.auto_explain_navigation and require("explainr").config.diff.auto_explain
     -- M.start owns the current tab's session. Defer background-tab navigation
     -- until that tab is active, instead of opening/replacing another tab's pane.
     if auto and M.current() ~= session then return true end
     session.restoring = nil
     if auto then
-      M.start("diff", "file", { win = state.source })
+      session.auto_explain_navigation = false
+      M.start("diff", "file", { win = state.source, automatic = true })
       return true
     end
-    render(session, "No explanations · request file or hunk")
+    render(session, unavailable and "No text annotations · " .. unavailable or "No explanations · request file or hunk")
     return false
   end
   local operation, generation, batches, index = {}, session.generation, {}, 0
@@ -253,10 +388,10 @@ follow = function(session)
     operation.cancelled = true
     if operation.job then operation.job.cancel() end
   end
-  session.checking = operation
+  session.restoration = operation
   local function owned()
     return not session.closed and not operation.cancelled and session.generation == generation
-      and session.checking == operation and session.review_key == key
+      and session.restoration == operation and session.review_key == key
   end
   local advance
   advance = function()
@@ -264,7 +399,15 @@ follow = function(session)
     index = index + 1
     local batch = saved.batches[index]
     if not batch then
-      session.checking, session.restoring = nil, nil
+      session.restoration, session.restoring = nil, nil
+      if #batches == 0 then
+        retained[key], session.stale = nil, true
+        if session.auto_explain_navigation and require("explainr").config.diff.auto_explain then
+          session.restoring = true
+          follow(session)
+        else render(session, "Stale · context changed · refresh") end
+        return
+      end
       session.batches, session.scope = batches, saved.scope
       session.snapshot = batches[#batches].snapshot
       session.context = identity("diff", session.snapshot)
@@ -277,16 +420,9 @@ follow = function(session)
     local job = collector("diff").restore_async(batch.snapshot, session.pane.source, function(snapshot)
       if not owned() then return end
       delivered, operation.job = true, nil
-      if not snapshot then
-        retained[key], session.checking, session.restoring = nil, nil, nil
-        session.stale = true
-        if session.auto_explain_navigation and require("explainr").config.diff.auto_explain then
-          session.restoring = true
-          follow(session)
-        else render(session, "Stale · context changed · refresh") end
-        return
+      if snapshot then
+        batches[#batches + 1] = { snapshot = snapshot, result = vim.deepcopy(batch.result), config = batch.config }
       end
-      batches[#batches + 1] = { snapshot = snapshot, result = vim.deepcopy(batch.result) }
       advance()
     end)
     if not delivered and owned() then operation.job = job end
@@ -298,24 +434,69 @@ end
 local launch, advance_queue
 
 local function fail(session, err)
+  local request = session.pending
+  local visible = not request or session.mode == "code" or request.scope ~= "review" and request.key == session.review_key
+  if request and request.scope == "review" then
+    session.review_status = "Failed · see :messages"
+    if not err:find("context.max_bytes", 1, true) then
+      err = err .. " Reduce the comparison or request file/hunk scope; no fallback was started."
+    end
+    err = "Review: " .. err
+  elseif request and request.path then
+    err = request.path .. ": " .. err
+  end
+  if visible then session.file_status = "Failed · see :messages" end
   session.pending, session.pane.pending = nil, nil
   notify(err)
-  advance_queue(session, "Failed · see :messages")
+  advance_queue(session, visible and "Failed · see :messages" or nil)
   check(session)
   return session, err
 end
 
+local function install(session, snapshot, value, config, key)
+  local batches = key == session.review_key and #session.batches > 0 and session.batches
+    or retained[key] and retained[key].batches or {}
+  local batch = { snapshot = snapshot, result = vim.deepcopy(value), config = config }
+  local replaced = false
+  for index, previous in ipairs(batches) do
+    if vim.deep_equal(previous.snapshot.target, snapshot.target) then
+      batches[index], replaced = batch, true
+      break
+    end
+  end
+  if not replaced then batches[#batches + 1] = batch end
+  if key then retained[key] = { batches = batches, scope = snapshot.target.scope, comparison = session.comparison_key } end
+  if key == session.review_key then
+    if session.restoration then session.restoration.cancel(); session.restoration = nil end
+    session.restoring = nil
+    session.batches, session.scope, session.stale = batches, snapshot.target.scope, false
+    local bound = vim.deepcopy(snapshot)
+    local state = session.mode == "diff" and require("explainr.diffview").current(session.pane.source)
+    if state then
+      bound.windows, bound.source = state.windows, state.source
+      bound.source_buf = state.panes[state.source == state.windows.old and "old" or "new"].buf
+      bound.capture.state = state
+    end
+    session.snapshot, session.pane.snapshot = bound, bound
+    session.context = identity(session.mode, bound)
+  end
+end
+
 launch = function(session, snapshot, options, config)
   snapshot = vim.deepcopy(snapshot)
+  local owned_request = session.pending
   local context = identity(session.mode, snapshot)
-  if session.context and not vim.deep_equal(session.context, context) then session.batches = {} end
-  session.context = context
-  session.snapshot, session.pane.snapshot = snapshot, snapshot
-  session.source = snapshot.source or snapshot.windows.buffer
-  session.selection = session.scope == "selection" and snapshot.target.selection or nil
-  session.pending.snapshot, session.pane.pending.snapshot = snapshot, snapshot
-  session.pane.pending.windows = snapshot.windows
-  render(session, "Pending · building prompt")
+  if session.mode == "code" then
+    if session.context and not vim.deep_equal(session.context, context) then session.batches = {} end
+    session.context = context
+  end
+  if session.mode == "code" or owned_request.scope ~= "review" and owned_request.key == session.review_key then
+    session.snapshot, session.pane.snapshot = snapshot, snapshot
+    session.source = snapshot.source or snapshot.windows.buffer
+    session.selection = session.scope == "selection" and snapshot.target.selection or nil
+  end
+  owned_request.snapshot, owned_request.windows = snapshot, snapshot.windows
+  progress(session, owned_request, "Pending · building prompt")
   local prompt = require("explainr.prompt")
   local context_key = snapshot.review_fingerprint or snapshot.fingerprint
   contexts[context_key] = contexts[context_key] or prompt.context(snapshot)
@@ -331,30 +512,50 @@ launch = function(session, snapshot, options, config)
     if session.closed or session.generation ~= generation
       or not session.pending or session.pending.snapshot ~= snapshot then return end
     session.invocation = nil
-    render(session, "Pending · checking result context")
+    progress(session, owned_request, "Pending · checking result context")
     check(session, function()
       local value
       if not failure then value, failure = require("explainr.model").validate(raw, snapshot) end
       if failure then fail(session, failure); return end
       cache[result_key] = vim.deepcopy(value)
-      local batch = { snapshot = snapshot, result = vim.deepcopy(value) }
-      local replaced = false
-      for index, previous in ipairs(session.batches) do
-        if vim.deep_equal(previous.snapshot.target, snapshot.target) then
-          session.batches[index], replaced = batch, true
-          break
+      local status = cached and "Ready · cached" or "Ready"
+      if owned_request.scope == "review" then
+        narratives[session.comparison_key] = { snapshot = snapshot, result = value, config = config }
+        if not cached then session.pane.review = nil end -- A new generation starts at its beginning, even for equal prose.
+        session.review_checking = nil
+        session.review_status = status
+        local values = {}
+        for _, file in ipairs(value.files) do values[file.file_id] = file.notes end
+        for _, target in ipairs(snapshot.target.files) do
+          local file = vim.deepcopy(snapshot)
+          file.provenance, file.target = snapshot, vim.deepcopy(target)
+          local state = vim.deepcopy(snapshot.capture.state)
+          state.selected.path, state.selected.oldpath = target.path, target.oldpath
+          file.capture.state, file.capture.target = state, file.target
+          install(session, file, { version = 1, notes = values[target.file_id] }, config, review_key(state))
         end
+        if retained[session.review_key] then session.file_status = status end
+      else
+        install(session, snapshot, value, config, owned_request.key)
+        if session.mode == "code" or owned_request.key == session.review_key then session.file_status = status end
       end
-      if not replaced then session.batches[#session.batches + 1] = batch end
       session.pending, session.pane.pending, session.stale = nil, nil, false
       remember(session)
-      advance_queue(session, cached and "Ready · cached" or "Ready")
+      advance_queue(session, session.mode == "code" and status or nil)
     end)
   end
-  if not options.refresh and cache[result_key] then
-    accept(vim.deepcopy(cache[result_key]), nil, true)
+  local reusable = cache[result_key]
+  if not reusable and owned_request.scope == "file" then
+    local saved = retained[owned_request.key]
+    for _, batch in ipairs(saved and saved.batches or {}) do
+      if vim.deep_equal(batch.config, config) and vim.deep_equal(batch.snapshot.target, snapshot.target)
+        and batch.snapshot.review_fingerprint == snapshot.review_fingerprint then reusable = batch.result; break end
+    end
+  end
+  if not options.refresh and reusable then
+    accept(vim.deepcopy(reusable), nil, true)
   else
-    render(session, "Pending · external agent")
+    progress(session, owned_request, "Pending · external agent")
     local delivered = false
     local job = require("explainr.agent").run(request, config.ai, snapshot.cwd, function(raw, failure)
       if delivered then return end
@@ -367,15 +568,19 @@ launch = function(session, snapshot, options, config)
 end
 
 advance_queue = function(session, status)
+  if status then session.file_status = status end
   local request = table.remove(session.queue or {}, 1)
+  if not request and session.automatic then request, session.automatic = session.automatic, nil end
   if not request then render(session, status); return end
-  session.scope, session.source = request.scope, request.source
+  if request.scope ~= "review" and request.key == session.review_key then
+    session.scope, session.source = request.scope, request.source
+  end
   session.pending, session.pane.pending = request, request
   session.collection = request.collection
   if request.collected then
     if request.error then fail(session, request.error)
     else launch(session, request.snapshot, request.options, request.config) end
-  else render(session, "Pending · collecting comparison") end
+  else progress(session, request, "Pending · collecting comparison") end
 end
 
 function M.start(mode, scope, options)
@@ -384,6 +589,17 @@ function M.start(mode, scope, options)
   local source = options.win or api.nvim_get_current_win()
   if source == 0 then source = api.nvim_get_current_win() end
   if previous and (source == previous.pane.win or source == previous.pane.detail_win) then source = previous.pane.source end
+  if mode == "diff" and scope == "review" then
+    local message
+    source, message = require("explainr.diffview").review_source(source)
+    if not source then notify(message); return nil, message end
+  end
+  local display_state
+  if options.display_only then
+    local message
+    display_state, message = require("explainr.diffview").current(source)
+    if not display_state then notify(message); return nil, message end
+  end
   if previous and previous.pane.detail_win and previous.pane.back then
     -- A new request can beat deferred follow/freshness checks. Only resolve
     -- the reader cursor while its captured source identity still owns the
@@ -400,6 +616,10 @@ function M.start(mode, scope, options)
     end
     previous.pane:back(not same)
   end
+  if previous and mode == "diff" and previous.mode == "diff" then
+    follow(previous, true)
+    if previous.closed then previous = nil end
+  end
   local config = vim.deepcopy(require("explainr").config)
   local snapshot, err, collection, session, generation
   local request = { source = source, scope = scope, row = api.nvim_win_get_cursor(source)[1],
@@ -413,62 +633,123 @@ function M.start(mode, scope, options)
       if previous then fail(previous, err) else notify(err) end
       return nil, err
     end
-  else
+  elseif not options.display_only then
     local delivered = false
     collection = collector(mode).collect_async(source, scope, function(value, failure)
-      if delivered or not session or session.closed or session.generation ~= generation then return end
+      if delivered or request.cancelled or not session or session.closed or session.generation ~= generation then return end
       delivered = true
       request.collection, request.collected = nil, true
       request.snapshot, request.error = value, not value and (failure or "Diff collection failed") or nil
+      if value and request ~= session.pending then
+        local others = session.pending and { session.pending } or {}
+        vim.list_extend(others, session.queue)
+        if session.automatic then others[#others + 1] = session.automatic end
+        for _, other in ipairs(others) do
+          if other ~= request and other.snapshot and other.snapshot.fingerprint == value.fingerprint
+            and vim.deep_equal(other.config, config) then
+            local promote = session.automatic == other and not options.automatic
+            for index, queued in ipairs(session.queue) do
+              if queued == request then
+                if promote then session.queue[index] = other
+                else table.remove(session.queue, index) end
+                break
+              end
+            end
+            if session.automatic == request then session.automatic = nil end
+            if promote then
+              session.automatic = nil
+              other.options.automatic = nil
+            end
+            request.cancelled = true
+            render(session)
+            return
+          end
+        end
+      end
       if request == session.pending then
         session.collection = nil
         if request.error then fail(session, request.error); return end
         launch(session, value, options, config)
-      else render(session, session.pane.status) end
+      else render(session) end
     end, vim.tbl_extend("force", config.context, { target = options.target }))
   end
-  local context = identity(mode, snapshot, collection and collection.state)
+  local state = display_state or collection and collection.state
+  local context = identity(mode, snapshot, state)
   local compatible = previous and previous.mode == mode
-    and (not context or not previous.context or vim.deep_equal(previous.context, context))
+    and (mode == "diff" and state and comparison_key(state) == previous.comparison_key
+      or not context or not previous.context or vim.deep_equal(previous.context, context))
   -- Without a descriptor, defer full diff identity to launch, but never reuse
   -- a pane for a source outside its loaded pair.
   if compatible and mode == "diff" and not context then
     compatible = source == previous.source or previous_windows
       and (source == previous_windows.old or source == previous_windows.new)
   end
-  local append = compatible and mode == "diff" and scope == "hunk" and previous.pending and not options.refresh
-  if previous and mode == "diff" and not append then discard_pending(previous) end
+  local append = compatible and mode == "diff" and previous.pending and not options.refresh
+  if previous and mode == "diff" and options.refresh then discard_pending(previous) end
   if previous and not compatible then M.close(previous) end
   session = compatible and previous or { mode = mode, generation = 1, batches = {}, tab = api.nvim_get_current_tabpage() }
   if mode == "diff" then
-    session.review_key = review_key(collection and collection.state or snapshot and snapshot.capture and snapshot.capture.state
-      or require("explainr.diffview").selection(source))
+    state = state or require("explainr.diffview").selection(source)
+    session.review_key, session.comparison_key = review_key(state), comparison_key(state)
+    request.key, request.path = session.review_key, state and state.selected.path
   end
   generation = session.generation
   if not compatible then
     session.pane = require("explainr.ui").open(source, snapshot, nil, function() M.close(session) end,
       mode == "diff" and require("explainr.diffview").keymaps or nil)
+    session.pane.mode = mode
+    session.pane.on_review = function() M.review() end
+    session.pane.on_file = function() session.pane:show_file(); render(session) end
+    session.pane.on_reference = function(entry)
+      local ok, message = require("explainr.diffview").select(session.pane.source, entry)
+      if not ok then notify(message); return end
+      follow(session, true)
+      session.pane:show_file()
+      render(session)
+    end
     M.sessions[session.tab] = session
     watch(session)
   end
   session.pane.auto_explain = mode == "diff" and config.diff.auto_explain
   session.pane.source = source
+  if scope == "review" then
+    session.pane.snapshot = session.pane.snapshot or state and { windows = state.windows }
+    if not compatible and narratives[session.comparison_key] then
+      session.review_checking, session.review_status = true, "Checking saved review"
+    end
+    if not options.display_only then session.review_status = append and "Pending · queued review" or "Pending · collecting comparison" end
+    render(session)
+    session.pane:show_review()
+  elseif mode == "diff" then session.pane:show_file() end
+  if options.display_only then
+    session.source, session.scope = source, session.scope or "file"
+    session.pane.snapshot = session.pane.snapshot or { windows = state.windows }
+    session.restoring, session.auto_explain_navigation = true, false
+    follow(session, true)
+    check(session)
+    return session
+  end
   request.windows = snapshot and snapshot.windows or collection and collection.state and collection.state.windows
     or compatible and previous_windows or { [mode == "code" and "buffer" or "new"] = source }
   request.collection = collection
   session.queue = session.queue or {}
   session.pane.queued = session.queue
+  if scope == "review" and session.automatic then
+    if session.automatic.collection then session.automatic.collection.cancel() end
+    session.automatic.cancelled, session.automatic = true, nil
+  end
   if append then
-    session.queue[#session.queue + 1] = request
-    render(session, session.pane.status)
+    if options.automatic then session.automatic = request
+    else session.queue[#session.queue + 1] = request end
+    render(session)
     return session
   end
-  session.mode, session.scope, session.source, session.stale = mode, scope, source, false
+  session.mode, session.scope, session.source, session.stale = mode, scope == "review" and "file" or scope, source, false
   session.selection = options.selection
   session.pending, session.pane.pending = request, request
   if context then session.context = context end
   session.collection = collection
-  render(session, "Pending · collecting comparison")
+  progress(session, request, "Pending · collecting comparison")
   if snapshot then return launch(session, snapshot, options, config) end
   return session
 end
@@ -478,7 +759,10 @@ function M.refresh()
   if not session then local err = "No explanation to refresh; use ExplainrCode or ExplainrDiff"; notify(err); return nil, err end
   -- Diff targets are recaptured from the followed source: retained anchors may
   -- have changed after edits. Only freshness reads retain immutable targets.
-  return M.start(session.mode, session.scope, { win = session.pane.source, selection = session.selection, refresh = true })
+  return M.start(session.mode, session.pane.review_mode and "review" or session.scope or "file",
+    { win = session.pane.source, selection = session.selection, refresh = true })
 end
+
+function M.review() return M.start("diff", "review", { display_only = true }) end
 
 return M

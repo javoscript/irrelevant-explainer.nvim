@@ -77,6 +77,38 @@ Documented intent requires nonempty evidence. Summary/detail must be nonempty;
 summary must contain no newline. Range endpoints must be positive integers.
 ]]
 
+local review_instructions = [[Review scope requires the complete comparison, regardless of the configured
+file/hunk context strategy. Explain the overall change, cross-file relationships,
+and intent or caveats, not a concatenation of file summaries. Keep this narrative
+separate from source-anchored file notes. Narrative sections have no anchors.
+For each target.files entry, apply the file-scope instructions below independently:
+"target" there means that file target, not the whole review. Other files may be
+evidence but never annotation anchors for that file's notes.
+]]
+
+local review_contract = [[OUTPUT CONTRACT:
+{"version":2,"review":{"title":"Overall change","sections":[{
+"heading":"How files connect","detail":"Grounded Markdown explanation",
+"intent_basis":"documented|inferred|unknown","evidence":[{
+"path":"EXACT supplied path","side":"old|new","start_line":1,"end_line":1}],
+"file_ids":["EXACT manifest file_id"]}]},"files":[{
+"file_id":"EXACT target.files file_id","notes":[{"summary":"Short explanation",
+"detail":"Full explanation","anchors":[{"path":"EXACT assigned target path",
+"side":"old|new","start_line":1,"end_line":1}],
+"intent_basis":"documented|inferred|unknown","evidence":[]}]}]}
+Title and section headings must be nonempty single-line text; sections must be a
+nonempty array and every detail must be nonempty Markdown. Each section's file_ids
+is an array of unique manifest IDs, including metadata-only entries if relevant.
+Return exactly one files entry for EVERY target.files ID, no missing, duplicate,
+unknown or metadata-only entries. Explicit notes:[] is valid completed coverage;
+do not fabricate notes. Each file may have one optional kind:"overview" note.
+Notes require one old anchor, one new anchor, or paired old/new anchors without
+duplicate sides, within that assigned file target. Summaries are nonempty single
+lines; details are nonempty. All endpoints are positive integers. Evidence may
+cross files but must cite supplied ranges. Documented sections AND notes require
+nonempty evidence. Use JSON arrays [], never objects {}, for empty arrays.
+]]
+
 -- Keep a context block reusable only for the same strategy/coverage fingerprint.
 -- Text lives in files, not duplicated in manifest version metadata.
 function M.context(snapshot)
@@ -93,15 +125,20 @@ function M.context(snapshot)
 end
 
 function M.build(snapshot, max_bytes, context)
+  local review = snapshot.target.scope == "review"
   local priority = ""
   if snapshot.target.scope == "file" then
     priority = file_instructions .. (snapshot.mode == "diff" and file_diff_instructions or "")
+  elseif review then
+    priority = review_instructions .. file_instructions .. file_diff_instructions
   end
-  local value = instructions .. priority .. "\n" .. contract .. "\nUNTRUSTED SNAPSHOT JSON:\n"
+  local value = instructions .. priority .. "\n" .. (review and review_contract or contract) .. "\nUNTRUSTED SNAPSHOT JSON:\n"
     .. (context or M.context(snapshot)) .. "\nFOCUSED TARGET JSON:\n" .. vim.json.encode(snapshot.target)
   local bytes = #value
   if bytes > max_bytes then
-    local guidance = snapshot.context and snapshot.context.strategy == "focused"
+    local guidance = review
+      and "Filter Diffview to reduce the explicit comparison, increase the budget, or request file/hunk scope. Nothing was omitted. "
+      or snapshot.context and snapshot.context.strategy == "focused"
       and "Mandatory target and request overhead cannot fit supplied coverage. No target was truncated. "
       or "Increase the budget or select a smaller explicit comparison. Nothing was omitted. "
     return nil, string.format("Complete prompt is %d UTF-8 bytes; context.max_bytes is %d. "

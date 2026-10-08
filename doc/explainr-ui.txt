@@ -1,5 +1,42 @@
 *explainr-ui.txt*  Row-aligned explanations
 
+REVIEW AND FILE MODES
+
+Diff readers have two modes in the same right-hand pane. File is the aligned
+overview/detail described below. Review is independently scrollable, read-only
+Markdown for the entire comparison, with visible markers and native wrapping.
+It has no anchor rails, source dimming, source-linked cursor or scrolling.
+Optional Markdown parsers improve highlighting but are not required.
+
+:ExplainrDiff review generates the whole review and its per-file explanations.
+:ExplainrReview and require("explainr").review() only display a retained review
+or its empty/pending/failed/stale state; they never generate one. A buffer-local
+<Plug>(ExplainrReview) is available in File, detail, and Review for user mappings.
+No global shortcut is installed. Example display-only shortcut: >
+  vim.keymap.set("n", "<leader>aV", "<cmd>ExplainrReview<cr>")
+<
+Review controls: >
+  Enter             Follow a host-rendered file reference (not arbitrary prose)
+  Esc               Return to the selected File overview
+  q                 Close the reader
+<
+References use the original comparison entries, including renamed, deleted,
+binary and empty files, rather than opening guessed working-tree paths.
+Diffview navigation/explorer mappings also work in Review, respecting remapped
+or disabled bindings. Only an actual selected-file change switches to File;
+a no-op next/previous action at a list boundary leaves Review untouched.
+Returning to the same narrative restores its reading position. A replacement
+narrative starts at the beginning, without stealing focus or switching modes.
+Background File updates do not interrupt Review; a fresh File replacement waits
+until expanded detail exits. Stale detail is cleared rather than retained.
+Winbars identify the mode, request state and Auto, and distinguish background
+work from selected-file loading. The editor's statusline remains untouched.
+While a review is pending, its body shows the same faint tint and animated rail
+as File loading, including before a narrative exists. These decorations follow
+the narrative viewport, not source ranges. Accepted prose and reading position
+stay intact; the focused cursor row does not repaint. The loader clears when
+the request ends or Review is hidden. It indicates activity, not a percentage.
+
 The explanation window is read-only and opens at the far right, outside both
 old/new diff panes, even when triggered from old. Blank rows preserve
 the source's display geometry. Its logical line count matches the whole source,
@@ -50,7 +87,8 @@ Neovim run. A file with no saved notes shows "No explanations". Returning to an
 explained file shows "Checking saved explanations", then "Ready · restored"
 after its original context is revalidated. By default, navigation does not infer.
 Real context changes instead clear the affected notes and show Stale. Pending
-requests for the file being left are cancelled; accepted batches are preserved.
+requests remain owned by the comparison when leaving a file; their results are
+retained for the original target without replacing another file's reader.
 Tab never expands/collapses an explanation, and code mode leaves it unmapped.
 
 With diff.auto_explain=true, an already open diff explanation pane requests a

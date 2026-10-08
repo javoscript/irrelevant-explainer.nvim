@@ -17,6 +17,39 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state:match("^review%-reader") then
+  local api = vim.api
+  local source = api.nvim_get_current_win()
+  api.nvim_buf_set_lines(0, 0, -1, false, { "-- A comparison stays visible while reading.",
+    "local policy = require('policy')", "", "return policy.allow(request)" })
+  vim.bo.filetype = "lua"
+  local p = require("explainr.ui").open(source, { windows = { new = source } }, { notes = {} })
+  p.mode, p.auto_explain = "diff", true
+  local narrative = { title = "Centralize authorization policy", sections = {
+    { heading = "Policy and caller now share one decision", intent_basis = "inferred",
+      detail = "The caller delegates authorization to **policy.allow** rather than duplicating the check.\n\n"
+        .. "This keeps the behavior consistent across entry points. The supplied tests describe the expected denial path; they do not prove the tests ran.",
+      file_ids = { "policy", "caller" } },
+    { heading = "Scope and caveats", intent_basis = "unknown",
+      detail = "The comparison includes a binary asset with no textual annotations. No source ranges are invented for it.",
+      file_ids = { "asset" } },
+  } }
+  local manifest = { { file_id = "policy", path = "policy.lua", oldpath = "access.lua" },
+    { file_id = "caller", path = "caller.lua" },
+    { file_id = "asset", path = "badge.png", text_unavailable = "binary version" } }
+  local state = vim.g.capture_state
+  local status = state:find("pending") and "Pending · comparison · 2 files"
+    or state:find("stale") and "Stale · regenerate review"
+    or state:find("failed") and "Failed · see :messages"
+    or state:find("empty") and "No review · :ExplainrDiff review" or "Ready"
+  p:set_review(not state:find("empty") and not state:find("stale") and narrative or nil, manifest, status)
+  p:show_review()
+  if state:find("narrow") then api.nvim_win_set_width(p.win, 32) end
+  if state:find("background") then p.background = "Generating caller.lua"; p:header() end
+  _G.capture_pane = p
+  vim.cmd("redraw!")
+  return
+end
 if vim.g.capture_state:match("^source%-window%-") then
   local api = vim.api
   local source, buf = api.nvim_get_current_win(), api.nvim_get_current_buf()
@@ -800,9 +833,28 @@ if vim.g.capture_state:match("^diff") then
     plugin.diff("hunk")
     assert(vim.wait(5000, function() return capture_pane.pending and capture_pane.pending.snapshot ~= nil end),
       capture_pane.status)
-  elseif vim.g.capture_state == "diff-detail" or vim.g.capture_state == "diff-detail-back" then
+  elseif vim.g.capture_state == "diff-detail" or vim.g.capture_state == "diff-detail-back"
+      or vim.g.capture_state == "diff-detail-background" then
     capture_pane:jump(1); capture_pane:detail()
     if vim.g.capture_state == "diff-detail-back" then capture_pane:back() end
+    if vim.g.capture_state == "diff-detail-background" then
+      capture_pane.background = "Running docs/adr.md"; capture_pane:header()
+    end
+  elseif vim.g.capture_state == "diff-review-return" then
+    local manifest = session.snapshot.comparison.manifest
+    local entry
+    for _, item in ipairs(manifest) do if item.path == "policy.lua" then entry = item end end
+    capture_pane:set_review({ title = "Change narrative", sections = {
+      { heading = "Cancellation policy", detail = "The policy and requirements change together.",
+        intent_basis = "inferred", file_ids = { assert(entry).file_id } },
+    } }, manifest, "Ready")
+    capture_pane:show_review()
+    for row in pairs(capture_pane.review_references) do
+      vim.api.nvim_set_current_win(capture_pane.win)
+      vim.api.nvim_win_set_cursor(capture_pane.win, { row, 0 }); vim.cmd("normal \r")
+      break
+    end
+    assert(not capture_pane.review_mode and capture_pane.result)
   elseif vim.g.capture_state == "diff-scroll" then
     capture_pane:scroll(vim.api.nvim_replace_termcodes("<C-d>", true, false, true))
   elseif vim.g.capture_state == "diff-stale" then

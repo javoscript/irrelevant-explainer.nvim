@@ -58,6 +58,121 @@ local function key(buf, lhs)
   error("missing mapping " .. lhs)
 end
 
+T.test("Review is independent, preserves reading position, and follows only host references", function()
+  local lines = {}; for row = 1, 100 do lines[row] = "source " .. row end
+  local source = setup(lines)
+  local navigation = 0
+  local p = ui.open(source, { windows = { new = source } }, { notes = { note(2, "File note", "new") } }, nil,
+    function(buf)
+      vim.keymap.set("n", "<Tab>", function() navigation = navigation + 1 end, { buffer = buf })
+    end)
+  p.mode, p.auto_explain = "diff", true
+  local manifest = { { file_id = "a", path = "new.lua", oldpath = "old.lua" },
+    { file_id = "b", path = "image.png", text_unavailable = "binary version" } }
+  local narrative = { title = "Whole comparison", sections = { { heading = "Connected changes", intent_basis = "inferred",
+    detail = string.rep("Independent prose, not an executable [link](evil).\n\n", 25), file_ids = { "a", "b" } } } }
+  p:set_review(narrative, manifest, "Ready")
+  T.eq(false, p.review_mode)
+  local focus = api.nvim_get_current_win()
+  p:show_review(); T.eq(focus, api.nvim_get_current_win())
+  assert(state(p):find("Review · Auto", 1, true)); assert(not state(p):find("1 /", 1, true))
+  T.eq("explainr", vim.bo[p.review_buf].filetype); T.eq(false, vim.bo[p.review_buf].modifiable)
+  T.eq(true, vim.wo[p.win].wrap); T.eq("", vim.wo[p.win].statuscolumn)
+  local source_view = api.nvim_win_call(source, vim.fn.winsaveview)
+  motion(p.win, "30Gzt"); p:sync(p.win)
+  T.eq(source_view, api.nvim_win_call(source, vim.fn.winsaveview))
+  local view = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  motion(source, "50Gzt"); p:sync(source)
+  T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
+  local tick = api.nvim_buf_get_changedtick(p.review_buf)
+  p:set_review(narrative, manifest, "Pending · comparison")
+  p:set({ notes = { note(3, "Replacement", "new") } }, "Ready")
+  T.eq(true, p.review_mode); T.eq(tick, api.nvim_buf_get_changedtick(p.review_buf))
+  T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
+  key(p.review_buf, "<Tab>"); T.eq(1, navigation); T.eq(true, p.review_mode)
+  local selected
+  p.on_reference = function(entry) selected = entry end
+  api.nvim_win_set_cursor(p.win, { 1, 0 }); key(p.review_buf, "<CR>"); T.eq(nil, selected)
+  for row, entry in pairs(p.review_references) do
+    api.nvim_win_set_cursor(p.win, { row, 0 }); key(p.review_buf, "<CR>"); T.eq(entry, selected)
+  end
+  motion(p.win, "30Gzt"); view = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  p.on_file = function() p:show_file() end
+  key(p.review_buf, "<Esc>"); T.eq(false, p.review_mode); T.eq("Replacement", p.result.notes[1].summary)
+  p.on_review = function() p:show_review() end
+  key(p.buf, "<Plug>(ExplainrReview)")
+  T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
+  local replacement = vim.deepcopy(narrative); replacement.title = "Fresh comparison"
+  p:set_review(replacement, manifest, "Ready"); T.eq(1, api.nvim_win_get_cursor(p.win)[1])
+  p:set_review(nil, manifest, "Stale · regenerate review")
+  assert(state(p):find("Stale", 1, true)); T.eq({}, p.review_references)
+  local review_buf = p.review_buf
+  p:close(); T.eq(false, api.nvim_buf_is_valid(review_buf))
+end)
+
+T.test("Review loading animates empty and retained narratives without rewriting or moving readers", function()
+  local source = setup({ "one", "two", "three" })
+  local p = ui.open(source, { windows = { new = source } }, { notes = {} })
+  local namespace = api.nvim_create_namespace("explainr.loading")
+  local function decorations()
+    return api.nvim_buf_get_extmarks(p.review_buf, namespace, 0, -1, { details = true })
+  end
+  p:set_review(nil, {}, "Pending · collecting comparison")
+  p:show_review(); p:stop_spinner()
+  local empty = decorations()
+  assert(#empty > 0 and #empty[#empty][4].virt_lines > 0, "empty viewport must animate")
+  local narrative = { title = "Retained review", sections = { { heading = "Why", intent_basis = "inferred",
+    detail = string.rep("Long prose that wraps independently of the source. ", 12) .. string.rep("\nMore context.", 50),
+    file_ids = {} } } }
+  p:set_review(narrative, {}, "Ready")
+  T.eq({}, decorations())
+  motion(p.win, "12Gzt")
+  local view = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  local source_view = api.nvim_win_call(source, vim.fn.winsaveview)
+  local tick = api.nvim_buf_get_changedtick(p.review_buf)
+  p:set_review(narrative, {}, "Pending · generating comparison"); p:stop_spinner()
+  local first = decorations()
+  assert(#first > 1)
+  for _, mark in ipairs(first) do assert(mark[2] ~= 11, "focused cursor row must not repaint") end
+  p.frame = p.frame + 6; p:state()
+  assert(first[1][4].sign_hl_group ~= decorations()[1][4].sign_hl_group, "rail must animate")
+  T.eq(tick, api.nvim_buf_get_changedtick(p.review_buf))
+  T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
+  T.eq(source_view, api.nvim_win_call(source, vim.fn.winsaveview))
+  p:show_file(); T.eq({}, decorations())
+  p:show_review(); assert(#decorations() > 0)
+  for _, status in ipairs({ "Ready", "Failed", "Cancelled", "Stale" }) do
+    p:set_review(narrative, {}, status)
+    T.eq({}, decorations()); T.eq(nil, p.timer)
+    p:set_review(narrative, {}, "Pending · comparison")
+  end
+  p:close(); T.eq(nil, p.timer)
+end)
+
+T.test("File detail defers fresh replacements and status-only updates do not reset readers", function()
+  local source = setup({ "one", "two", "three" })
+  local original = { notes = { note(2, "Original", "new") } }
+  local p = ui.open(source, { windows = { new = source } }, original)
+  p:detail(1)
+  local detail, tick = p.detail_buf, api.nvim_buf_get_changedtick(p.detail_buf)
+  local view = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  p.background = "Generating other.lua"
+  p:set_status("Ready")
+  local fresh = { notes = { note(3, "Fresh", "new") } }
+  p:set(fresh, "Ready")
+  T.eq(original, p.result); T.eq(detail, p.detail_buf); T.eq(tick, api.nvim_buf_get_changedtick(detail))
+  T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
+  p:back(); T.eq(fresh, p.result)
+  p:detail(1); p:set(nil, "Stale")
+  T.eq(nil, p.detail_buf); T.eq(nil, p.result)
+  p:set(fresh, "Ready"); p:detail(1)
+  p.on_review = function() p:show_review() end
+  key(p.detail_buf, "<Plug>(ExplainrReview)")
+  T.eq(true, p.review_mode); T.eq(nil, p.detail_buf)
+  assert(table.concat(api.nvim_buf_get_lines(p.review_buf, 0, -1, false), "\n"):find(":ExplainrDiff review", 1, true))
+  p:close()
+end)
+
 T.test("automatic header indicator survives every state and narrow widths without changing status integrations", function()
   local lines = {}; for row = 1, 100 do lines[row] = "source line " .. row end
   local source = setup(lines)
@@ -2331,6 +2446,8 @@ T.test("in-pane detail navigation syncs code and collapse retains the current ex
   p:back(); key(p.buf, "<CR>")
   local detail = p.detail_buf
   p:set({ notes = { a, b, note(90) } }, "Ready")
+  T.eq(true, api.nvim_buf_is_valid(detail)); T.eq(detail, api.nvim_win_get_buf(p.win))
+  p:back() -- A fresh completion waits until the active reader exits.
   T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(p.buf, api.nvim_win_get_buf(p.win))
   T.eq({ 3 }, p.rows[90]); T.eq({ 1 }, p.rows[40])
   key(p.buf, "q"); T.eq(true, p.closed); T.eq(false, api.nvim_buf_is_valid(p.buf))
@@ -2952,7 +3069,11 @@ T.test("detail gutter restores across collapse replacement and last-window clean
     p:detail(1)
     local detail = p.detail_buf
     T.eq("S ", vim.wo[source].statuscolumn)
-    if replace then p:set(result, "Ready") else p:back() end
+    if replace then
+      p:set(vim.deepcopy(result), "Ready")
+      T.eq(detail, p.detail_buf)
+    end
+    p:back()
     T.eq("O ", vim.wo[p.win].statuscolumn)
     T.eq(false, api.nvim_buf_is_valid(detail))
   end
@@ -3660,6 +3781,21 @@ T.test("folded rows count every explanation rather than navigation stops", funct
   assert(vim.wo[p.win].winbar:find("1–3 / 4", 1, true), vim.wo[p.win].winbar)
   key(p.detail_buf, "n")
   assert(vim.wo[p.win].winbar:find("2 / 4", 1, true), vim.wo[p.win].winbar)
+  p:close()
+end)
+
+T.test("File header keeps terminal status readable before branding", function()
+  local source = setup({ "one", "two", "three" })
+  api.nvim_win_set_cursor(source, { 3, 0 })
+  local p = ui.open(source, { windows = { new = source } }, { notes = { note(1, "First", "new"), note(2, "Second", "new") } })
+  for _, status in ipairs({ "Failed", "Stale", "Cancelled" }) do
+    for width = 60, 68 do
+      api.nvim_win_set_width(p.win, width)
+      p:set_status(status .. " · see :messages")
+      assert(state(p):find("File · 2 explanations", 1, true), state(p))
+      assert(state(p):find(status, 1, true), state(p))
+    end
+  end
   p:close()
 end)
 

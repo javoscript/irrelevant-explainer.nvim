@@ -26,6 +26,22 @@ local function entry_info(entry)
   return { path = entry.path, oldpath = entry.oldpath or entry.path, status = entry.status, kind = entry.kind }
 end
 
+-- Whole-review actions belong to the comparison, not the tree's cursor row.
+-- Resolve its real source without selecting an entry or transferring focus.
+function M.review_source(win)
+  if vim.bo[api.nvim_win_get_buf(win)].filetype ~= "DiffviewFiles" then return win end
+  local ok, source = pcall(api.nvim_win_call, win, function()
+    local view = require("diffview.lib").get_current_view()
+    assert(view and view.valid and not view.closing:check() and view.panel and view.panel.winid == win,
+      "no live Diffview file panel")
+    assert(view.cur_layout and view.cur_layout.b and api.nvim_win_is_valid(view.cur_layout.b.id),
+      "Diffview source panes are unavailable; select a file first")
+    return view.cur_layout.b.id
+  end)
+  if ok then return source end
+  return nil, "Diffview comparison unavailable: " .. tostring(source)
+end
+
 local function current(win)
   win = (win == nil or win == 0) and api.nvim_get_current_win() or win
   assert(api.nvim_win_is_valid(win), "source window is unavailable")
@@ -127,6 +143,49 @@ function M.selection(win)
         and view.options.show_untracked ~= false }
   end)
   if ok then return value end
+end
+
+-- Inspect ownership without requiring the selected replacement panes to load.
+function M.detached(state)
+  local source = state.source
+  if not api.nvim_win_is_valid(source) and state.tabpage and api.nvim_tabpage_is_valid(state.tabpage) then
+    source = api.nvim_tabpage_list_wins(state.tabpage)[1]
+  end
+  local selection = source and M.selection(source)
+  assert(selection and selection.cwd == state.cwd and vim.deep_equal(selection.pair, state.pair)
+    and selection.selected.kind == state.selected.kind and vim.deep_equal(selection.path_args, state.path_args)
+    and selection.show_untracked == state.show_untracked, "Diffview comparison changed during collection")
+  local copy = vim.deepcopy(state)
+  copy.detached = true
+  local module = package.loaded["diffview.vcs.file"]
+  if module and (state.pair.old.type == "stage" or state.pair.new.type == "stage") then
+    local maps = module.File.index_bufmap
+    copy.stage_buffers = vim.deepcopy(maps[state.cwd] or maps[vim.uv.fs_realpath(state.cwd)] or {})
+  end
+  return copy
+end
+
+function M.select(source, manifest_entry)
+  local ok, err = pcall(api.nvim_win_call, source, function()
+    local lib = assert(package.loaded["diffview.lib"], "Diffview is unavailable")
+    local view = lib.get_current_view()
+    assert(view and view.valid and not view.closing:check(), "Diffview comparison is unavailable")
+    local comparison = pair(view.cur_entry)
+    assert(manifest_entry.kind == view.cur_entry.kind
+      and vim.deep_equal(manifest_entry.comparison, comparison),
+      "Review comparison changed")
+    local found
+    for _, entry in view.files:iter() do
+      if entry.path == manifest_entry.path and (entry.oldpath or entry.path) == manifest_entry.oldpath
+        and entry.kind == manifest_entry.kind and vim.deep_equal(pair(entry), comparison) then
+        assert(not found, "Ambiguous review file identity")
+        found = entry
+      end
+    end
+    assert(found, "Review file is no longer in the comparison")
+    view:set_file(found)
+  end)
+  return ok, not ok and tostring(err) or nil
 end
 
 -- Copy only navigation/explorer bindings, never attach notes to a diff layout.

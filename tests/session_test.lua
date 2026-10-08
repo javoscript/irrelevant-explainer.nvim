@@ -202,10 +202,11 @@ T.test("diff results and cache wait for coalesced freshness; stale and cancelled
       local replacement = plugin.diff("file"); collect()
       T.eq(pending, replacement); checks[5](true)
       T.eq(accepted, replacement.pane.result)
-      checks[6](true); T.eq("Ready · cached", replacement.pane.status); T.eq(3, #launches)
+      T.eq("Ready · no notes", replacement.pane.status); T.eq(3, #launches)
+      T.eq(0, #replacement.queue) -- Identical pending target was deduplicated, not superseded.
 
       local closing = plugin.refresh(); collect(); launches[4](answer)
-      plugin.close(); checks[7](true)
+      plugin.close(); checks[6](true)
       T.eq(accepted, closing.pane.result); T.eq(nil, sessions.current())
     end, debug.traceback)
     plugin.close()
@@ -559,7 +560,8 @@ T.test("all retained diff captures are watched and pending data is checked after
       return snapshot.capture.epoch ~= "second"
     end)
     T.eq({ first = true, second = true, latest = true }, checked)
-    T.eq(nil, s.pane.result); assert(s.pane.status:find("Stale"))
+    T.eq({ "first", "latest" }, vim.tbl_map(function(n) return n.summary end, s.pane.result.notes))
+    assert(s.pane.status:find("Stale"))
 
     plugin.diff("hunk"); f.collect(f.snapshot(1, "fresh")); f.answer("fresh"); f.drain()
     plugin.diff("hunk"); f.collect(f.snapshot(4, "pending")); f.answer("pending")
@@ -567,7 +569,8 @@ T.test("all retained diff captures are watched and pending data is checked after
     T.eq("fresh", old_check.snapshot.capture.epoch)
     -- Simulate new data becoming stale during that outstanding older read.
     f.drain(function(snapshot) return snapshot.capture.epoch ~= "pending" end)
-    T.eq(nil, s.pane.result); T.eq(nil, s.pane.pending); assert(s.pane.status:find("Stale"))
+    T.eq({ "fresh", "latest" }, vim.tbl_map(function(n) return n.summary end, s.pane.result.notes))
+    T.eq(nil, s.pane.pending); assert(s.pane.status:find("Stale"))
   end)
 end)
 
@@ -580,7 +583,7 @@ T.test("diff collection failure retains batches and cancelled collections cannot
     superseded.callback(f.snapshot(4)); T.eq(1, #f.launches)
     f.collections[#f.collections].callback(nil, "ordinary collection failure")
     T.eq(accepted, s.pane.result); T.eq(nil, s.pane.pending); f.drain()
-    T.eq("ordinary collection failure", f.errors[#f.errors])
+    T.eq(f.state.selected.path .. ": ordinary collection failure", f.errors[#f.errors])
     T.eq(s, plugin.diff("hunk")); local cancelled = f.collections[#f.collections]
     plugin.cancel(); cancelled.callback(f.snapshot(4))
     T.eq(1, #f.launches); T.eq(accepted, s.pane.result); T.eq(nil, s.pane.pending)
@@ -629,6 +632,26 @@ T.test("pending hunks append in request order across collection and inference, p
   end)
 end)
 
+T.test("promoting automatic work keeps explicit FIFO order despite out-of-order collection", function()
+  diff_fixture(function(f)
+    local s = plugin.diff("hunk"); f.collect(f.snapshot(1))
+    sessions.start("diff", "file", { automatic = true })
+    local automatic = s.automatic
+    f.collect(f.snapshot(2, nil, nil, 2), 2)
+    plugin.diff("file") -- Explicitly request the automatic candidate.
+    plugin.diff("hunk") -- A later explicit request collects first.
+    f.collect(f.snapshot(3, nil, nil, 4), 4)
+    f.collect(f.snapshot(2, nil, nil, 3), 3)
+    T.eq(nil, s.automatic); T.eq(automatic, s.queue[1]); T.eq(2, #s.queue)
+    f.answer("first"); f.drain()
+    T.eq(2, s.pending.snapshot.target.anchors[1].start_line)
+    f.answer("promoted"); f.drain()
+    T.eq(3, s.pending.snapshot.target.anchors[1].start_line)
+    f.answer("last"); f.drain()
+    T.eq(3, #f.launches)
+  end)
+end)
+
 T.test("hunk queue skips collection and agent failures, then merges cached targets without duplicate notes", function()
   diff_fixture(function(f)
     local s = plugin.diff("hunk"); f.collect(f.snapshot(2)); f.answer("accepted"); f.drain()
@@ -637,7 +660,7 @@ T.test("hunk queue skips collection and agent failures, then merges cached targe
     plugin.diff("hunk"); f.collect(f.snapshot(2)) -- Cached target queued after failure.
     plugin.diff("hunk"); f.collect(f.snapshot(4))
     f.launches[2].callback(nil, "agent failed"); f.drain()
-    T.eq({ "agent failed", "queued collection failed" }, f.errors)
+    T.eq({ f.state.selected.path .. ": agent failed", f.state.selected.path .. ": queued collection failed" }, f.errors)
     T.eq(1, #s.batches); T.eq("accepted", s.pane.result.notes[1].summary)
     T.eq(3, #f.launches); T.eq(4, s.pending.snapshot.target.anchors[1].start_line)
     f.answer("last"); f.drain()
@@ -723,7 +746,7 @@ T.test("Diffview closure owns its background session, cancels immediately, and l
   end)
 end)
 
-T.test("diff revision layout buffer and mode ownership changes never carry annotations", function()
+T.test("diff revision and mode changes cancel ownership while recreated display bindings do not", function()
   diff_fixture(function(f)
     local s = plugin.diff("hunk"); f.collect(f.snapshot(2)); f.answer("initial"); f.drain()
     plugin.diff("hunk"); local active = f.collections[#f.collections]
@@ -734,10 +757,10 @@ T.test("diff revision layout buffer and mode ownership changes never carry annot
     active.callback(f.snapshot(4)); queued.callback(f.snapshot(5)); T.eq(1, #f.launches)
     f.collect(f.snapshot(2, "revision")); f.answer("revised"); f.drain(); T.eq(1, #revised.batches)
     f.state.windows.old, f.state.windows.new = f.state.windows.new, f.state.windows.old
-    local layout = plugin.diff("hunk"); T.eq(true, revised.closed); T.eq(nil, layout.pane.result)
+    local layout = plugin.diff("hunk"); T.eq(revised, layout); T.eq(nil, revised.closed)
     f.collect(f.snapshot(2, "layout")); f.answer("layout"); f.drain()
     f.state.panes.old.buf = f.state.panes.new.buf
-    local buffers = plugin.diff("hunk"); T.eq(true, layout.closed); T.eq(nil, buffers.pane.result)
+    local buffers = plugin.diff("hunk"); T.eq(layout, buffers); T.eq(nil, layout.closed)
     f.collect(f.snapshot(2, "buffers")); f.answer("buffers"); f.drain()
     local code = plugin.code("file"); T.eq(true, buffers.closed); T.eq(nil, code.pane.result)
     f.answer("code"); T.eq(1, #code.batches); T.eq("code", code.batches[1].snapshot.mode)

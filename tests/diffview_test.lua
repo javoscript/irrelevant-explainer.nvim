@@ -26,7 +26,7 @@ if vim.env.EXPLAINR_DIFFVIEW_CHILD ~= "1" then
     local result = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n",
       "-c", "luafile tests/run.lua" }, {
       cwd = vim.fn.getcwd(), env = { EXPLAINR_TEST = "tests/diffview_test.lua", EXPLAINR_DIFFVIEW_CHILD = "1",
-        EXPLAINR_DIFFVIEW_PATH = runtime } }):wait(120000)
+        EXPLAINR_DIFFVIEW_PATH = runtime } }):wait(240000)
     print((result.stdout or "") .. (result.stderr or ""))
     assert(result.code == 0 and result.signal == 0,
       string.format("isolated real Diffview tests failed (code=%s, signal=%s)", result.code, result.signal))
@@ -142,7 +142,7 @@ T.test("real Diffview roles revisions async guard file switches and notes source
       local next_state = adapter.current(view.cur_layout.b.id)
       return next_state and next_state.selected.path == "doc.md"
     end, 20))
-    T.eq(false, diff.fresh(s))
+    T.eq(true, diff.fresh(s)) -- Selection changes display, not comparison content.
     dv.close(); T.eq(false, diff.fresh(s))
     -- Both staged and working sets are in this real view, but their endpoint
     -- pairs must never be combined or replaced with a default `git diff`.
@@ -437,15 +437,15 @@ local function replacement_reader(geometry_first)
     -- from notes so it resolves the retained source, not a Markdown cursor.
     api.nvim_set_current_win(s.pane.win)
     local replacement = plugin.diff("file")
-    T.eq(true, s.closed); T.eq(true, active.cancelled)
-    T.eq(nil, s.pending); T.eq(nil, s.pane.detail_buf)
-    T.eq(1, replacement.pending.row); T.eq(nil, replacement.pane.result)
+    T.eq(s, replacement); T.eq(nil, s.closed); T.eq(nil, active.cancelled)
+    T.eq(nil, s.pane.detail_buf)
+    T.eq(1, replacement.queue[1].row); T.eq(nil, replacement.pane.result)
     for win, cursor in pairs(cursors) do T.eq(cursor, api.nvim_win_get_cursor(win)) end
     vim.schedule = schedule
     for _, item in ipairs(deferred) do
       if not geometry_first or not item.ui then item.callback() end
     end
-    active.callback(nil, "late replaced failure")
+    answer(active) -- Off-screen success is retained, then B starts.
     assert(vim.wait(5000, function() return #jobs == 3 end), replacement.pane.status)
     T.eq("openspec/spec.md", jobs[3].target.path)
     answer(jobs[3])
@@ -616,14 +616,17 @@ T.test("opt-in Diffview navigation requests files once while open and reuses or 
     local changed = job(3); T.eq("file", changed.target.scope)
     answer(changed); ready(session, "policy.lua") -- Stale saved notes are re-explained on navigation.
     fixture:switch("docs/adr.md"); local abandoned = job(4)
-    fixture:switch("tests/policy.txt"); local current = job(5)
-    T.eq(true, abandoned.cancelled)
+    fixture:switch("tests/policy.txt"); events(); T.eq(4, #jobs)
+    T.eq(nil, abandoned.cancelled)
     answer(abandoned); T.eq(nil, session.pane.result)
+    local current = job(5)
     answer(current); ready(session, "tests/policy.txt")
     fixture:switch("docs/adr.md")
+    ready(session, "docs/adr.md"); T.eq(5, #jobs)
+    plugin.refresh()
     job(6).callback(nil, "Fixture provider failure")
     assert(vim.wait(5000, function() return session.pane.status:match("^Failed") end))
-    events(); T.eq(6, #jobs); T.eq("Fixture provider failure", errors[#errors])
+    events(); T.eq(6, #jobs); T.eq("docs/adr.md: Fixture provider failure", errors[#errors])
     plugin.cancel(); events(); T.eq(6, #jobs)
     plugin.close(); fixture:switch("policy.lua"); events()
     T.eq(6, #jobs); T.eq(nil, require("explainr.session").current())
@@ -951,10 +954,9 @@ T.test("real Diffview whole-review fake-agent flow evidence deletion geometry an
     fixture:git("add", "--", "tests/policy.txt"); stale(s); T.eq(3, calls)
     config("explain-slow"); local late = plugin.refresh()
     fixture:switch("openspec/spec.md")
-    -- Switching during initial collection can fail its capture guard before
-    -- there is a pending snapshot to label stale. Neither outcome installs it.
+    -- Collection continues for policy.lua, but cannot display it on the spec.
     assert(vim.wait(4000, function()
-      return late.closed or late.pane.status:match("^No explanations") or late.pane.status:match("^Failed")
+      return not late.pending
     end), late.pane.status)
     T.eq(nil, late.pane.result); T.eq(nil, late.invocation)
     config("explain"); local next_file = plugin.diff("file"); ready(next_file)
@@ -974,11 +976,12 @@ T.test("real Diffview whole-review fake-agent flow evidence deletion geometry an
     fixture:switch("policy.lua")
     config("nonzero"); local bad = plugin.diff("file")
     assert(vim.wait(5000, function() return bad.pane.status:find("Failed", 1, true) ~= nil end))
-    T.eq(nil, bad.pane.result); assert(errors[#errors]:find("authentication", 1, true))
+    assert(bad.pane.result); assert(errors[#errors]:find("authentication", 1, true))
+    local preserved = vim.deepcopy(bad.pane.result)
     local count = calls
     config("review", 500, "review"); local budget = plugin.refresh()
     assert(vim.wait(5000, function() return budget.pane.status:find("Failed", 1, true) ~= nil end), budget.pane.status)
-    T.eq(count, calls); T.eq(nil, budget.pane.result); assert(errors[#errors]:find("Complete prompt", 1, true))
+    T.eq(count, calls); T.eq(preserved, budget.pane.result); assert(errors[#errors]:find("Complete prompt", 1, true))
     -- Auto fallback through the public session, with real Diffview and a fake
     -- agent. A large unrelated change must not crowd out the chosen hunk/spec.
     fixture:write("src/unrelated.lua", string.rep("unrelated\n", 20000))
@@ -1072,4 +1075,274 @@ T.test("real Diffview old-triggered pane stays far right and queues pending hunk
   end, debug.traceback)
   fixture:close(); vim.o.columns, agent.run, vim.notify = old_columns, old_run, old_notify
   assert(ok, err)
+end)
+
+local function whole_review_fixture(run, reference_variants)
+  local plugin, agent = require("explainr"), require("explainr.agent")
+  local original, notify, columns = agent.run, vim.notify, vim.o.columns
+  local f = { jobs = {}, errors = {} }
+  vim.o.columns = 220
+  f.fixture = dofile("tests/review.lua").open(true, reference_variants)
+  agent.run = function(prompt, config, _, callback)
+    local job = { target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)")),
+      context = vim.json.decode(prompt:match("UNTRUSTED SNAPSHOT JSON:\n(.-)\nFOCUSED TARGET JSON:")),
+      config = config, callback = callback }
+    job.cancel = function() job.cancelled = true end
+    f.jobs[#f.jobs + 1] = job
+    return job
+  end
+  vim.notify = function(message) f.errors[#f.errors + 1] = message end
+  function f:job(n)
+    assert(vim.wait(7000, function() return #self.jobs >= n end), vim.inspect(self.errors))
+    T.eq(n, #self.jobs)
+    return self.jobs[n]
+  end
+  function f:answer(n, label)
+    local job = self.jobs[n]
+    local function notes(target)
+      if target.path == "tests/policy.txt" then return {} end
+      return { { summary = (label or "Explains") .. " " .. target.path,
+        detail = "A complete explanation of `" .. target.path .. "`.\n\n" .. string.rep("Read the supplied evidence.\n\n", 20),
+        anchors = { target.anchors[1] }, intent_basis = "unknown", evidence = {} } }
+    end
+    if job.target.scope == "review" then
+      local value = { version = 2, review = { title = label or "Owner-only cancellation", sections = {} }, files = {} }
+      for _, target in ipairs(job.target.files) do
+        value.files[#value.files + 1] = { file_id = target.file_id, notes = notes(target) }
+      end
+      value.review.sections[1] = { heading = "How the files connect", detail = string.rep("The policy, requirement and tests describe cancellation.\n\n", 30),
+        intent_basis = "documented", evidence = { { path = "openspec/spec.md", side = "new", start_line = 2, end_line = 2 } },
+        file_ids = vim.tbl_map(function(entry) return entry.file_id end, job.context.comparison.manifest) }
+      job.callback(value)
+    else job.callback({ version = 1, notes = notes(job.target) }) end
+  end
+  function f:settled(s)
+    assert(vim.wait(10000, function() return not s.pending and not s.restoration and not s.checking end),
+      s.pane.status .. " / " .. tostring(s.review_status) .. " / " .. vim.inspect(self.errors))
+  end
+  function f:select(path, s)
+    self.fixture:switch(path)
+    assert(vim.wait(5000, function()
+      return s.review_key == vim.inspect({ self.fixture.state.cwd, self.fixture.state.pair,
+        self.fixture.state.path_args, self.fixture.state.show_untracked, path, path, self.fixture.state.selected.kind })
+        and not s.restoring
+    end), s.pane.status)
+  end
+  plugin.setup()
+  local ok, err = xpcall(function() run(f, plugin) end, debug.traceback)
+  f.fixture:close()
+  agent.run, vim.notify, vim.o.columns = original, notify, columns
+  assert(ok, err)
+end
+
+T.test("whole-review commands work from the Diffview file tree without moving focus or selection", function()
+  whole_review_fixture(function(f, plugin)
+    require("diffview.actions").focus_files()
+    local panel = f.fixture.view.panel
+    T.eq(panel.winid, api.nvim_get_current_win())
+    T.eq("DiffviewFiles", vim.bo[api.nvim_get_current_buf()].filetype)
+    local selected = f.fixture.view.cur_entry
+    local tree_view = api.nvim_win_call(panel.winid, vim.fn.winsaveview)
+    -- File/hunk still require a source cursor, not an explorer line number.
+    local state, err = adapter.current(panel.winid)
+    T.eq(nil, state); assert(err:find("source pane", 1, true))
+    vim.cmd("ExplainrReview")
+    local s = require("explainr.session").current()
+    T.eq(true, s.pane.review_mode); T.eq(0, #f.jobs)
+    T.eq(f.fixture.state.source, s.pane.source)
+    vim.cmd("ExplainrDiff review")
+    T.eq("review", f:job(1).target.scope)
+    f:answer(1); f:settled(s)
+    T.eq(panel.winid, api.nvim_get_current_win()); T.eq(selected, f.fixture.view.cur_entry)
+    T.eq(tree_view, api.nvim_win_call(panel.winid, vim.fn.winsaveview))
+    T.eq("Owner-only cancellation", s.pane.review.title)
+    plugin.diff("review"); f:settled(s); T.eq(1, #f.jobs)
+    vim.cmd("ExplainrRefresh"); T.eq("review", f:job(2).target.scope)
+    f:answer(2, "Refreshed from tree"); f:settled(s)
+    T.eq(panel.winid, api.nvim_get_current_win()); T.eq({}, f.errors)
+  end)
+end)
+
+T.test("one review invocation survives collection navigation, distributes every file and supports display-only references", function()
+  whole_review_fixture(function(f, plugin)
+    plugin.setup({ diff = { auto_explain = true }, context = { diff = "focused" } })
+    vim.cmd("ExplainrReview")
+    local s = require("explainr.session").current()
+    T.eq(true, s.pane.review_mode); T.eq(0, #f.jobs)
+    assert(s.pane.review_status:find("No review", 1, true))
+    vim.cmd("ExplainrDiff review")
+    local collection = s.collection
+    f:select("openspec/spec.md", s) -- Before collection has delivered.
+    T.eq(false, collection.cancelled)
+    local job = f:job(1)
+    T.eq("review", job.target.scope); T.eq(4, #job.target.files)
+    T.eq("review", job.context.context.strategy)
+    plugin.diff("review") -- Same target even though a different file is displayed.
+    f:select("docs/adr.md", s)
+    T.eq(nil, job.cancelled); T.eq(false, s.pane.review_mode)
+    local focus = api.nvim_get_current_win()
+    f:answer(1); f:settled(s)
+    T.eq(1, #f.jobs); T.eq(focus, api.nvim_get_current_win()); T.eq(false, s.pane.review_mode)
+    T.eq("Explains docs/adr.md", s.pane.result.notes[1].summary)
+    for _, path in ipairs({ "policy.lua", "tests/policy.txt", "openspec/spec.md" }) do
+      f:select(path, s); f:settled(s)
+      T.eq(1, #f.jobs); T.eq(path, s.snapshot.target.path)
+      if path == "tests/policy.txt" then T.eq(0, #s.pane.result.notes) end
+    end
+    plugin.review(); f:settled(s)
+    T.eq(true, s.pane.review_mode)
+    api.nvim_set_current_win(s.pane.win)
+    api.nvim_win_set_cursor(s.pane.win, { 20, 0 })
+    local reader = api.nvim_win_call(s.pane.win, vim.fn.winsaveview)
+    vim.cmd("normal \27"); T.eq(false, s.pane.review_mode)
+    plugin.review(); T.eq(reader, api.nvim_win_call(s.pane.win, vim.fn.winsaveview))
+    local row
+    for line, entry in pairs(s.pane.review_references) do if entry.path == "policy.lua" then row = line end end
+    api.nvim_win_set_cursor(s.pane.win, { assert(row), 0 }); vim.cmd("normal \r")
+    assert(vim.wait(5000, function() return f.fixture.view.cur_entry.path == "policy.lua" and not s.restoring end))
+    T.eq(false, s.pane.review_mode); T.eq("policy.lua", s.snapshot.target.path); T.eq(1, #f.jobs)
+    plugin.refresh(); T.eq("file", f:job(2).target.scope); f:answer(2); f:settled(s)
+    plugin.review(); plugin.refresh(); T.eq("review", f:job(3).target.scope)
+    f:answer(3, "Fresh narrative"); f:settled(s)
+    T.eq("Fresh narrative", s.pane.review.title)
+    plugin.diff("review"); f:settled(s); T.eq(3, #f.jobs)
+    f.fixture:write("docs/adr.md", "Changed shared rationale.\n")
+    api.nvim_exec_autocmds("TextChanged", {})
+    assert(vim.wait(7000, function() return s.pane.review_status:match("^Stale") end))
+    T.eq(nil, s.pane.review); T.eq(nil, s.pane.result)
+    plugin.refresh(); local late = f:job(4)
+    plugin.close(); T.eq(true, late.cancelled); f:answer(4)
+    vim.wait(100); T.eq(nil, require("explainr.session").current())
+    T.eq({}, f.errors)
+  end)
+end)
+
+T.test("hidden file success and failure preserve another file's expanded reading state", function()
+  whole_review_fixture(function(f, plugin)
+    f.fixture:switch("openspec/spec.md")
+    local s = plugin.diff("file"); f:job(1); f:answer(1); f:settled(s)
+    f:select("policy.lua", s)
+    plugin.diff("file"); local running = f:job(2)
+    f:select("openspec/spec.md", s)
+    api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
+    api.nvim_win_set_cursor(s.pane.win, { 10, 0 })
+    local detail, view, source_view = s.pane.detail_buf, api.nvim_win_call(s.pane.win, vim.fn.winsaveview),
+      api.nvim_win_call(s.pane.source, vim.fn.winsaveview)
+    f:answer(2); f:settled(s)
+    T.eq(nil, running.cancelled); T.eq(detail, s.pane.detail_buf)
+    T.eq(view, api.nvim_win_call(s.pane.win, vim.fn.winsaveview))
+    T.eq(source_view, api.nvim_win_call(s.pane.source, vim.fn.winsaveview))
+    T.eq(s.pane.win, api.nvim_get_current_win()); assert(s.pane.status:match("^Ready"))
+    f:select("policy.lua", s); f:settled(s); T.eq(2, #f.jobs)
+    plugin.refresh(); f:job(3)
+    f:select("openspec/spec.md", s)
+    api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
+    detail = s.pane.detail_buf
+    f.jobs[3].callback(nil, "provider unavailable"); f:settled(s)
+    T.eq(detail, s.pane.detail_buf); assert(s.pane.status:match("^Ready"))
+    T.eq("policy.lua: provider unavailable", f.errors[#f.errors])
+  end)
+end)
+
+T.test("review failure suppresses Auto fallback but continues explicit file work and budget overflow invokes nothing", function()
+  whole_review_fixture(function(f, plugin)
+    plugin.setup({ diff = { auto_explain = true } })
+    local s = plugin.diff("review"); f:job(1)
+    f:select("openspec/spec.md", s)
+    plugin.diff("file")
+    f:select("tests/policy.txt", s)
+    vim.wait(200); T.eq(1, #f.jobs); T.eq(1, #s.queue); T.eq(nil, s.automatic)
+    f.jobs[1].callback('{"version":2,"review":')
+    T.eq("openspec/spec.md", f:job(2).target.path)
+    f:answer(2); f:settled(s)
+    vim.wait(1100); T.eq(2, #f.jobs); T.eq(nil, s.pane.review)
+    plugin.review(); assert(s.pane.review_status:match("^Failed"))
+    plugin.setup({ context = { max_bytes = 100, diff = "focused" } })
+    plugin.refresh(); f:settled(s); T.eq(2, #f.jobs)
+    assert(f.errors[#f.errors]:find("Complete prompt", 1, true))
+    T.eq({ "file", "hunk", "review" }, vim.fn.getcompletion("ExplainrDiff ", "cmdline"))
+  end)
+end)
+
+T.test("Auto coalesces navigation while explicit promotion survives later navigation and disabling", function()
+  whole_review_fixture(function(f, plugin)
+    plugin.setup({ diff = { auto_explain = true } })
+    local s = plugin.diff("file"); f:job(1)
+    f:select("openspec/spec.md", s)
+    assert(vim.wait(7000, function() return s.automatic and s.automatic.collected end))
+    local discarded = s.automatic
+    f:select("docs/adr.md", s)
+    assert(vim.wait(7000, function() return s.automatic and s.automatic.collected end))
+    T.eq(true, discarded.cancelled); T.eq("docs/adr.md", s.automatic.path)
+    plugin.diff("file")
+    assert(vim.wait(7000, function() return not s.automatic and #s.queue == 1 and s.queue[1].collected end))
+    T.eq("docs/adr.md", s.queue[1].path)
+    f:select("tests/policy.txt", s)
+    assert(vim.wait(7000, function() return s.automatic and s.automatic.collected end))
+    plugin.toggle_auto_explain()
+    T.eq(nil, s.automatic); T.eq(1, #s.queue); T.eq(nil, f.jobs[1].cancelled)
+    f:answer(1)
+    T.eq("docs/adr.md", f:job(2).target.path)
+    f:answer(2); f:settled(s)
+    vim.wait(1100); T.eq(2, #f.jobs)
+    f:select("docs/adr.md", s); f:settled(s); T.eq(2, #f.jobs)
+    T.eq("Explains docs/adr.md", s.pane.result.notes[1].summary)
+    T.eq({ "Automatic explanations disabled" }, f.errors)
+  end)
+end)
+
+T.test("review replaces full-file batches but preserves hunks and only reuses matching complete requests", function()
+  whole_review_fixture(function(f, plugin)
+    local s = plugin.diff("file"); f:job(1); f:answer(1, "Original"); f:settled(s)
+    api.nvim_win_set_cursor(s.pane.source, { 4, 0 })
+    plugin.diff("hunk"); f:job(2); f:answer(2, "Hunk"); f:settled(s)
+    T.eq(2, #s.batches)
+    plugin.diff("review"); f:job(3)
+    s.pane:show_file(); s.pane:detail(1)
+    local detail, view = s.pane.detail_buf, api.nvim_win_call(s.pane.win, vim.fn.winsaveview)
+    f:answer(3, "Replacement"); f:settled(s)
+    T.eq(2, #s.batches); T.eq(detail, s.pane.detail_buf)
+    T.eq(view, api.nvim_win_call(s.pane.win, vim.fn.winsaveview))
+    T.eq("Original policy.lua", s.pane.result.notes[1].summary)
+    s.pane:back()
+    T.eq({ "Replacement policy.lua", "Hunk policy.lua" }, vim.tbl_map(function(n) return n.summary end, s.pane.result.notes))
+    f:select("openspec/spec.md", s); f:settled(s)
+    plugin.diff("file"); f:settled(s); T.eq(3, #f.jobs)
+    plugin.setup({ context = { diff = "focused" } })
+    plugin.diff("file"); f:job(4); f:answer(4); f:settled(s)
+    plugin.setup({ ai = { output = function(text) return text end } })
+    plugin.diff("file"); f:job(5); f:answer(5); f:settled(s)
+    T.eq({}, f.errors)
+  end)
+end)
+
+T.test("Review references navigate exact renamed deleted and binary entries without inference", function()
+  whole_review_fixture(function(f, plugin)
+    plugin.setup({ diff = { auto_explain = true } })
+    local s = plugin.diff("review"); f:job(1); f:answer(1); f:settled(s)
+    for _, path in ipairs({ "renamed.txt", "deleted.txt", "badge.bin" }) do
+      plugin.review(); f:settled(s)
+      local row, reference
+      for line, entry in pairs(s.pane.review_references) do
+        if entry.path == path then row, reference = line, entry end
+      end
+      assert(row, "missing reference for " .. path)
+      api.nvim_set_current_win(s.pane.win)
+      api.nvim_win_set_cursor(s.pane.win, { row, 0 }); vim.cmd("normal \r")
+      assert(vim.wait(7000, function()
+        return f.fixture.view.cur_entry.path == path and not s.restoring
+          and (path == "badge.bin" or s.snapshot and s.snapshot.target.path == path)
+      end), s.pane.status)
+      f:settled(s); T.eq(false, s.pane.review_mode); T.eq(1, #f.jobs)
+      if path == "renamed.txt" then
+        T.eq("old-name.txt", s.snapshot.target.oldpath)
+      elseif path == "deleted.txt" then
+        T.eq(1, #s.snapshot.target.anchors); T.eq("old", s.snapshot.target.anchors[1].side)
+      else
+        assert(reference.text_unavailable); assert(s.pane.status:find("No text annotations", 1, true))
+        T.eq(nil, s.pane.result)
+      end
+    end
+    T.eq({}, f.errors)
+  end, true)
 end)

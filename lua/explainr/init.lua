@@ -39,6 +39,7 @@ function M.code(scope, selection)
 end
 
 function M.diff(scope) return require("explainr.session").start("diff", scope or "file") end
+function M.review() return require("explainr.session").review() end
 function M.refresh() return require("explainr.session").refresh() end
 function M.cancel() return require("explainr.session").cancel() end
 function M.close() return require("explainr.session").close() end
@@ -56,8 +57,8 @@ function M.commands()
   vim.api.nvim_create_user_command("ExplainrCode", function(args) M.code(args.args ~= "" and args.args or "file") end,
     { nargs = "?", range = true, force = true, complete = function() return { "file", "function", "class", "selection" } end })
   vim.api.nvim_create_user_command("ExplainrDiff", function(args) M.diff(args.args ~= "" and args.args or "file") end,
-    { nargs = "?", force = true, complete = function() return { "file", "hunk" } end })
-  for name, fn in pairs({ Refresh = M.refresh, Cancel = M.cancel, Close = M.close, ToggleAutoExplain = M.toggle_auto_explain }) do
+    { nargs = "?", force = true, complete = function() return { "file", "hunk", "review" } end })
+  for name, fn in pairs({ Review = M.review, Refresh = M.refresh, Cancel = M.cancel, Close = M.close, ToggleAutoExplain = M.toggle_auto_explain }) do
     vim.api.nvim_create_user_command("Explainr" .. name, fn, { force = true })
   end
 end

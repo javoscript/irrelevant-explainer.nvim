@@ -258,7 +258,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   for name, value in pairs(options) do vim.wo[win][0][name] = value end
   api.nvim_set_current_win(current)
   local pane = { win = win, buf = buf, source = source, snapshot = snapshot, result = result,
-    status = "Ready", rows = {}, closed = false, frame = 1, folds = {} }
+    status = "Ready", rows = {}, closed = false, frame = 1, folds = {}, review_mode = false }
   pane.group = api.nvim_create_augroup("ExplainrPane" .. win, { clear = true })
   local detail_ns = api.nvim_create_namespace("explainr.detail." .. win)
   local focus_ns = api.nvim_create_namespace("explainr.focus." .. win)
@@ -367,6 +367,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:focus(clear)
+    if self.review_mode then return end
     if self.closed or self.detail_win or not api.nvim_win_is_valid(self.win) then return end
     local ids = not clear and self.result and not self.status:match("^Stale")
       and api.nvim_get_current_win() == self.win and self:note_ids() or {}
@@ -607,6 +608,32 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:loading()
+    if self.review_mode then
+      api.nvim_buf_clear_namespace(self.review_buf, loading_ns, 0, -1)
+      if not (self.review_status or ""):match("^Pending") then return end
+      -- Review has no source coordinates. Decorate its visible Markdown rows
+      -- without replacing text, changing wraps, or moving the reading cursor.
+      local cursor = api.nvim_get_current_win() == self.win and api.nvim_win_get_cursor(self.win)[1]
+      local seen, empty = {}, {}
+      local width = api.nvim_win_get_width(self.win)
+      for row, item in ipairs(M.project(self.win)) do
+        if item.empty then
+          empty[#empty + 1] = loading_rail({}, width, self.frame, row)
+        elseif item.line ~= cursor and not seen[item.line] then
+          local rail = loading_rail({}, 1, self.frame, item.line)[1]
+          api.nvim_buf_set_extmark(self.review_buf, loading_ns, item.line - 1, 0, {
+            line_hl_group = "ExplainrLoading", sign_text = rail[1], sign_hl_group = rail[2][1], priority = 180,
+          })
+          seen[item.line] = true
+        end
+      end
+      if #empty > 0 then
+        api.nvim_buf_set_extmark(self.review_buf, loading_ns, api.nvim_buf_line_count(self.review_buf) - 1, 0, {
+          virt_lines = empty, virt_lines_leftcol = true, priority = 180,
+        })
+      end
+      return
+    end
     if self.closed or self.detail_win or not self.lines then return end
     api.nvim_buf_clear_namespace(self.buf, loading_ns, 0, -1)
     local width = api.nvim_win_get_width(self.win) - vim.fn.getwininfo(self.win)[1].textoff
@@ -695,15 +722,32 @@ function M.open(source, snapshot, result, on_close, keymaps)
   function pane:header(ids)
     if self.closed or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
     local width = api.nvim_win_get_width(self.win)
+    if self.review_mode then
+      local status = self.review_status or "No review · :ExplainrDiff review"
+      local spin = status:match("^Pending") and api.nvim_get_current_win() ~= self.win
+        and spinner[(self.frame - 1) % #spinner + 1] .. " " or ""
+      self.updating_state = true
+      vim.wo[self.win].winbar = header({ { "Review" .. (self.auto_explain and " · Auto" or ""), "ExplainrTitle" },
+        { " · " .. spin .. status .. (self.background and " · " .. self.background or "") } }, width)
+      vim.b[self.review_buf].explainr_status = status
+      self.updating_state = false
+      return
+    end
     local counter = self:counter(ids or (self.detail_win and self.detail_layout.ids or self:note_ids()))
       .. (self.auto_explain and " · Auto" or "")
+    if (self.mode == "diff" or self.snapshot and self.snapshot.windows and not self.snapshot.windows.buffer)
+        and vim.fn.strwidth("File · " .. counter) <= width then
+      counter = "File · " .. counter
+    end
     local title = width >= 60 and "Explainr · " or ""
     if vim.fn.strwidth(title .. counter) > width then title = "" end
     -- Do not spend the last cell on an ellipsis when the count/mode just fit.
     local compact = vim.fn.strwidth(counter) + 1 >= width
     if self.detail_win or compact then
       local bar = header({ { title ~= "" and "Explainr" or "", "ExplainrTitle" },
-        { (title ~= "" and " · " or "") .. counter .. (compact and "" or " · Expanded · Enter/K back · n/p notes") } }, width)
+        { (title ~= "" and " · " or "") .. counter .. (compact and "" or " · "
+          .. (self.background or self.status:match("^Pending") and self.status or "Expanded")
+          .. " · Enter/K back · n/p notes") } }, width)
       self.updating_state = true
       if vim.wo[self.win].winbar ~= bar then vim.wo[self.win].winbar = bar end
       if not self.detail_win then vim.b[self.buf].explainr_status = self.status end
@@ -713,6 +757,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     local pending = self.status:match("^Pending")
     local label = (pending and api.nvim_get_current_win() ~= self.win
       and spinner[(self.frame - 1) % #spinner + 1] .. " " or "") .. self.status
+    if self.background then label = label .. " · " .. self.background end
     local queued = pending and self.queued and #self.queued > 0 and " · " .. #self.queued .. " queued" or ""
     local context = focused()
     if context then label = label .. " · " .. context end
@@ -725,6 +770,11 @@ function M.open(source, snapshot, result, on_close, keymaps)
       end
     end
     local budget = width - vim.fn.strwidth(legend .. queued .. title .. counter) - 3
+    -- Mode/count and a recognizable state matter more than the brand name.
+    if budget < vim.fn.strwidth(self.status:match("^%S+") or "") + 2 then
+      budget = budget + vim.fn.strwidth(title)
+      title = ""
+    end
     if vim.fn.strwidth(label) > budget then
       local chars = vim.fn.strchars(label)
       while chars > 0 and vim.fn.strwidth(vim.fn.strcharpart(label, 0, chars)) > budget - 1 do chars = chars - 1 end
@@ -765,7 +815,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:animate()
     self:stop_spinner()
-    if self.closed or not self.status:match("^Pending") then return end
+    if self.closed or not (self.status:match("^Pending") or (self.review_status or ""):match("^Pending")) then return end
     local timer = vim.uv.new_timer()
     self.timer = timer
     timer:start(100, 100, vim.schedule_wrap(function()
@@ -809,6 +859,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:align()
+    if self.review_mode then return end
     if self.closed or self.detail_win or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
     self:headers()
     if self.source_count ~= api.nvim_buf_line_count(api.nvim_win_get_buf(self.source)) then self:render(); return end
@@ -972,6 +1023,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:render()
+    if self.review_mode then self:header(); return end
     if self.closed or self.rendering or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
     if not self:detail_valid() then return end
     self.rendering = true
@@ -1133,10 +1185,130 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:set(value, status)
     if self.closed then return end
+    if self.detail_win and value and self:detail_valid() then
+      if value ~= self.result then self.deferred_result = { value = value, status = status or "Ready" } end
+      self:set_status(status or "Ready")
+      return
+    end
+    self.deferred_result = nil
     self.selection = nil
     self:back(true)
     self.result, self.status = value, status or "Ready"
     self:animate()
+    self:render()
+  end
+
+  function pane:set_status(status)
+    if self.closed then return end
+    self.status = status or self.status
+    self:prepare_pending()
+    self:animate()
+    self:header()
+    self:loading()
+  end
+
+  function pane:set_review(narrative, manifest, status)
+    if self.closed then return end
+    local changed = not vim.deep_equal(narrative, self.review)
+    self.review, self.manifest = narrative, manifest or {}
+    self.review_status = status or (narrative and "Ready" or "No review · :ExplainrDiff review")
+    if not self.review_buf then
+      self.review_buf = api.nvim_create_buf(false, true)
+      vim.bo[self.review_buf].bufhidden = "hide"
+      vim.bo[self.review_buf].filetype = "explainr"
+      start_markdown(self.review_buf)
+      if keymaps then keymaps(self.review_buf) end
+      vim.keymap.set("n", "<CR>", function()
+        local entry = self.review_references[api.nvim_win_get_cursor(self.win)[1]]
+        if entry and self.on_reference then self.on_reference(entry) end
+      end, { buffer = self.review_buf })
+      vim.keymap.set("n", "<Esc>", function()
+        if self.on_file then self.on_file() else self:show_file() end
+      end, { buffer = self.review_buf })
+      vim.keymap.set("n", "q", function() self:close() end, { buffer = self.review_buf })
+      vim.keymap.set("n", "<Plug>(ExplainrReview)", function()
+        if self.on_review then self.on_review() end
+      end, { buffer = self.review_buf })
+      changed = true
+    end
+    if changed then
+      self.review_view = nil
+      local lines, entries = {}, {}
+      self.review_references = {}
+      for _, entry in ipairs(self.manifest) do entries[entry.file_id] = entry end
+      if narrative then
+        lines = { "# " .. narrative.title, "" }
+        for _, section in ipairs(narrative.sections) do
+          lines[#lines + 1] = "## " .. section.heading
+          lines[#lines + 1] = "**Intent basis:** " .. section.intent_basis
+          lines[#lines + 1] = ""
+          vim.list_extend(lines, vim.split(section.detail, "\n", { plain = true }))
+          lines[#lines + 1] = ""
+          for _, id in ipairs(section.file_ids) do
+            local entry = entries[id]
+            if entry then
+              local path = entry.path or id
+              if entry.oldpath and entry.oldpath ~= path then
+                path = entry.oldpath .. " → " .. path
+              end
+              lines[#lines + 1] = "→ " .. single_line(path)
+                .. (entry.text_unavailable and " · " .. single_line(entry.text_unavailable) or "")
+              self.review_references[#lines] = entry
+            end
+          end
+          lines[#lines + 1] = ""
+        end
+      else lines = { "No review narrative available.", "", "Generate one with :ExplainrDiff review." } end
+      vim.bo[self.review_buf].modifiable = true
+      api.nvim_buf_set_lines(self.review_buf, 0, -1, false, lines)
+      vim.bo[self.review_buf].modifiable = false
+      if self.review_mode then
+        api.nvim_win_call(self.win, function() vim.fn.winrestview({ topline = 1, lnum = 1, col = 0, skipcol = 0 }) end)
+      end
+    end
+    self:animate()
+    self:header()
+    if self.review_mode then self:loading() end
+  end
+
+  function pane:show_review()
+    if self.closed or self.review_mode then return end
+    if not self.review_buf then self:set_review(nil, {}, "No review · :ExplainrDiff review") end
+    self:back()
+    self:focus(true)
+    clear_detail_marks()
+    self.review_options = {}
+    for name in pairs(vim.tbl_extend("keep", options, { linebreak = false, winhighlight = "", concealcursor = "" })) do
+      self.review_options[name] = vim.wo[self.win][name]
+    end
+    self.review_mode = true
+    self.display_generation = (self.display_generation or 0) + 1
+    api.nvim_win_set_buf(self.win, self.review_buf)
+    for name, value in pairs(options) do vim.wo[self.win][0][name] = value end
+    vim.wo[self.win][0].wrap = true
+    vim.wo[self.win][0].linebreak = true
+    vim.wo[self.win][0].foldenable = false
+    -- Reserve the loading gutter even when idle so pending status never
+    -- reflows the narrative or changes its saved reading position.
+    vim.wo[self.win][0].signcolumn = "yes:1"
+    vim.wo[self.win][0].statuscolumn = ""
+    vim.wo[self.win][0].winhighlight = self.review_options.winhighlight
+    api.nvim_win_call(self.win, function()
+      vim.fn.winrestview(self.review_view or { topline = 1, lnum = 1, col = 0, skipcol = 0 })
+    end)
+    self:headers()
+    self:header()
+    self:loading()
+  end
+
+  function pane:show_file()
+    if self.closed or not self.review_mode then return end
+    api.nvim_buf_clear_namespace(self.review_buf, loading_ns, 0, -1)
+    self.review_view = api.nvim_win_call(self.win, vim.fn.winsaveview)
+    api.nvim_win_set_buf(self.win, self.buf)
+    for name, value in pairs(self.review_options) do vim.wo[self.win][0][name] = value end
+    self.review_mode = false
+    self.display_generation = (self.display_generation or 0) + 1
     self:render()
   end
 
@@ -1251,6 +1423,10 @@ function M.open(source, snapshot, result, on_close, keymaps)
     self.detail_folds_dirty, self.fold_prefix = nil, nil
     self.focus_ids = nil
     if detail and api.nvim_buf_is_valid(detail) then api.nvim_buf_delete(detail, { force = true }) end
+    if self.deferred_result then
+      self.result, self.status = self.deferred_result.value, self.deferred_result.status
+      self.deferred_result = nil
+    end
     -- A new result (including invalidation on a Diffview file switch) must
     -- rebuild geometry before focusing; the old projection belongs to old text.
     if not replacing then
@@ -1449,6 +1625,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:detail(index)
+    if self.review_mode then return end
     if self.closed or not self.result then return end
     self.selection = nil
     index = type(index) == "number" and index or nil
@@ -1731,6 +1908,11 @@ function M.open(source, snapshot, result, on_close, keymaps)
       if api.nvim_win_is_valid(self.win) then api.nvim_set_current_win(self.win) end
     end
     if keymaps then keymaps(detail) end
+    if keymaps or self.snapshot and self.snapshot.windows and not self.snapshot.windows.buffer then
+      vim.keymap.set("n", "<Plug>(ExplainrReview)", function()
+        if self.on_review then self.on_review() end
+      end, { buffer = detail })
+    end
     vim.keymap.set("n", "<Esc>", close_detail, { buffer = detail })
     vim.keymap.set("n", "q", close_detail, { buffer = detail })
     vim.keymap.set("n", "K", close_detail, { buffer = detail })
@@ -1772,6 +1954,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:scroll(keys, from, escape)
+    if self.review_mode then return end
     if self.closed or self.syncing or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
     if not self:detail_valid() then return end
     from = from or self.source
@@ -1913,6 +2096,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:sync(from)
+    if self.review_mode then return end
     if self.closed or self.rendering or self.syncing or not api.nvim_win_is_valid(self.source) or not api.nvim_win_is_valid(self.win) then return end
     if not self:detail_valid() then return end
     if from ~= self.win and not self:windows()[from] then return end
@@ -2070,13 +2254,18 @@ function M.open(source, snapshot, result, on_close, keymaps)
     for _, owned in ipairs({ self.detail_win or -1, self.win }) do
       if api.nvim_win_is_valid(owned) then api.nvim_win_close(owned, true) end
     end
-    for _, owned in ipairs({ self.buf, self.detail_buf or -1 }) do
+    for _, owned in ipairs({ self.buf, self.detail_buf or -1, self.review_buf or -1 }) do
       if api.nvim_buf_is_valid(owned) then api.nvim_buf_delete(owned, { force = true }) end
     end
     if on_close then on_close() end
   end
 
   if keymaps then keymaps(buf) end
+  if keymaps or snapshot and snapshot.windows and not snapshot.windows.buffer then
+    vim.keymap.set("n", "<Plug>(ExplainrReview)", function()
+      if pane.on_review then pane.on_review() end
+    end, { buffer = buf })
+  end
   vim.keymap.set("n", "<CR>", function() pane:detail() end, { buffer = buf })
   vim.keymap.set("n", "K", function() pane:detail() end, { buffer = buf })
   vim.keymap.set("n", "j", function() pane:move(1, vim.v.count1) end, { buffer = buf })
@@ -2097,6 +2286,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   local pending = false
   local rebuild = false
   local function schedule(full)
+    if pane.review_mode then return end
     rebuild = rebuild or full == true
     if pending or pane.closed or pane.rendering or pane.syncing or pane.detail_win and not full then return end
     pending = true
@@ -2104,6 +2294,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     vim.schedule(function()
       pending = false
       if pane.closed then return end
+      if pane.review_mode then return end
       -- WinClosed cleanup is also deferred. A geometry callback queued first
       -- can run after Diffview has destroyed its windows but before cleanup.
       if not api.nvim_win_is_valid(pane.win) or not api.nvim_win_is_valid(pane.source) then pane:close(); return end
@@ -2151,6 +2342,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   -- zc/zo can change folds without moving the cursor or topline, and have no
   -- dedicated event. Check only viewport geometry when the editor becomes idle.
   api.nvim_create_autocmd("SafeState", { group = pane.group, callback = function()
+    if pane.review_mode then return end
     if pane.closed or pane.rendering or pane.syncing or not api.nvim_win_is_valid(pane.source) then return end
     if not pane:detail_valid() then return end
     if pane.detail_folds_dirty then

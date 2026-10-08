@@ -55,6 +55,70 @@ final_text or nil,error. It runs on Neovim's main thread. Exceptions are reporte
 as decoder failures. A custom decoder cannot turn a nonzero exit into success.
 Every returned explanation still needs the caller's common model validation.
 
+REVIEW PAYLOAD                                         *explainr-agent-review*
+
+Code/file/hunk requests keep version=1 with a notes array. Explicit review scope
+requires version=2 with review and files; a legacy flat answer is not complete
+review coverage. Plain, OpenCode, Codex and custom decoders still select final
+text in the same way. Wrappers must honor the scope-specific prompt contract;
+no provider-specific conversion or fallback is performed.
+
+review contains a nonempty single-line title and nonempty sections array. Each
+section has a nonempty single-line heading, Markdown detail, intent_basis
+(documented/inferred/unknown), evidence array, and file_ids array of unique
+supplied manifest identities. Explain the overall change, cross-file connections,
+and intent/caveats separately from anchored file notes. Narrative sections need
+no source anchors. Documented sections require nonempty supplied-range evidence.
+
+files contains exactly one {file_id, notes} entry per target.files identity.
+Missing, duplicate, unknown or metadata-only entries reject the entire response.
+An explicit notes:[] counts as coverage; the plugin never invents explanations.
+Each file uses the version-1 note rules against its own whole-file target, with
+independent optional kind="overview" notes covering all available anchors.
+Added/deleted files use their available side; renames use exact old/new paths.
+Cross-file evidence is allowed, but cross-file annotation anchors are not.
+Binary/both-empty manifest IDs may appear in section references, not files.
+Valid citations establish supplied-range grounding, not semantic truth or that
+tests ran. Structural coverage does not guarantee useful explanation quality.
+
+REVIEW JSON EXAMPLE (IDs and ranges must match the actual supplied snapshot)
+>
+  {
+    "version": 2,
+    "review": {
+      "title": "Update cancellation",
+      "sections": [{
+        "heading": "Related changes",
+        "detail": "The policy and callers change together.",
+        "intent_basis": "documented",
+        "evidence": [{"path":"new.lua","side":"new",
+                      "start_line":2,"end_line":2}],
+        "file_ids": ["rename", "add", "binary"]
+      }]
+    },
+    "files": [
+      {"file_id":"rename","notes":[{
+        "kind":"overview","summary":"File purpose",
+        "detail":"Change overview.","intent_basis":"inferred",
+        "evidence":[],
+        "anchors":[
+          {"path":"old.lua","side":"old","start_line":1,"end_line":2},
+          {"path":"new.lua","side":"new","start_line":1,"end_line":5}
+        ]
+      }]},
+      {"file_id":"add","notes":[]},
+      {"file_id":"delete","notes":[]}
+    ]
+  }
+<
+All narrative and file results are validated together before installation. One
+bad sibling, missing coverage, truncated JSON, unsuccessful completion or stale
+snapshot rejects the whole new review, preserving still-fresh accepted results.
+Input fitting context.max_bytes does not ensure output fits provider limits.
+On overflow/truncation, filter Diffview to reduce the explicit comparison,
+increase the input budget where applicable, or request file/hunk scope. There
+is no automatic repair, splitting, partial salvage, or per-file fallback.
+
 INTERNAL TRANSPORT API                                    *explainr-agent-api*
 >
   local invocation, launch_error = require("explainr.agent").run(
@@ -116,8 +180,9 @@ COMPATIBILITY AND EVIDENCE                         *explainr-agent-compatibility
 Compatibility is with the CLI contracts above, not a guessed release range.
 No authenticated OpenCode or Codex release has been executed by the offline
 tests. No installed CLI version is claimed supported solely from its number.
-The explanation payload version (currently version=1) is distinct from CLI
-transport/event formats and is validated by the common model layer.
+The explanation payload version (version=1 for code/file/hunk, version=2 for
+review) is distinct from CLI transport/event formats and is validated by the
+common model layer.
 
 Contract evidence inspected 2026-10-05:
   OpenCode agents/permission documentation (v1 docs URL; updated 2026-10-03):

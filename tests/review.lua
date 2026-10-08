@@ -1,7 +1,7 @@
 -- Shared disposable MR-style fixture for runtime acceptance and screen capture.
 local api = vim.api
 local M = {}
-function M.open(working)
+function M.open(working, reference_variants)
   local runtime = vim.env.EXPLAINR_DIFFVIEW_PATH or (vim.fn.stdpath("data") .. "/lazy/diffview.nvim")
   assert(vim.fn.isdirectory(runtime .. "/lua/diffview") == 1, "Diffview runtime is required for this fixture")
   vim.opt.runtimepath:append(runtime)
@@ -32,12 +32,22 @@ function M.open(working)
   fixture:write("openspec/spec.md", "# Cancellation\nOwners or administrators may cancel.\n")
   fixture:write("docs/adr.md", "Rationale: preserve the owner's decision.\nOld permission rule.\n")
   fixture:write("tests/policy.txt", "allow administrator\n")
+  if reference_variants then
+    fixture:write("old-name.txt", "Unchanged content in a renamed file.\n")
+    fixture:write("deleted.txt", "Removed policy.\n")
+    fixture:write("badge.bin", "\0before\n")
+  end
   fixture:git("add", "--all"); fixture:git("commit", "-qm", "base")
   fixture.base = fixture:git("rev-parse", "HEAD")
   fixture:write("policy.lua", table.concat(fixture.after, "\n") .. "\n")
   fixture:write("openspec/spec.md", "# Cancellation\nOnly owners may cancel.\n")
   fixture:write("docs/adr.md", "Rationale: preserve the owner's decision.\nAdopt strict ownership.\n")
   fixture:write("tests/policy.txt", "allow owner; reject editor\n")
+  if reference_variants then
+    fixture:git("mv", "old-name.txt", "renamed.txt")
+    assert(vim.uv.fs_unlink(root .. "/deleted.txt"))
+    fixture:write("badge.bin", "\0after\n")
+  end
   local args = { fixture.base }
   if not working then
     fixture:git("add", "--all"); fixture:git("commit", "-qm", "review")

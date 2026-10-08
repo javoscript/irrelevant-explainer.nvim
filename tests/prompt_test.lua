@@ -118,3 +118,39 @@ T.test("focused prompt preserves explicit coverage and compact coordinates witho
     assert(p:find(instruction, 1, true), instruction)
   end
 end)
+
+T.test("review prompt supplies every target and shared context once with complete serialized budget", function()
+  local s = { mode = "diff", context = { strategy = "review" },
+    target = { scope = "review", files = {} }, files = {}, comparison = { manifest = {} } }
+  for i, path in ipairs({ "policy.lua", "decision.md", "test.lua" }) do
+    local lines = { "unique supplied content é中 " .. i }
+    s.files[i] = { path = path, side = "new", lines = lines }
+    s.target.files[i] = { scope = "file", file_id = "file" .. i, path = path,
+      anchors = { range(path, "new", 1) }, hunks = { { 0, 0, 1, 1 } } }
+    s.comparison.manifest[i] = { file_id = "file" .. i, path = path,
+      new = { path = path, side = "new", lines = lines } }
+  end
+  s.comparison.manifest[4] = { file_id = "binary", path = "image.png", text_unavailable = "binary" }
+  local context = prompt.context(s)
+  local p, _, bytes = prompt.build(s, 100000, context)
+  T.eq(#p, bytes); assert(bytes > vim.fn.strchars(p))
+  T.eq(p, assert(prompt.build(s, bytes, context)))
+  local rejected, err = prompt.build(s, bytes - 1, context)
+  T.eq(nil, rejected)
+  for _, advice in ipairs({ "Filter Diffview", "increase the budget", "file/hunk scope", "Nothing was omitted" }) do
+    assert(err:find(advice, 1, true))
+  end
+  local raw, targets = p:match("UNTRUSTED SNAPSHOT JSON:\n(.-)\nFOCUSED TARGET JSON:\n(.*)")
+  T.eq(s.files, vim.json.decode(raw).files); T.eq(s.target, vim.json.decode(targets))
+  T.eq(nil, vim.json.decode(raw).comparison.manifest[1].new.lines)
+  for i = 1, 3 do
+    local _, count = p:gsub("unique supplied content é中 " .. i, "")
+    T.eq(1, count)
+  end
+  for _, instruction in ipairs({ '"version":2', "overall change, cross-file relationships",
+    "separate from source-anchored file notes", "file overview as the FIRST note",
+    "EVERY target.files ID", "metadata-only", "do not fabricate notes", "Tests show expectations" }) do
+    assert(p:find(instruction, 1, true), instruction)
+  end
+  assert(not p:find('"version":1', 1, true))
+end)

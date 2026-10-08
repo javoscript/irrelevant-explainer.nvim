@@ -159,3 +159,88 @@ T.test("compact supplied chunks validate original coordinates and reject sparse 
   n.anchors = { anchor("code.lua", "new", 8999) }
   T.eq(nil, model.validate({ version = 1, notes = { n } }, s))
 end)
+
+local function review_fixture()
+  local s = { mode = "diff", target = { scope = "review", files = {} }, files = {}, comparison = { manifest = {} } }
+  local value = { version = 2, review = { title = "Update cancellation", sections = {
+    { heading = "Related changes", detail = "The policy and callers change together.", intent_basis = "documented",
+      evidence = { anchor("new.lua", "new", 2) }, file_ids = { "rename", "add", "binary" } },
+  } }, files = {} }
+  for _, entry in ipairs({
+    { "rename", { anchor("old.lua", "old", 1, 2), anchor("new.lua", "new", 1, 5) } },
+    { "add", { anchor("added.lua", "new", 1, 3) } },
+    { "delete", { anchor("deleted.lua", "old", 1, 4) } },
+  }) do
+    local target = { scope = "file", file_id = entry[1], anchors = entry[2] }
+    s.target.files[#s.target.files + 1] = target
+    s.comparison.manifest[#s.comparison.manifest + 1] = { file_id = entry[1] }
+    for _, a in ipairs(entry[2]) do
+      local lines = {}; for i = 1, a.end_line do lines[i] = "line " .. i end
+      s.files[#s.files + 1] = { path = a.path, side = a.side, lines = lines }
+    end
+    value.files[#value.files + 1] = { file_id = entry[1], notes = {
+      { kind = "overview", summary = "File purpose", detail = "Change overview.",
+        anchors = vim.deepcopy(entry[2]), intent_basis = "documented", evidence = { anchor("new.lua", "new", 2) } },
+    } }
+  end
+  s.comparison.manifest[4] = { file_id = "binary", text_unavailable = "binary" }
+  s.comparison.manifest[5] = { file_id = "empty", text_unavailable = "both empty" }
+  return s, value
+end
+
+T.test("review validates asymmetric independent overviews, shared evidence and explicit empty coverage", function()
+  local s, value = review_fixture()
+  T.eq(value, assert(model.validate(vim.json.encode(value), s)))
+  value.files[2].notes = {}
+  T.eq(value, assert(model.validate(value, s)))
+  value.files[1], value.files[3] = value.files[3], value.files[1]
+  assert(model.validate(value, s)) -- Coverage is identity-based, not position-based.
+  T.eq(nil, model.validate({ version = 1, notes = {} }, s))
+  s.target = s.target.files[1]
+  T.eq(nil, model.validate(value, s))
+end)
+
+T.test("one invalid review sibling or section rejects atomically without changing input", function()
+  local mutations = {
+    function(v) table.remove(v.files) end,
+    function(v) v.files[3].file_id = "add" end,
+    function(v) v.files[3].file_id = "unknown" end,
+    function(v) v.files[3].file_id = "binary" end,
+    function(v) v.files[3].file_id = "empty" end,
+    function(v) v.files[3].notes = nil end,
+    function(v) v.files[3].notes = vim.empty_dict() end,
+    function(v) v.files[3].notes[1].anchors = { anchor("added.lua", "new", 1, 3) } end,
+    function(v) v.files[1].notes[1].anchors[2].path = "old.lua" end,
+    function(v) v.files[1].notes[1].anchors[2].end_line = 4 end,
+    function(v) v.files[2].notes[2] = vim.deepcopy(v.files[2].notes[1]) end,
+    function(v) v.files[3].notes[1].evidence = { anchor("deleted.lua", "new", 1) } end,
+    function(v) v.review = nil end,
+    function(v) v.review.title = "two\nlines" end,
+    function(v) v.review.title = " " end,
+    function(v) v.review.sections = {} end,
+    function(v) v.review.sections[1].heading = "two\rrows" end,
+    function(v) v.review.sections[1].detail = "" end,
+    function(v) v.review.sections[1].intent_basis = "certain" end,
+    function(v) v.review.sections[1].evidence = {} end,
+    function(v) v.review.sections[1].evidence[1].end_line = 6 end,
+    function(v) v.review.sections[1].evidence[1].path = "missing" end,
+    function(v) v.review.sections[1].file_ids = { "unknown" } end,
+    function(v) v.review.sections[1].file_ids = { "add", "add" } end,
+    function(v) v.review.sections[1].file_ids = vim.empty_dict() end,
+  }
+  for i, mutate in ipairs(mutations) do
+    local s, value = review_fixture(); mutate(value)
+    local before = vim.deepcopy(value)
+    local accepted, err = model.validate(value, s)
+    T.eq(nil, accepted); assert(err:find("file/hunk scope", 1, true), i)
+    T.eq(before, value)
+  end
+  local s = review_fixture()
+  T.eq(nil, model.validate('{"version":2,"review":', s))
+end)
+
+T.test("documented review example validates against asymmetric review fixture", function()
+  local help = table.concat(vim.fn.readfile("doc/explainr-agents.txt"), "\n")
+  local example = assert(help:match("REVIEW JSON EXAMPLE[^\n]*\n>\n(.-)\n<"))
+  assert(model.validate(example, review_fixture()))
+end)
