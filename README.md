@@ -375,9 +375,17 @@ vim.keymap.set("n", "<leader>ea", "<cmd>ExplainrToggleAutoExplain<CR>", {
 
 While waiting, every active and queued range has a steady, faint full-width tint.
 Only a cursor-width `▊` gutter rail animates, with an eased 2.4-second cascading glow.
-Accepted notes and text backgrounds remain steady; the focused cursor row pauses
-animation. Wrapped/folded rows and diff filler participate too. Source buffers
-and Git diff highlights stay untouched by the loader.
+Accepted notes and text backgrounds remain steady; the focused logical cursor
+line keeps a steady rail across its wraps while other eligible rails animate.
+Wrapped/folded rows and diff filler participate too. Checking saved File
+explanations loads the visible file extent without launching inference. Review
+checks animate retained prose or its placeholder, with continuous rails through
+wrapped paragraphs, blank lines, and empty viewport space. Source buffers and
+Git diff highlights stay untouched by the loader.
+Every busy phase shows an animated header spinner, including saved-result checks,
+cache lookup and result-context validation, even with focus or expanded detail.
+Background work is identified separately and does not tint unrelated File notes.
+The spinner indicates activity, not a provider call, percentage, or ETA.
 For terminal cursor flicker during animation, keep Neovim's default
 `vim.opt.termsync = true`. This batches redraws on terminals/multiplexers that
 support synchronized output; with it disabled, even updates away from the cursor

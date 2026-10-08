@@ -70,6 +70,9 @@ render = function(session, status)
     session.file_status = status or session.file_status
     status = session.file_status or "No explanations · request file or hunk"
     session.pane.pending, session.pane.queued, session.pane.background = nil, {}, nil
+    session.pane.restoring = session.restoring and retained[session.review_key] ~= nil
+    session.pane.background_busy = session.pending ~= nil
+      or #(session.queue or {}) > 0 or session.automatic ~= nil
     local active = session.pending
     if active then
       if active.scope ~= "review" and active.key == session.review_key then
@@ -96,7 +99,7 @@ render = function(session, status)
       session.pane.background = (session.pane.background and session.pane.background .. " · " or "") .. count .. " queued"
     end
     local narrative = narratives[session.comparison_key]
-    if session.review_checking then narrative = nil end
+    if session.review_checking and not session.pane.review then narrative = nil end
     session.pane:set_review(narrative and narrative.result.review,
       narrative and narrative.snapshot.comparison.manifest, session.review_status)
   end
@@ -129,7 +132,7 @@ local function stop_jobs(session)
   if session.automatic and session.automatic.collection then session.automatic.collection.cancel() end
   session.automatic = nil
   session.queue, session.pane.queued = {}, nil
-  session.waiters, session.recheck, session.restoring = nil, nil, nil
+  session.waiters, session.recheck, session.restoring, session.review_checking = nil, nil, nil, nil
 end
 
 local function discard_pending(session)
@@ -416,6 +419,8 @@ follow = function(session, manual)
     if operation.job then operation.job.cancel() end
   end
   session.restoration = operation
+  session.pane.loading_cursor = nil
+  render(session, "Checking saved explanations")
   local function owned()
     return not session.closed and not operation.cancelled and session.generation == generation
       and session.restoration == operation and session.review_key == key
@@ -839,7 +844,7 @@ function M.start(mode, scope, options)
   session.pane.source = source
   if scope == "review" then
     session.pane.snapshot = session.pane.snapshot or state and { windows = state.windows }
-    if not compatible and narratives[session.comparison_key] then
+    if narratives[session.comparison_key] and (not compatible or options.display_only and not session.pending) then
       session.review_checking, session.review_status = true, "Checking saved review"
     end
     if not options.display_only then session.review_status = append and "Pending · queued review" or "Pending · collecting comparison" end

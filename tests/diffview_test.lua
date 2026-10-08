@@ -524,12 +524,21 @@ T.test("Diffview restores per-file explanations without inference and rejects ch
         end
         fixture:switch("policy.lua")
         assert(vim.wait(5000, function() return #delayed == 1 end))
+        T.eq("Checking saved explanations", document.pane.status)
+        T.eq(true, document.pane.restoring); T.eq(nil, document.pane.pending)
+        assert(document.pane.timer)
+        assert(#api.nvim_buf_get_extmarks(document.pane.buf, api.nvim_create_namespace("explainr.loading"),
+          0, -1, {}) > 0)
         fixture:switch("openspec/spec.md")
         assert(vim.wait(5000, function() return #delayed == 2 end))
         delayed[1].callback(delayed[1].value)
         T.eq(nil, document.pane.result) -- Obsolete A cannot install in B.
+        T.eq("Checking saved explanations", document.pane.status)
+        T.eq("openspec/spec.md", fixture.view.cur_entry.path)
         delayed[2].callback(delayed[2].value); ready(document, "openspec/spec.md")
         T.eq(document_result, document.pane.result); T.eq(count + 1, calls)
+        T.eq(nil, document.pane.timer); assert(not document.pane.restoring)
+        T.eq({}, api.nvim_buf_get_extmarks(document.pane.buf, api.nvim_create_namespace("explainr.loading"), 0, -1, {}))
         diff.restore_async = old_restore
       end
       if case[1] then
@@ -1232,6 +1241,11 @@ T.test("one review invocation survives collection navigation, distributes every 
     local reader = api.nvim_win_call(s.pane.win, vim.fn.winsaveview)
     vim.cmd("normal \27"); T.eq(false, s.pane.review_mode)
     plugin.review(); T.eq(reader, api.nvim_win_call(s.pane.win, vim.fn.winsaveview))
+    T.eq("Checking saved review", s.pane.review_status); assert(s.pane.timer)
+    local prose = api.nvim_buf_get_lines(s.pane.review_buf, 0, -1, false)
+    f:settled(s); T.eq(nil, s.pane.timer)
+    T.eq(prose, api.nvim_buf_get_lines(s.pane.review_buf, 0, -1, false))
+    T.eq(reader, api.nvim_win_call(s.pane.win, vim.fn.winsaveview)); T.eq(3, #f.jobs)
     local row
     for line, entry in pairs(s.pane.review_references) do if entry.path == "policy.lua" then row = line end end
     api.nvim_win_set_cursor(s.pane.win, { assert(row), 0 }); vim.cmd("normal \r")
@@ -1241,7 +1255,10 @@ T.test("one review invocation survives collection navigation, distributes every 
     plugin.review(); plugin.refresh(); T.eq("annotate", f:job(5).request.phase)
     T.eq(7, f:complete(5, "Fresh narrative")); f:settled(s)
     T.eq("Fresh narrative", s.pane.review.title)
-    plugin.explain("review"); f:settled(s); T.eq(7, #f.jobs)
+    local review = s.pane.review
+    plugin.explain("review"); assert(s.pane.timer)
+    T.eq(review, s.pane.review)
+    f:settled(s); T.eq(7, #f.jobs); T.eq(nil, s.pane.timer)
     f.fixture:write("docs/adr.md", "Changed shared rationale.\n")
     api.nvim_exec_autocmds("TextChanged", {})
     assert(vim.wait(7000, function() return s.pane.review_status:match("^Stale") end))

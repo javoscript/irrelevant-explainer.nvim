@@ -228,10 +228,13 @@ T.test("diff results and cache wait for coalesced freshness; stale and cancelled
 
       local cached = sessions.start("diff", "file"); collect()
       T.eq(second, cached); T.eq(2, #launches); T.eq(accepted, cached.pane.result)
-      assert(cached.pane.status:find("Pending"))
+      assert(cached.pane.status:find("checking result context", 1, true))
+      assert(cached.pane.timer)
+      T.eq(true, cached.pane.background_busy)
       plugin.cancel(); local count = cancelled
       assert(count > 0); checks[4](true) -- Deliberately misbehaving late callback.
       assert(cached.pane.status:find("Cancelled")); T.eq(accepted, cached.pane.result)
+      T.eq(nil, cached.pane.timer); T.eq(false, cached.pane.background_busy)
 
       local pending = plugin.refresh(); collect(); launches[3](answer)
       local replacement = sessions.start("diff", "file"); collect()

@@ -38,11 +38,15 @@ Background File updates do not interrupt Review; a fresh File replacement waits
 until expanded detail exits. Stale detail is cleared rather than retained.
 Winbars identify the mode, request state and Auto, and distinguish background
 work from selected-file loading. The editor's statusline remains untouched.
-While a review is pending, its body shows the same faint tint and animated rail
-as File loading, including before a narrative exists. These decorations follow
+While a review is pending or checking saved results, its body shows the same
+faint tint and animated rail as File loading, including before a narrative
+exists. These decorations follow
 the narrative viewport, not source ranges. Accepted prose and reading position
-stay intact; the focused cursor row does not repaint. The loader clears when
-the request ends or Review is hidden. It indicates activity, not a percentage.
+stay intact; the focused logical cursor line retains a steady rail through its
+wraps. Rails cover blank lines and empty space too. Review uses a one-space
+continuation prefix so native smoothscroll markers cannot overwrite the gutter.
+The loader clears when the request ends or Review is hidden. It indicates
+activity, not a percentage.
 
 Opening preflight uses a notification, before a reader is ready. The existing
 reader header then shows collection/planning, Annotations 3/12, reducing,
@@ -346,10 +350,11 @@ Only a cursor-width ▊ gutter rail animates: an eased 2.4-second cascading
 glow, updated every 100ms. Braille spinners remain as activity cues. Rails cover
 wrapped/folded ranges and deletion/EOF filler; accepted text and backgrounds
 stay steady, and source/diff buffers are never decorated by the loader.
-While notes have focus, the cursor's logical row pauses and the status spinner
-stays still to avoid repainting under the cursor. Other requested rows keep
-animating; the paused row resumes when the cursor or focus moves. Your cursor
-shape/blink settings are never changed. The palette derives from Normal and
+While notes have focus, the cursor's logical row keeps a steady rail. Other
+requested rows and the header spinner keep animating, including saved-result
+checks and expanded detail; the paused rail resumes when the cursor or focus
+moves. Saved File checks load the visible extent without an inference request.
+Your cursor shape/blink settings are never changed. The palette derives from Normal and
 DiagnosticInfo; themes can customize ExplainrLoading (steady background) and
 ExplainrLoadingRail1–8 (gutter brightness, dimmest through brightest).
 Before diff collection completes, file requests cover the whole source and hunk requests

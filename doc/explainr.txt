@@ -452,6 +452,18 @@ render-markdown.nvim or change its user configuration. Expanded j/k, including
 counts, move by displayed row; see |explainr-ui.txt| for the top-edge k shortcut.
 vim.b.explainr_status exposes pane status for an optional lualine component.
 
+Every busy phase has an animated header spinner, even with focus or expanded
+detail: saved-result checks, collection, cache lookup, agent work, review
+processing and result-context validation. It indicates activity, not a provider
+call or fabricated progress. Background work is identified separately and does
+not tint unrelated File notes. Checking saved File explanations loads the
+visible file extent without inference; notes still wait for freshness checks.
+Busy Review retains readable prose or its placeholder, with continuous gutter
+rails across wrapped paragraphs, blank lines and empty viewport space. Accepted
+text and backgrounds remain steady. The focused logical cursor line keeps a
+steady rail across its wraps while other eligible rails and the header animate.
+Loading decorations clear when their owned work ends or the reader closes.
+
 If the terminal cursor flickers during loading, keep 'termsync' enabled (its
 Neovim default). Supported terminals/multiplexers batch redraws atomically;
 without synchronized output, even painting another split can hide/show the

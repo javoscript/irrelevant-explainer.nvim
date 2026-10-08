@@ -61,6 +61,32 @@ if vim.g.capture_state:match("^diff%-review%-open") then
   vim.cmd("redraw!")
   return
 end
+if vim.g.capture_state:match("^loading%-file") then
+  local api = vim.api
+  local source = api.nvim_get_current_win()
+  api.nvim_buf_set_lines(0, 0, -1, false, { "local policy = require('policy')", "",
+    "local function authorize(request)", "  return policy.allow(request)", "end", "", "return authorize" })
+  vim.bo.filetype = "lua"
+  local p = require("explainr.ui").open(source, { windows = { new = source } }, nil)
+  p.mode, p.auto_explain = "diff", true
+  if vim.g.capture_state:find("detail") then
+    p:set({ notes = { { summary = "Use the shared authorization policy", intent_basis = "inferred",
+      detail = "The caller delegates to **policy.allow** rather than duplicating the decision.\n\n"
+        .. "This accepted detail remains readable while the whole review is processed in the background.",
+      anchors = { { path = "caller.lua", side = "new", start_line = 4, end_line = 4 } } } } }, "Ready")
+    p:detail(1)
+    p.background, p.background_busy = "Running review", true
+    p:set_status("Ready")
+  else
+    p.restoring = true
+    p:set_status("Checking saved explanations")
+  end
+  api.nvim_set_current_win(p.win)
+  if vim.g.capture_state:find("narrow") then api.nvim_win_set_width(p.win, 32) end
+  _G.capture_pane = p
+  p:state(); vim.cmd("redraw!")
+  return
+end
 if vim.g.capture_state:match("^review%-reader") then
   local api = vim.api
   local source = api.nvim_get_current_win()
@@ -82,10 +108,17 @@ if vim.g.capture_state:match("^review%-reader") then
     { file_id = "caller", path = "caller.lua" },
     { file_id = "asset", path = "badge.png", text_unavailable = "binary version" } }
   local state = vim.g.capture_state
+  if state:find("focused") or state:find("clipped") then
+    narrative.sections[1].detail = string.rep("The caller delegates to policy.allow instead of duplicating the authorization decision. ", 36)
+      .. "\n\nThe retained explanation is unchanged while its context is checked."
+  end
   local status = state:find("pending") and "Pending · comparison · 2 files"
     or state:find("stale") and "Stale · regenerate review"
     or state:find("failed") and "Failed · see :messages"
     or state:find("empty") and "No review · :Explainr review" or "Ready"
+  if state:find("loading") then
+    status = state:find("saved") and "Checking saved review" or "Pending · checking result context"
+  end
   -- UI projection fixtures: no job is invented and no provider is launched.
   -- Keep an accepted narrative visible across each background job transition.
   if state:find("batch") then
@@ -125,6 +158,20 @@ if vim.g.capture_state:match("^review%-reader") then
   if state:find("wide") then api.nvim_win_set_width(p.win, 80) end
   if state:find("narrow") then api.nvim_win_set_width(p.win, 32) end
   if state:find("background") then p.background = "Generating caller.lua"; p:header() end
+  if state:find("loading") then
+    api.nvim_set_current_win(p.win)
+    if state:find("focused") or state:find("clipped") then
+      api.nvim_win_set_width(p.win, 48)
+      api.nvim_win_set_cursor(p.win, { 6, 0 })
+    end
+    if state:find("clipped") then
+      vim.wo[p.win].smoothscroll = true
+      api.nvim_win_call(p.win, function()
+        vim.fn.winrestview({ topline = 6, skipcol = 180, lnum = 6, col = 200 })
+      end)
+    end
+    p:state()
+  end
   _G.capture_pane = p
   vim.cmd("redraw!")
   return

@@ -5,6 +5,9 @@ local geometry_ns = api.nvim_create_namespace("explainr.geometry")
 local range_ns = api.nvim_create_namespace("explainr.ranges")
 local loading_ns = api.nvim_create_namespace("explainr.loading")
 local spinner = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+local function busy(status)
+  return (status or ""):match("^Pending") or (status or ""):match("^Checking")
+end
 local intent = {
   documented = { "D", "ExplainrDocumented" },
   inferred = { "~", "ExplainrInferred" },
@@ -63,8 +66,8 @@ local function highlights()
       local base, tint = math.floor(background / 2 ^ shift) % 256, math.floor(foreground / 2 ^ shift) % 256
       color = color + math.floor(base + (tint - base) * (0.25 + level / 8 * 0.75)) * 2 ^ shift
     end
-    api.nvim_set_hl(0, "ExplainrLoadingRail" .. level, { default = true, fg = color,
-      ctermfg = dark and (236 + level * 2) or (253 - level * 2) })
+    api.nvim_set_hl(0, "ExplainrLoadingRail" .. level, { default = true, fg = color, bg = tint,
+      ctermfg = dark and (236 + level * 2) or (253 - level * 2), ctermbg = dark and 234 or 255 })
   end
   -- [+] is a UI control, not a Markdown shortcut link. Don't inherit link
   -- underlines/error decorations from the lower-priority Markdown highlighter.
@@ -608,25 +611,37 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:loading()
+    if self.closed or not api.nvim_win_is_valid(self.win) then return end
+    local buffer = self.review_mode and self.review_buf or self.buf
+    if api.nvim_win_get_buf(self.win) ~= buffer then return end
+    local cursor = api.nvim_get_current_win() == self.win and api.nvim_win_get_cursor(self.win)[1]
+    if not cursor then self.loading_cursor = nil
+    elseif not self.loading_cursor or self.loading_cursor.buf ~= buffer or self.loading_cursor.line ~= cursor then
+      self.loading_cursor = { buf = buffer, line = cursor, frame = self.frame }
+    end
+    local function frame(line)
+      return line == cursor and self.loading_cursor.frame or self.frame
+    end
     if self.review_mode then
       api.nvim_buf_clear_namespace(self.review_buf, loading_ns, 0, -1)
-      if not (self.review_status or ""):match("^Pending") then return end
+      vim.b[self.review_buf].explainr_review_rails = {}
+      if not busy(self.review_status) then self.loading_cursor = nil; return end
       -- Review has no source coordinates. Decorate its visible Markdown rows
       -- without replacing text, changing wraps, or moving the reading cursor.
-      local cursor = api.nvim_get_current_win() == self.win and api.nvim_win_get_cursor(self.win)[1]
-      local seen, empty = {}, {}
+      local rails, empty = {}, {}
       local width = api.nvim_win_get_width(self.win)
       for row, item in ipairs(M.project(self.win)) do
         if item.empty then
           empty[#empty + 1] = loading_rail({}, width, self.frame, row)
-        elseif item.line ~= cursor and not seen[item.line] then
-          local rail = loading_rail({}, 1, self.frame, item.line)[1]
+        elseif not rails[tostring(item.line)] then
+          local rail = loading_rail({}, 1, frame(item.line), item.line)[1]
+          rails[tostring(item.line)] = "%#" .. rail[2][1] .. "#▊%#ExplainrLoading# "
           api.nvim_buf_set_extmark(self.review_buf, loading_ns, item.line - 1, 0, {
-            line_hl_group = "ExplainrLoading", sign_text = rail[1], sign_hl_group = rail[2][1], priority = 180,
+            line_hl_group = "ExplainrLoading", priority = 180,
           })
-          seen[item.line] = true
         end
       end
+      vim.b[self.review_buf].explainr_review_rails = rails
       if #empty > 0 then
         api.nvim_buf_set_extmark(self.review_buf, loading_ns, api.nvim_buf_line_count(self.review_buf) - 1, 0, {
           virt_lines = empty, virt_lines_leftcol = true, priority = 180,
@@ -637,13 +652,12 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if self.closed or self.detail_win or not self.lines then return end
     api.nvim_buf_clear_namespace(self.buf, loading_ns, 0, -1)
     local width = api.nvim_win_get_width(self.win) - vim.fn.getwininfo(self.win)[1].textoff
-    -- Repainting the glyph/background under a block cursor looks like cursor
-    -- flicker. Leave its logical row native; other requested rails still glow.
-    local cursor_line = api.nvim_get_current_win() == self.win and api.nvim_win_get_cursor(self.win)[1]
+    local cursor_line = cursor
     local coordinates = self.comparison and self.comparison[self.source]
     if not coordinates then return end
     local ranges = {}
-    if self.pending and self.status:match("^Pending") then
+    if self.restoring and busy(self.status) then ranges[1] = { 1, math.huge } end
+    if self.pending and busy(self.status) then
       local requests = { self.pending }
       vim.list_extend(requests, self.queued or {})
       for _, request in ipairs(requests) do
@@ -662,6 +676,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
         else vim.list_extend(ranges, (self.pending_ranges or {})[request] or {}) end
       end
     end
+    if #ranges == 0 then self.loading_cursor = nil end
     local function matches(first, last)
       for _, range in ipairs(ranges) do
         if first <= range[2] and (last or first) >= range[1] then return true end
@@ -674,7 +689,10 @@ function M.open(source, snapshot, result, on_close, keymaps)
       local opts = vim.deepcopy(geometry.opts)
       for index, coordinate in ipairs(geometry.coordinates) do
         if matches(coordinate) then
-          opts.virt_lines[index] = loading_rail(opts.virt_lines[index], width, self.frame, coordinate)
+          local first = cursor_line and (coordinates.lines[cursor_line - 1] or 0) + 1
+          local last = cursor_line and coordinates.lines[cursor_line]
+          local tick = first and last and coordinate >= first and coordinate <= last and frame(cursor_line) or self.frame
+          opts.virt_lines[index] = loading_rail(opts.virt_lines[index], width, tick, coordinate)
         end
       end
       api.nvim_buf_set_extmark(self.buf, geometry_ns, geometry.row, 0, opts)
@@ -685,11 +703,11 @@ function M.open(source, snapshot, result, on_close, keymaps)
         local coordinate = (self.overflow[item.line] or coordinates.lines[item.line]) + (item.offset or 0)
         local last = coordinates.lines[item.last] or coordinate
         if matches(coordinate, item.folded and last or coordinate) then
-          if item.folded and item.line ~= cursor_line then
+          if item.folded then
             loading_folds[tostring(item.line)] = "▊ "
               .. ((self.fold_labels or {})[tostring(item.line)] or "[folded]")
           end
-          if not item.filler and not item.eof and item.line ~= cursor_line and not seen[item.line] then
+          if not item.filler and not item.eof and not seen[item.line] then
             local text = item.folded and ((self.fold_labels or {})[tostring(item.line)] or "[folded]") or self.lines[item.line]
             local ref = not item.folded and (self.references[item.line] or "") or ""
             if not item.folded and ref == "" then
@@ -708,7 +726,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
               end
             else chunks[#chunks + 1] = { text, "ExplainrSummary" } end
             api.nvim_buf_set_extmark(self.buf, loading_ns, item.line - 1, 0, {
-              virt_text = loading_rail(chunks, width, self.frame, coordinate),
+              virt_text = loading_rail(chunks, width, frame(item.line), coordinate),
               virt_text_pos = "overlay", virt_text_win_col = 0, priority = 180,
             })
             seen[item.line] = true
@@ -722,10 +740,10 @@ function M.open(source, snapshot, result, on_close, keymaps)
   function pane:header(ids)
     if self.closed or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
     local width = api.nvim_win_get_width(self.win)
+    local status = self.review_mode and self.review_status or self.status
+    local spin = (busy(status) or self.background_busy) and spinner[(self.frame - 1) % #spinner + 1] .. " " or ""
     if self.review_mode then
       local status = self.review_status or "No review · :Explainr review"
-      local spin = status:match("^Pending") and api.nvim_get_current_win() ~= self.win
-        and spinner[(self.frame - 1) % #spinner + 1] .. " " or ""
       local title = "Review" .. (self.auto_explain and " · Auto" or "")
       local label = status .. (self.background and " · " .. self.background or "")
       local percent = status:match("^Pending · Annotating (%d+)%%")
@@ -735,7 +753,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
         if vim.fn.strwidth(title .. " · " .. spin .. label .. " " .. bar) <= width then
           label = label:gsub("(%d+%%)", "%1 " .. bar, 1)
         elseif vim.fn.strwidth(title .. " · " .. spin .. label) > width then
-          label, spin = "Annotating " .. percent .. "%", ""
+          label = "Annotating " .. percent .. "%"
         end
       end
       self.updating_state = true
@@ -755,9 +773,10 @@ function M.open(source, snapshot, result, on_close, keymaps)
     -- Do not spend the last cell on an ellipsis when the count/mode just fit.
     local compact = vim.fn.strwidth(counter) + 1 >= width
     if self.detail_win or compact then
+      if vim.fn.strwidth(title .. counter .. " · " .. spin .. (self.background or self.status)) > width then title = "" end
       local bar = header({ { title ~= "" and "Explainr" or "", "ExplainrTitle" },
         { (title ~= "" and " · " or "") .. counter .. (compact and "" or " · "
-          .. (self.background or self.status:match("^Pending") and self.status or "Expanded")
+          .. spin .. (self.background or busy(self.status) and self.status or "Expanded")
           .. " · Enter/K back · n/p notes") } }, width)
       self.updating_state = true
       if vim.wo[self.win].winbar ~= bar then vim.wo[self.win].winbar = bar end
@@ -765,9 +784,8 @@ function M.open(source, snapshot, result, on_close, keymaps)
       self.updating_state = false
       return
     end
-    local pending = self.status:match("^Pending")
-    local label = (pending and api.nvim_get_current_win() ~= self.win
-      and spinner[(self.frame - 1) % #spinner + 1] .. " " or "") .. self.status
+    local pending = busy(self.status)
+    local label = spin .. self.status
     if self.background then label = label .. " · " .. self.background end
     local queued = pending and self.queued and #self.queued > 0 and " · " .. #self.queued .. " queued" or ""
     local context = focused()
@@ -781,6 +799,15 @@ function M.open(source, snapshot, result, on_close, keymaps)
       end
     end
     local budget = width - vim.fn.strwidth(legend .. queued .. title .. counter) - 3
+    local minimum = vim.fn.strwidth(spin .. (self.status:match("^%S+") or "")) + 2
+    if spin ~= "" and budget < minimum then
+      budget, title = budget + vim.fn.strwidth(title), ""
+      if budget < minimum then
+        legend = ""
+        budget = width - vim.fn.strwidth(counter .. queued) - 3
+      end
+    end
+    if self.background_busy and not pending then label = spin .. (self.background or self.status) end
     -- Mode/count and a recognizable state matter more than the brand name.
     if budget < vim.fn.strwidth(self.status:match("^%S+") or "") + 2 then
       budget = budget + vim.fn.strwidth(title)
@@ -815,9 +842,9 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
 
   function pane:state()
-    if self.closed or self.detail_win or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
+    if self.closed or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
     self:header()
-    self:loading()
+    if not self.detail_win then self:loading() end
   end
 
   function pane:stop_spinner()
@@ -826,7 +853,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:animate()
     self:stop_spinner()
-    if self.closed or not (self.status:match("^Pending") or (self.review_status or ""):match("^Pending")) then return end
+    if self.closed or not (busy(self.status) or busy(self.review_status) or self.background_busy) then return end
     local timer = vim.uv.new_timer()
     self.timer = timer
     timer:start(100, 100, vim.schedule_wrap(function()
@@ -1289,7 +1316,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     self:focus(true)
     clear_detail_marks()
     self.review_options = {}
-    for name in pairs(vim.tbl_extend("keep", options, { linebreak = false, winhighlight = "", concealcursor = "" })) do
+    for name in pairs(vim.tbl_extend("keep", options, { linebreak = false, showbreak = "", winhighlight = "", concealcursor = "" })) do
       self.review_options[name] = vim.wo[self.win][name]
     end
     self.review_mode = true
@@ -1298,11 +1325,14 @@ function M.open(source, snapshot, result, on_close, keymaps)
     for name, value in pairs(options) do vim.wo[self.win][0][name] = value end
     vim.wo[self.win][0].wrap = true
     vim.wo[self.win][0].linebreak = true
+    -- Native smoothscroll's <<< marker otherwise overwrites the first gutter.
+    -- Keep the continuation prefix constant in idle and loading states.
+    vim.wo[self.win][0].showbreak = " "
     vim.wo[self.win][0].foldenable = false
     -- Reserve the loading gutter even when idle so pending status never
     -- reflows the narrative or changes its saved reading position.
     vim.wo[self.win][0].signcolumn = "yes:1"
-    vim.wo[self.win][0].statuscolumn = ""
+    vim.wo[self.win][0].statuscolumn = "%{%get(b:, 'explainr_review_rails', {})->get(string(v:lnum), '  ')%}"
     vim.wo[self.win][0].winhighlight = self.review_options.winhighlight
     api.nvim_win_call(self.win, function()
       vim.fn.winrestview(self.review_view or { topline = 1, lnum = 1, col = 0, skipcol = 0 })
@@ -1315,11 +1345,13 @@ function M.open(source, snapshot, result, on_close, keymaps)
   function pane:show_file()
     if self.closed or not self.review_mode then return end
     api.nvim_buf_clear_namespace(self.review_buf, loading_ns, 0, -1)
+    vim.b[self.review_buf].explainr_review_rails = {}
+    self.loading_cursor = nil
     self.review_view = api.nvim_win_call(self.win, vim.fn.winsaveview)
-    api.nvim_win_set_buf(self.win, self.buf)
-    for name, value in pairs(self.review_options) do vim.wo[self.win][0][name] = value end
     self.review_mode = false
     self.display_generation = (self.display_generation or 0) + 1
+    api.nvim_win_set_buf(self.win, self.buf)
+    for name, value in pairs(self.review_options) do vim.wo[self.win][0][name] = value end
     self:render()
   end
 
@@ -1682,6 +1714,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
       end
     end
     if #ids == 0 then return end
+    self.loading_cursor = nil
     local navigating = self.detail_win ~= nil
     if navigating then
       local location = self.locations[index]
@@ -2248,6 +2281,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if self.closed then return end
     self:focus(true)
     self.closed = true
+    self.loading_cursor = nil
     self:headers(true)
     clear_detail_marks()
     self:stop_spinner()
@@ -2297,7 +2331,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   local pending = false
   local rebuild = false
   local function schedule(full)
-    if pane.review_mode then return end
+    if pane.review_mode then pane:state(); return end
     rebuild = rebuild or full == true
     if pending or pane.closed or pane.rendering or pane.syncing or pane.detail_win and not full then return end
     pending = true
@@ -2333,6 +2367,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end
   api.nvim_create_autocmd("WinScrolled", { group = pane.group, callback = function(event)
     if pane.syncing or pane.rendering then return end
+    if pane.review_mode then pane:state(); return end
     local current_win = api.nvim_get_current_win()
     local scrolled = tonumber(event.match)
     if pane:windows()[current_win] then pane:scroll(nil, current_win)
@@ -2347,6 +2382,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   end })
   api.nvim_create_autocmd("WinResized", { group = pane.group, callback = function() schedule(true) end })
   api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, { group = pane.group, callback = function()
+    if pane.review_mode then pane:state(); return end
     local current_win = api.nvim_get_current_win()
     if current_win == pane.win or pane:windows()[current_win] then pane:sync(current_win) end
   end })

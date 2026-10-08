@@ -58,6 +58,111 @@ local function key(buf, lhs)
   error("missing mapping " .. lhs)
 end
 
+T.test("busy headers animate saved checks and focused detail without changing reading state", function()
+  local source = setup({ "one", "two", "three" })
+  local p = ui.open(source, { windows = { buffer = source } }, { notes = { note(2) } })
+  api.nvim_set_current_win(p.win)
+  for _, status in ipairs({ "Checking saved explanations", "Pending · checking completed cache",
+    "Pending · external agent", "Pending · checking result context" }) do
+    p:set_status(status)
+    assert(p.timer, "busy check needs a timer: " .. status)
+    p:stop_spinner(); p.frame = 1; p:state()
+    local first, tick = state(p), api.nvim_buf_get_changedtick(p.buf)
+    assert(first:find("⠋", 1, true), first)
+    p.frame = 2; p:state()
+    assert(state(p):find("⠙", 1, true), state(p))
+    T.eq(tick, api.nvim_buf_get_changedtick(p.buf)); T.eq(status, vim.b[p.buf].explainr_status)
+  end
+  p:set_status("Ready"); p:detail(1); T.eq(nil, p.loading_cursor)
+  local detail, view = p.detail_buf, api.nvim_win_call(p.win, vim.fn.winsaveview)
+  p.background, p.background_busy = "Running review", true
+  p:set_status("Ready"); assert(p.timer); p:stop_spinner()
+  local tick = api.nvim_buf_get_changedtick(detail)
+  local position = api.nvim_win_get_cursor(p.win)
+  local detail_view = api.nvim_win_call(p.win, vim.fn.winsaveview)
+  for _, width in ipairs({ 60, 32, 25 }) do
+    api.nvim_win_set_width(p.win, width)
+    p.frame = 1; p:state(); assert(state(p):find("⠋", 1, true), state(p))
+    local before = api.nvim_win_call(p.win, vim.fn.winsaveview)
+    p.frame = 2; p:state(); assert(state(p):find("⠙", 1, true), state(p))
+    T.eq(before, api.nvim_win_call(p.win, vim.fn.winsaveview))
+  end
+  T.eq(detail, p.detail_buf); T.eq(tick, api.nvim_buf_get_changedtick(detail))
+  T.eq(position, api.nvim_win_get_cursor(p.win)); T.eq(detail_view.topline, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
+  T.eq(view.lnum, api.nvim_get_current_win() == p.win and api.nvim_win_get_cursor(p.win)[1])
+  p.background, p.background_busy = nil, nil
+  for _, terminal in ipairs({ "Ready", "Failed", "Cancelled", "Stale" }) do
+    p:set_status(terminal); T.eq(nil, p.timer)
+    assert(not state(p):find("⠙", 1, true))
+  end
+  p:close()
+end)
+
+T.test("Review checking has continuous screen rails through wraps, clipped paragraphs and EOF", function()
+  local source = setup({ "source", "untouched" })
+  local p = ui.open(source, { windows = { new = source } }, { notes = {} })
+  local narrative = { title = "Retained review", sections = { { heading = "Why", intent_basis = "inferred",
+    detail = string.rep("Distinct wrapped paragraph with useful context. ", 36) .. "\n\nLast paragraph.", file_ids = {} } } }
+  p:set_review(narrative, {}, "Checking saved review"); p:show_review()
+  assert(p.timer, "saved review needs a timer"); p:stop_spinner()
+  local function screen()
+    p:state(); vim.cmd("redraw!")
+    local info = vim.fn.getwininfo(p.win)[1]
+    for row = info.winrow + 1, info.winrow + info.height do
+      T.eq("▊", vim.fn.screenstring(row, info.wincol))
+    end
+  end
+  local tick = api.nvim_buf_get_changedtick(p.review_buf)
+  local source_view = api.nvim_win_call(source, vim.fn.winsaveview)
+  api.nvim_win_set_width(p.win, 42); screen()
+  assert(api.nvim_win_text_height(p.win, { start_row = 5, end_row = 5 }).all >= 4)
+  api.nvim_set_current_win(p.win); api.nvim_win_set_cursor(p.win, { 6, 0 })
+  p.frame = 1; screen()
+  local pos = vim.fn.screenpos(p.win, 6, 1)
+  local col = vim.fn.getwininfo(p.win)[1].wincol
+  local frozen = vim.fn.screenattr(pos.row, col)
+  local header = state(p)
+  p.frame = 7; screen()
+  T.eq(frozen, vim.fn.screenattr(pos.row, col)); assert(header ~= state(p))
+  vim.wo[p.win].smoothscroll = true
+  api.nvim_win_call(p.win, function()
+    vim.fn.winrestview({ topline = 6, skipcol = 120, lnum = 6, col = 140 })
+  end)
+  screen()
+  assert(api.nvim_win_call(p.win, vim.fn.winsaveview).skipcol > 0, "fixture must clip a paragraph")
+  api.nvim_win_set_width(p.win, 55); screen()
+  motion(p.win, "Gzt"); screen()
+  T.eq(tick, api.nvim_buf_get_changedtick(p.review_buf))
+  T.eq(source_view, api.nvim_win_call(source, vim.fn.winsaveview))
+  for _, terminal in ipairs({ "Ready", "Failed", "Cancelled", "Stale" }) do
+    p:set_review(narrative, {}, terminal); vim.cmd("redraw!")
+    local info = vim.fn.getwininfo(p.win)[1]
+    T.eq(" ", vim.fn.screenstring(info.winrow + 1, info.wincol)); T.eq(nil, p.timer)
+    p:set_review(narrative, {}, "Pending · checking result context"); p:stop_spinner()
+  end
+  p:show_file(); T.eq("  ", vim.wo[p.win].statuscolumn)
+  p:show_review(); screen()
+  vim.b[p.review_buf].explainr_review_rails = nil; vim.cmd("redraw!")
+  T.eq("", vim.v.errmsg)
+  p:close()
+end)
+
+T.test("saved File checking animates without request anchors and clears on idle", function()
+  local source = setup({ "one", "two", "three" })
+  local p = ui.open(source, { windows = { new = source } }, nil)
+  p.restoring = true
+  p:set_status("Checking saved explanations"); p:stop_spinner()
+  T.eq(nil, p.pending); T.eq(3, #marks(p, "explainr.loading"))
+  p.restoring = nil; p:set_status("No explanations · request file or hunk")
+  T.eq({}, marks(p, "explainr.loading")); T.eq(nil, p.timer)
+  p.background, p.background_busy = "Running review", true
+  p:set_status("Ready"); assert(p.timer)
+  T.eq({}, marks(p, "explainr.loading")) -- Background work cannot tint this File.
+  p.background, p.background_busy = nil, nil
+  p:set_status("Ready"); T.eq(nil, p.timer); T.eq(nil, p.loading_cursor)
+  p:close()
+end)
+
 T.test("Review is independent, preserves reading position, and follows only host references", function()
   local lines = {}; for row = 1, 100 do lines[row] = "source " .. row end
   local source = setup(lines)
@@ -77,7 +182,7 @@ T.test("Review is independent, preserves reading position, and follows only host
   p:show_review(); T.eq(focus, api.nvim_get_current_win())
   assert(state(p):find("Review · Auto", 1, true)); assert(not state(p):find("1 /", 1, true))
   T.eq("explainr", vim.bo[p.review_buf].filetype); T.eq(false, vim.bo[p.review_buf].modifiable)
-  T.eq(true, vim.wo[p.win].wrap); T.eq("", vim.wo[p.win].statuscolumn)
+  T.eq(true, vim.wo[p.win].wrap); assert(vim.wo[p.win].statuscolumn:find("explainr_review_rails", 1, true))
   local source_view = api.nvim_win_call(source, vim.fn.winsaveview)
   motion(p.win, "30Gzt"); p:sync(p.win)
   T.eq(source_view, api.nvim_win_call(source, vim.fn.winsaveview))
@@ -133,20 +238,27 @@ T.test("Review loading animates empty and retained narratives without rewriting 
   p:set_review(narrative, {}, "Pending · generating comparison"); p:stop_spinner()
   local first = decorations()
   assert(#first > 1)
-  for _, mark in ipairs(first) do assert(mark[2] ~= 11, "focused cursor row must not repaint") end
+  local rails = vim.b[p.review_buf].explainr_review_rails
+  assert(rails["12"], "focused cursor row retains a rail")
   p.frame = p.frame + 6; p:state()
-  assert(first[1][4].sign_hl_group ~= decorations()[1][4].sign_hl_group, "rail must animate")
+  T.eq(rails["12"], vim.b[p.review_buf].explainr_review_rails["12"])
+  assert(rails["13"] ~= vim.b[p.review_buf].explainr_review_rails["13"], "other rails must animate")
   T.eq(tick, api.nvim_buf_get_changedtick(p.review_buf))
   T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
   T.eq(source_view, api.nvim_win_call(source, vim.fn.winsaveview))
+  motion(p.win, "j")
+  local moved = vim.b[p.review_buf].explainr_review_rails
+  p.frame = p.frame + 6; p:state()
+  assert(moved["12"] ~= vim.b[p.review_buf].explainr_review_rails["12"], "old focused line must resume")
+  T.eq(moved["13"], vim.b[p.review_buf].explainr_review_rails["13"])
   p:show_file(); T.eq({}, decorations())
   p:show_review(); assert(#decorations() > 0)
   for _, status in ipairs({ "Ready", "Failed", "Cancelled", "Stale" }) do
     p:set_review(narrative, {}, status)
-    T.eq({}, decorations()); T.eq(nil, p.timer)
+    T.eq({}, decorations()); T.eq(nil, p.timer); T.eq(nil, p.loading_cursor)
     p:set_review(narrative, {}, "Pending · comparison")
   end
-  p:close(); T.eq(nil, p.timer)
+  p:close(); T.eq(nil, p.timer); T.eq(nil, p.loading_cursor)
 end)
 
 T.test("Review percentage keeps a bar only when it fits and stays readable in narrow panes", function()
@@ -156,21 +268,21 @@ T.test("Review percentage keeps a bar only when it fits and stays readable in na
   local status = "Pending · Annotating 42% · 7 files"
   p:set_review(nil, {}, status); p:show_review(); p:stop_spinner()
   api.nvim_set_current_win(p.win)
-  local full = "Review · Auto · Pending · Annotating 42% [████░░░░░░] · 7 files"
+  local full = "Review · Auto · ⠋ Pending · Annotating 42% [████░░░░░░] · 7 files"
   local width = vim.fn.strwidth(full)
   api.nvim_win_set_width(p.win, width); p:header()
   T.eq(full, state(p)); T.eq(status, vim.b[p.review_buf].explainr_status)
   api.nvim_win_set_width(p.win, width - 1); p:header()
-  T.eq("Review · Auto · " .. status, state(p))
+  T.eq("Review · Auto · ⠋ " .. status, state(p))
   api.nvim_win_set_width(p.win, 32); p:header()
-  T.eq("Review · Auto · Annotating 42%", state(p))
+  T.eq("Review · Auto · ⠋ Annotating 42%", state(p))
   api.nvim_win_set_width(p.win, width + 1)
   for _, entry in ipairs({ { 0, "[░░░░░░░░░░]" }, { 100, "[██████████]" } }) do
     p:set_review(nil, {}, "Pending · Annotating " .. entry[1] .. "% · 7 files"); p:stop_spinner()
     assert(state(p):find(entry[2], 1, true), state(p))
   end
   p:set_review(nil, {}, "Pending · synthesizing"); p:stop_spinner()
-  T.eq("Review · Auto · Pending · synthesizing", state(p))
+  T.eq("Review · Auto · ⠋ Pending · synthesizing", state(p))
   p:close()
 end)
 
@@ -3959,8 +4071,7 @@ T.test("loading does not repaint the focused cursor cell on summaries, blank row
       T.eq(pos, vim.fn.screenpos(p.win, line, 1))
       T.eq(char, vim.fn.screenstring(pos.row, pos.col)); T.eq(attr, vim.fn.screenattr(pos.row, pos.col))
     end
-    for _, m in ipairs(marks(p, "explainr.loading")) do assert(m[2] + 1 ~= line) end
-    T.eq(4, #marks(p, "explainr.loading")) -- Only the cursor row pauses.
+    T.eq(5, #marks(p, "explainr.loading")) -- The cursor row freezes rather than disappearing.
   end
   api.nvim_set_current_win(source)
   api.nvim_exec_autocmds("WinEnter", { buffer = api.nvim_win_get_buf(source) })
@@ -4054,6 +4165,14 @@ T.test("loading rails cover wrapped continuations without duplicating their acce
     end
   end
   T.eq(3, animated); T.eq(1, summaries)
+  api.nvim_set_current_win(p.win); api.nvim_win_set_cursor(p.win, { 2, 0 })
+  p.frame = 1; p:state()
+  local geometry = marks(p, "explainr.geometry")
+  p.frame = 9; p:state()
+  T.eq(geometry, marks(p, "explainr.geometry")) -- Every continuation of the focused logical row freezes.
+  motion(p.win, "j")
+  p.frame = 15; p:state()
+  assert(not vim.deep_equal(geometry, marks(p, "explainr.geometry")), "wrapped rails must resume after cursor moves")
   p:close()
 end)
 
