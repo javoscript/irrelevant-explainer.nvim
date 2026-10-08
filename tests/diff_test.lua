@@ -857,10 +857,13 @@ T.test("review has deterministic targets for all text entries and metadata IDs f
     assert(manifest(snapshot, "empty.txt").text_unavailable)
     local again = assert(diff.collect(state.source, "review", { diff = "auto" }))
     T.eq(snapshot.target, again.target)
-    local _, _, size = require("explainr.prompt").build(snapshot, math.huge)
     for _, strategy in ipairs({ "focused", "auto" }) do
-      local missing, err = diff.collect(state.source, "review", { diff = strategy, max_bytes = size - 1 })
-      T.eq(nil, missing); assert(err:find("Complete prompt", 1, true), err)
+      -- Review capture is independent of a single invocation's input budget.
+      local captured = assert(diff.collect(state.source, "review", { diff = strategy, max_bytes = 1 }))
+      T.eq(snapshot.target, captured.target)
+      for _, item in ipairs(captured.comparison.manifest) do T.eq(nil, item.patch) end
+      local missing, err = diff.collect(state.source, "review", { diff = strategy, snapshot_max_bytes = 1 })
+      T.eq(nil, missing); assert(err:find("snapshot", 1, true), err)
     end
   end)
 end)

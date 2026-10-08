@@ -1,10 +1,11 @@
 local M = {}
 local api = vim.api
 local block = string.char(22)
+local identity = require("explainr.identity")
 
 local function path(buf)
   local name = api.nvim_buf_get_name(buf)
-  return name == "" and ("[buffer:" .. buf .. "]") or vim.fn.fnamemodify(name, ":p")
+  return name == "" and "[unnamed]" or vim.fn.fnamemodify(name, ":p")
 end
 
 local function position(value, buf, lines)
@@ -87,7 +88,7 @@ local function capture(win, scope, selection)
     return {
       mode = "code", files = { file }, target = target, windows = { buffer = win },
       source_buf = buf, changedtick = tick, cwd = cwd,
-      fingerprint = vim.fn.sha256(vim.json.encode({ filename, lines, empty, file.endofline, scope, spans, text, cwd })),
+      fingerprint = identity.hash({ filename, lines, empty, file.endofline, identity.target(target), cwd }),
     }
   end)
 end

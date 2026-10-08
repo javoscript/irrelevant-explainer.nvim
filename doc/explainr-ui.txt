@@ -8,8 +8,9 @@ Markdown for the entire comparison, with visible markers and native wrapping.
 It has no anchor rails, source dimming, source-linked cursor or scrolling.
 Optional Markdown parsers improve highlighting but are not required.
 
-:Explainr review generates the whole review and its per-file explanations in
-one invocation. From an ordinary source it first opens a HEAD-to-working-tree
+:Explainr review generates the whole review and its per-file explanations through
+sequential annotation, optional reduction and synthesis calls. From an ordinary
+source it first opens a HEAD-to-working-tree
 Diffview comparison; opening is asynchronous and Cancel/Close can stop it before
 inference. From an existing comparison it preserves its revisions and filters.
 See |explainr-review| for repository selection and working-buffer limitations.
@@ -42,6 +43,32 @@ as File loading, including before a narrative exists. These decorations follow
 the narrative viewport, not source ranges. Accepted prose and reading position
 stay intact; the focused cursor row does not repaint. The loader clears when
 the request ends or Review is hidden. It indicates activity, not a percentage.
+
+Opening preflight uses a notification, before a reader is ready. The existing
+reader header then shows collection/planning, Annotations 3/12, reducing,
+synthesizing and Ready. Annotation counts mean
+validated planned units, not files, tokens, percent or ETA; 12/12 is not Ready
+until synthesis and final freshness checks pass. Checkpoints stay internal: the
+new narrative and every file's notes install together, never as partial answers.
+Older fresh accepted content remains readable during work or ordinary failure.
+Narrow headers shorten status while preserving their existing mode/count/Auto
+priorities; no new pane or progress layout is introduced.
+
+On failure, :messages identifies the phase/request, completed units and relevant
+byte/call limits. Repeat :Explainr review in the owning comparison or reader to
+revalidate and resume matching successful checkpoints. Cancel retains those
+checkpoints while the owner stays open; Close, stale/replaced comparisons and
+restart discard unfinished work. :ExplainrRefresh in Review regenerates all
+phases; in File it stays file/hunk-scoped. A new review from ordinary code opens
+a new view rather than adopting another owner's unfinished job. Repeats during
+opening only coalesce. Failure starts no automatic per-file fallback.
+
+Completed shared-cache hits show Ready · cached after fresh capture/validation,
+without fabricated annotation or synthesis progress, including after outside
+opening. Reading or expanding that answer performs no inference. In-memory
+navigation restoration still shows Ready · restored and preserves reading state.
+Cache clear does not remove displayed valid notes or close readers. See
+|explainr-cache| for persistence, privacy, opt-out and Refresh controls.
 
 The explanation window is read-only and opens at the far right, outside both
 old/new diff panes, even when triggered from old. Blank rows preserve

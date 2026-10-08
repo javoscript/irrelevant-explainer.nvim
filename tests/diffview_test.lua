@@ -303,7 +303,7 @@ T.test("real Diffview closure cancels expanded session work immediately in foreg
   local ok, err = xpcall(function()
     for _, background in ipairs({ false, true }) do
       fixture = dofile("tests/review.lua").open(true)
-      plugin.setup()
+      plugin.setup({ cache = { enabled = false } })
       vim.cmd("runtime plugin/diffview.lua")
       vim.v.errmsg = ""
       local before = #jobs
@@ -391,7 +391,7 @@ local function replacement_reader(geometry_first)
   vim.o.columns = 220
   local fixture = dofile("tests/review.lua").open(true)
   local ok, err = xpcall(function()
-    plugin.setup()
+    plugin.setup({ cache = { enabled = false } })
     local s = plugin.explain("file")
     assert(vim.wait(5000, function() return #jobs == 1 end))
     answer(jobs[1])
@@ -592,7 +592,7 @@ T.test("opt-in Diffview navigation requests files once while open and reuses or 
     vim.wait(1100) -- Include a freshness poll: no repeated automatic inference.
   end
   local ok, err = xpcall(function()
-    plugin.setup({ diff = { auto_explain = true } })
+    plugin.setup({ cache = { enabled = false }, diff = { auto_explain = true } })
     fixture:switch("openspec/spec.md"); events()
     T.eq(0, #jobs); T.eq(nil, require("explainr.session").current())
     fixture:switch("policy.lua")
@@ -679,7 +679,7 @@ end
 T.test("notes navigation preserves source window defaults for unopened Diffview files", function()
   for _, expanded in ipairs({ false, true }) do
     toggle_fixture(function(f, fixture, plugin)
-      plugin.setup()
+      plugin.setup({ cache = { enabled = false } })
       local source = fixture.state.source
       local expected = { number = true, relativenumber = true, wrap = false, signcolumn = "auto:2", statuscolumn = "" }
       for name, value in pairs(expected) do vim.wo[source][name] = value end
@@ -708,7 +708,7 @@ for _, auto in ipairs({ false, true }) do
   for _, collapse in ipairs({ false, true }) do
     T.test(string.format("explorer file selection isolates detail gutters (auto=%s, collapsed=%s)", auto, collapse), function()
       toggle_fixture(function(f, fixture, plugin)
-        plugin.setup()
+        plugin.setup({ cache = { enabled = false } })
         local actions, panel = require("diffview.actions"), fixture.view.panel
         local gutters = { [fixture.state.windows.old] = "L ", [fixture.state.windows.new] = "R ",
           [panel.winid] = "T " }
@@ -795,7 +795,7 @@ end
 
 T.test("runtime toggle affects subsequent Diffview navigation, not current notes or active inference", function()
   toggle_fixture(function(f, fixture, plugin)
-    plugin.setup()
+    plugin.setup({ cache = { enabled = false } })
     T.eq(true, plugin.toggle_auto_explain()); fixture:switch("openspec/spec.md"); f.events()
     T.eq(0, #f.jobs); T.eq(nil, require("explainr.session").current())
     T.eq(false, plugin.toggle_auto_explain()); fixture:switch("policy.lua")
@@ -822,7 +822,7 @@ end)
 T.test("runtime toggle never revives earlier loading, stale restoration or background navigation", function()
   for _, initial in ipairs({ false, true }) do
     toggle_fixture(function(f, fixture, plugin)
-      plugin.setup({ diff = { auto_explain = initial } })
+      plugin.setup({ cache = { enabled = false }, diff = { auto_explain = initial } })
       api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
       local s = plugin.explain("hunk"); f.answer(f.job(1)); f.ready(s, "policy.lua")
       local current = adapter.current
@@ -1084,9 +1084,12 @@ local function whole_review_fixture(run, reference_variants)
   vim.o.columns = 220
   f.fixture = dofile("tests/review.lua").open(true, reference_variants)
   agent.run = function(prompt, config, _, callback)
-    local job = { target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)")),
-      context = vim.json.decode(prompt:match("UNTRUSTED SNAPSHOT JSON:\n(.-)\nFOCUSED TARGET JSON:")),
-      config = config, callback = callback }
+    local request = prompt:match("UNTRUSTED REVIEW REQUEST JSON:\n(.*)")
+    local job = { config = config, callback = callback, request = request and vim.json.decode(request) }
+    if not request then
+      job.target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)"))
+      job.context = vim.json.decode(prompt:match("UNTRUSTED SNAPSHOT JSON:\n(.-)\nFOCUSED TARGET JSON:"))
+    end
     job.cancel = function() job.cancelled = true end
     f.jobs[#f.jobs + 1] = job
     return job
@@ -1105,16 +1108,40 @@ local function whole_review_fixture(run, reference_variants)
         detail = "A complete explanation of `" .. target.path .. "`.\n\n" .. string.rep("Read the supplied evidence.\n\n", 20),
         anchors = { target.anchors[1] }, intent_basis = "unknown", evidence = {} } }
     end
-    if job.target.scope == "review" then
-      local value = { version = 2, review = { title = label or "Owner-only cancellation", sections = {} }, files = {} }
-      for _, target in ipairs(job.target.files) do
-        value.files[#value.files + 1] = { file_id = target.file_id, notes = notes(target) }
+    if job.request then
+      local req = job.request
+      local value = { version = 3, phase = req.phase, request_id = req.request_id, snapshot_id = req.snapshot_id }
+      local citation = { path = "openspec/spec.md", side = "new", start_line = 2, end_line = 2 }
+      if req.phase == "annotate" then
+        value.units = vim.tbl_map(function(unit)
+          local findings = {}
+          for i = 1, self.verbose_findings and 4 or 1 do
+            findings[i] = { text = self.verbose_findings and (i .. string.rep("Ownership matters. ", 45)) or "Cancellation requires ownership.",
+              intent_basis = "documented", evidence = { citation }, file_ids = { unit.file_id } }
+          end
+          return { unit_id = unit.unit_id, notes = notes(unit.target), findings = findings }
+        end, req.units)
+      elseif req.phase == "reduce" then
+        value.child_ids, value.findings = req.child_ids, { req.inputs[1].findings[1] }
+      else
+        value.child_ids = req.child_ids
+        value.review = { title = label or "Owner-only cancellation", sections = {
+          { heading = "How the files connect", detail = string.rep("Owners may cancel.\n\n", 30),
+            intent_basis = "documented", evidence = { citation },
+            file_ids = vim.tbl_map(function(entry) return entry.file_id end, req.manifest) },
+        } }
       end
-      value.review.sections[1] = { heading = "How the files connect", detail = string.rep("The policy, requirement and tests describe cancellation.\n\n", 30),
-        intent_basis = "documented", evidence = { { path = "openspec/spec.md", side = "new", start_line = 2, end_line = 2 } },
-        file_ids = vim.tbl_map(function(entry) return entry.file_id end, job.context.comparison.manifest) }
       job.callback(value)
     else job.callback({ version = 1, notes = notes(job.target) }) end
+  end
+  -- Every entry is one real agent invocation; callers can pause between phases.
+  function f:complete(n, label)
+    while true do
+      local job = self:job(n)
+      self:answer(n, label)
+      if not job.request or job.request.phase == "synthesize" then return n end
+      n = n + 1
+    end
   end
   function f:settled(s)
     assert(vim.wait(10000, function() return not s.pending and not s.restoration and not s.checking end),
@@ -1128,7 +1155,7 @@ local function whole_review_fixture(run, reference_variants)
         and not s.restoring
     end), s.pane.status)
   end
-  plugin.setup()
+  plugin.setup({ cache = { enabled = false } })
   local ok, err = xpcall(function() run(f, plugin) end, debug.traceback)
   f.fixture:close()
   agent.run, vim.notify, vim.o.columns = original, notify, columns
@@ -1151,21 +1178,21 @@ T.test("whole-review commands work from the Diffview file tree without moving fo
     T.eq(true, s.pane.review_mode); T.eq(0, #f.jobs)
     T.eq(f.fixture.state.source, s.pane.source)
     vim.cmd("Explainr review")
-    T.eq("review", f:job(1).target.scope)
-    f:answer(1); f:settled(s)
+    T.eq("annotate", f:job(1).request.phase)
+    T.eq(3, f:complete(1)); f:settled(s)
     T.eq(panel.winid, api.nvim_get_current_win()); T.eq(selected, f.fixture.view.cur_entry)
     T.eq(tree_view, api.nvim_win_call(panel.winid, vim.fn.winsaveview))
     T.eq("Owner-only cancellation", s.pane.review.title)
-    plugin.explain("review"); f:settled(s); T.eq(1, #f.jobs)
-    vim.cmd("ExplainrRefresh"); T.eq("review", f:job(2).target.scope)
-    f:answer(2, "Refreshed from tree"); f:settled(s)
+    plugin.explain("review"); f:settled(s); T.eq(3, #f.jobs)
+    vim.cmd("ExplainrRefresh"); T.eq("annotate", f:job(4).request.phase)
+    T.eq(6, f:complete(4, "Refreshed from tree")); f:settled(s)
     T.eq(panel.winid, api.nvim_get_current_win()); T.eq({}, f.errors)
   end)
 end)
 
 T.test("one review invocation survives collection navigation, distributes every file and supports display-only references", function()
   whole_review_fixture(function(f, plugin)
-    plugin.setup({ diff = { auto_explain = true }, context = { diff = "focused" } })
+    plugin.setup({ cache = { enabled = false }, diff = { auto_explain = true }, context = { diff = "focused" } })
     vim.cmd("ExplainrReview")
     local s = require("explainr.session").current()
     T.eq(true, s.pane.review_mode); T.eq(0, #f.jobs)
@@ -1175,18 +1202,27 @@ T.test("one review invocation survives collection navigation, distributes every 
     f:select("openspec/spec.md", s) -- Before collection has delivered.
     T.eq(false, collection.cancelled)
     local job = f:job(1)
-    T.eq("review", job.target.scope); T.eq(4, #job.target.files)
-    T.eq("review", job.context.context.strategy)
+    T.eq("annotate", job.request.phase); T.eq(3, #job.request.units)
+    T.eq(4, #require("explainr.review").inspect(s.review_job).units)
+    T.eq("review", s.pending.snapshot.context.strategy)
     plugin.explain("review") -- Same target even though a different file is displayed.
     f:select("docs/adr.md", s)
     T.eq(nil, job.cancelled); T.eq(false, s.pane.review_mode)
     local focus = api.nvim_get_current_win()
-    f:answer(1); f:settled(s)
-    T.eq(1, #f.jobs); T.eq(focus, api.nvim_get_current_win()); T.eq(false, s.pane.review_mode)
+    f:answer(1)
+    T.eq("annotate", f:job(2).request.phase); T.eq(1, #f.jobs[2].request.units)
+    T.eq(nil, s.pane.review); T.eq(nil, s.pane.result)
+    f:select("policy.lua", s); f:select("docs/adr.md", s)
+    plugin.explain("review"); T.eq(2, #f.jobs)
+    f:answer(2); T.eq("synthesize", f:job(3).request.phase)
+    T.eq(nil, s.pane.review); T.eq(nil, s.pane.result)
+    f:select("policy.lua", s); f:select("docs/adr.md", s)
+    f:answer(3); f:settled(s)
+    T.eq(3, #f.jobs); T.eq(focus, api.nvim_get_current_win()); T.eq(false, s.pane.review_mode)
     T.eq("Explains docs/adr.md", s.pane.result.notes[1].summary)
     for _, path in ipairs({ "policy.lua", "tests/policy.txt", "openspec/spec.md" }) do
       f:select(path, s); f:settled(s)
-      T.eq(1, #f.jobs); T.eq(path, s.snapshot.target.path)
+      T.eq(3, #f.jobs); T.eq(path, s.snapshot.target.path)
       if path == "tests/policy.txt" then T.eq(0, #s.pane.result.notes) end
     end
     plugin.review(); f:settled(s)
@@ -1200,18 +1236,18 @@ T.test("one review invocation survives collection navigation, distributes every 
     for line, entry in pairs(s.pane.review_references) do if entry.path == "policy.lua" then row = line end end
     api.nvim_win_set_cursor(s.pane.win, { assert(row), 0 }); vim.cmd("normal \r")
     assert(vim.wait(5000, function() return f.fixture.view.cur_entry.path == "policy.lua" and not s.restoring end))
-    T.eq(false, s.pane.review_mode); T.eq("policy.lua", s.snapshot.target.path); T.eq(1, #f.jobs)
-    plugin.refresh(); T.eq("file", f:job(2).target.scope); f:answer(2); f:settled(s)
-    plugin.review(); plugin.refresh(); T.eq("review", f:job(3).target.scope)
-    f:answer(3, "Fresh narrative"); f:settled(s)
+    T.eq(false, s.pane.review_mode); T.eq("policy.lua", s.snapshot.target.path); T.eq(3, #f.jobs)
+    plugin.refresh(); T.eq("file", f:job(4).target.scope); f:answer(4); f:settled(s)
+    plugin.review(); plugin.refresh(); T.eq("annotate", f:job(5).request.phase)
+    T.eq(7, f:complete(5, "Fresh narrative")); f:settled(s)
     T.eq("Fresh narrative", s.pane.review.title)
-    plugin.explain("review"); f:settled(s); T.eq(3, #f.jobs)
+    plugin.explain("review"); f:settled(s); T.eq(7, #f.jobs)
     f.fixture:write("docs/adr.md", "Changed shared rationale.\n")
     api.nvim_exec_autocmds("TextChanged", {})
     assert(vim.wait(7000, function() return s.pane.review_status:match("^Stale") end))
     T.eq(nil, s.pane.review); T.eq(nil, s.pane.result)
-    plugin.refresh(); local late = f:job(4)
-    plugin.close(); T.eq(true, late.cancelled); f:answer(4)
+    plugin.refresh(); local late = f:job(8)
+    plugin.close(); T.eq(true, late.cancelled); f:answer(8)
     vim.wait(100); T.eq(nil, require("explainr.session").current())
     T.eq({}, f.errors)
   end)
@@ -1246,27 +1282,27 @@ end)
 
 T.test("review failure suppresses Auto fallback but continues explicit file work and budget overflow invokes nothing", function()
   whole_review_fixture(function(f, plugin)
-    plugin.setup({ diff = { auto_explain = true } })
+    plugin.setup({ cache = { enabled = false }, diff = { auto_explain = true } })
     local s = plugin.explain("review"); f:job(1)
     f:select("openspec/spec.md", s)
     plugin.explain("file")
     f:select("tests/policy.txt", s)
     vim.wait(200); T.eq(1, #f.jobs); T.eq(1, #s.queue); T.eq(nil, s.automatic)
-    f.jobs[1].callback('{"version":2,"review":')
+    f.jobs[1].callback('{"version":3,"phase":')
     T.eq("openspec/spec.md", f:job(2).target.path)
     f:answer(2); f:settled(s)
     vim.wait(1100); T.eq(2, #f.jobs); T.eq(nil, s.pane.review)
     plugin.review(); assert(s.pane.review_status:match("^Failed"))
-    plugin.setup({ context = { max_bytes = 100, diff = "focused" } })
+    plugin.setup({ cache = { enabled = false }, context = { max_bytes = 100, diff = "focused" } })
     plugin.refresh(); f:settled(s); T.eq(2, #f.jobs)
-    assert(f.errors[#f.errors]:find("Complete prompt", 1, true))
+    assert(f.errors[#f.errors]:find("request_max_bytes", 1, true), vim.inspect(f.errors))
     T.eq({ "file", "selection", "hunk", "review" }, vim.fn.getcompletion("Explainr ", "cmdline"))
   end)
 end)
 
 T.test("Auto coalesces navigation while explicit promotion survives later navigation and disabling", function()
   whole_review_fixture(function(f, plugin)
-    plugin.setup({ diff = { auto_explain = true } })
+    plugin.setup({ cache = { enabled = false }, diff = { auto_explain = true } })
     local s = plugin.explain("file"); f:job(1)
     f:select("openspec/spec.md", s)
     assert(vim.wait(7000, function() return s.automatic and s.automatic.collected end))
@@ -1300,26 +1336,32 @@ T.test("review replaces full-file batches but preserves hunks and only reuses ma
     plugin.explain("review"); f:job(3)
     s.pane:show_file(); s.pane:detail(1)
     local detail, view = s.pane.detail_buf, api.nvim_win_call(s.pane.win, vim.fn.winsaveview)
-    f:answer(3, "Replacement"); f:settled(s)
+    T.eq(5, f:complete(3, "Replacement")); f:settled(s)
     T.eq(2, #s.batches); T.eq(detail, s.pane.detail_buf)
     T.eq(view, api.nvim_win_call(s.pane.win, vim.fn.winsaveview))
     T.eq("Original policy.lua", s.pane.result.notes[1].summary)
     s.pane:back()
     T.eq({ "Replacement policy.lua", "Hunk policy.lua" }, vim.tbl_map(function(n) return n.summary end, s.pane.result.notes))
     f:select("openspec/spec.md", s); f:settled(s)
-    plugin.explain("file"); f:settled(s); T.eq(3, #f.jobs)
-    plugin.setup({ context = { diff = "focused" } })
-    plugin.explain("file"); f:job(4); f:answer(4); f:settled(s)
-    plugin.setup({ ai = { output = function(text) return text end } })
-    plugin.explain("file"); f:job(5); f:answer(5); f:settled(s)
+    -- A distributed annotation did not receive this standalone request's whole
+    -- comparison context/contract. Reading is free; explicitly requesting that
+    -- different coverage is a miss, then an exact repeat is reusable.
+    plugin.explain("file"); f:job(6); f:answer(6); f:settled(s)
+    plugin.explain("file"); f:settled(s); T.eq(6, #f.jobs)
+    plugin.setup({ cache = { enabled = false }, context = { diff = "focused" } })
+    plugin.explain("file"); f:job(7); f:answer(7); f:settled(s)
+    plugin.setup({ cache = { enabled = false }, ai = { output = function(text) return text end } })
+    plugin.explain("file"); f:job(8); f:answer(8); f:settled(s)
     T.eq({}, f.errors)
   end)
 end)
 
 T.test("Review references navigate exact renamed deleted and binary entries without inference", function()
   whole_review_fixture(function(f, plugin)
-    plugin.setup({ diff = { auto_explain = true } })
-    local s = plugin.explain("review"); f:job(1); f:answer(1); f:settled(s)
+    plugin.setup({ cache = { enabled = false }, diff = { auto_explain = true } })
+    local s = plugin.explain("review"); T.eq(3, f:complete(1)); f:settled(s)
+    T.eq({}, f.errors); assert(s.pane.review, s.pane.review_status)
+    T.eq({ "annotate", "annotate", "synthesize" }, vim.tbl_map(function(job) return job.request.phase end, f.jobs))
     for _, path in ipairs({ "renamed.txt", "deleted.txt", "badge.bin" }) do
       plugin.review(); f:settled(s)
       local row, reference
@@ -1333,7 +1375,7 @@ T.test("Review references navigate exact renamed deleted and binary entries with
         return f.fixture.view.cur_entry.path == path and not s.restoring
           and (path == "badge.bin" or s.snapshot and s.snapshot.target.path == path)
       end), s.pane.status)
-      f:settled(s); T.eq(false, s.pane.review_mode); T.eq(1, #f.jobs)
+      f:settled(s); T.eq(false, s.pane.review_mode); T.eq(3, #f.jobs)
       if path == "renamed.txt" then
         T.eq("old-name.txt", s.snapshot.target.oldpath)
       elseif path == "deleted.txt" then
@@ -1345,4 +1387,99 @@ T.test("Review references navigate exact renamed deleted and binary entries with
     end
     T.eq({}, f.errors)
   end, true)
+end)
+
+T.test("review checkpoints resume only in their owner and refresh discards partial progress", function()
+  for _, failure in ipairs({ "provider unavailable", "Agent timed out", "cancel" }) do
+    whole_review_fixture(function(f, plugin)
+      local s = plugin.explain("review")
+      local first = f:job(1).request.request_id
+      f:answer(1)
+      local second = f:job(2)
+      T.eq("annotate", second.request.phase)
+      T.eq(nil, s.pane.review); T.eq(nil, s.pane.result)
+      if failure == "cancel" then plugin.cancel(); T.eq(true, second.cancelled)
+      else second.callback(nil, failure) end
+      f:settled(s)
+      T.eq(nil, s.pane.review); T.eq(nil, s.pane.result)
+      f:answer(2); vim.wait(100); T.eq(2, #f.jobs) -- Retired callbacks cannot advance.
+      -- An identical comparison in a different Diffview has no partial checkpoint.
+      local dv, lib = require("diffview"), require("diffview.lib")
+      dv.open({ f.fixture.base, "--selected-file=" .. f.fixture.root .. "/policy.lua" })
+      local other = lib.get_current_view()
+      local ok, err = xpcall(function()
+        assert(vim.wait(7000, function() return other.initialized and adapter.current(other.cur_layout.b.id) end))
+        api.nvim_set_current_win(other.cur_layout.b.id)
+        assert(plugin.explain("review") ~= s)
+        T.eq(first, f:job(3).request.request_id)
+      end, debug.traceback)
+      plugin.close(); dv.close()
+      api.nvim_set_current_tabpage(f.fixture.view.tabpage)
+      assert(ok, err)
+      f:select("openspec/spec.md", s)
+      assert(vim.wait(5000, function()
+        local state = adapter.current(f.fixture.state.source)
+        return state and vim.deep_equal(state.panes.old.lines,
+          { "# Cancellation", "Owners or administrators may cancel." })
+      end), "original Diffview did not reload its old source: " .. vim.inspect(adapter.current(f.fixture.state.source)))
+      plugin.explain("review")
+      T.eq(second.request.request_id, f:job(4).request.request_id)
+      plugin.explain("review"); vim.wait(100); T.eq(4, #f.jobs)
+      plugin.cancel(); f:settled(s)
+      plugin.review(); plugin.refresh()
+      T.eq(first, f:job(5).request.request_id)
+      plugin.close(); T.eq(true, f.jobs[5].cancelled)
+      api.nvim_set_current_win(f.fixture.state.source)
+      local replacement = plugin.explain("review")
+      assert(replacement ~= s)
+      T.eq(first, f:job(6).request.request_id)
+      T.eq(8, f:complete(6)); f:settled(replacement)
+      assert(replacement.pane.review, vim.inspect(f.errors))
+    end)
+  end
+end)
+
+T.test("review final output after an unsaved source edit cannot install partial annotations", function()
+  whole_review_fixture(function(f, plugin)
+    local s = plugin.explain("review")
+    f:job(1); f:answer(1); f:job(2); f:answer(2)
+    local final = f:job(3)
+    T.eq("synthesize", final.request.phase)
+    f:select("policy.lua", s)
+    api.nvim_buf_set_lines(api.nvim_win_get_buf(s.pane.source), 0, 1, false, { "-- changed after annotations" })
+    f:answer(3); f:settled(s)
+    T.eq(nil, s.pane.review); T.eq(nil, s.pane.result)
+    T.eq(3, #f.jobs)
+    plugin.explain("review")
+    local fresh = f:job(4)
+    T.eq("annotate", fresh.request.phase)
+    assert(fresh.request.snapshot_id ~= final.request.snapshot_id)
+  end)
+end)
+
+T.test("bounded review keeps navigation display-only through annotation reduction and synthesis", function()
+  whole_review_fixture(function(f, plugin)
+    plugin.setup({ cache = { enabled = false }, review = { request_max_bytes = 14000, response_max_bytes = 16384 } })
+    f.verbose_findings = true
+    local s = plugin.explain("review")
+    local phases, n = {}, 1
+    while true do
+      local job = f:job(n)
+      phases[#phases + 1] = job.request.phase
+      T.eq(nil, s.pane.review); T.eq(nil, s.pane.result)
+      f:select(n % 2 == 0 and "policy.lua" or "openspec/spec.md", s)
+      T.eq(nil, job.cancelled)
+      plugin.explain("review"); vim.wait(50); T.eq(n, #f.jobs)
+      f:answer(n)
+      if job.request.phase == "synthesize" then break end
+      n = n + 1
+      assert(n <= 12, vim.inspect(phases))
+    end
+    f:settled(s)
+    T.eq({ "annotate", "annotate", "annotate", "annotate", "reduce", "reduce", "reduce", "reduce", "synthesize" }, phases)
+    T.eq({}, f.errors); assert(s.pane.review)
+    local calls = #f.jobs
+    f:select("docs/adr.md", s); f:settled(s)
+    T.eq(calls, #f.jobs); T.eq("Explains docs/adr.md", s.pane.result.notes[1].summary)
+  end)
 end)

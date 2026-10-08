@@ -26,6 +26,12 @@ SETUP                                                     *explainr-setup*
     },
     context = { max_bytes = 262144, diff = "auto", radius = 20 },
     diff = { auto_explain = false },
+    review = {
+      request_max_bytes = 65536, response_max_bytes = 32768,
+      max_snapshot_bytes = 16777216, max_requests = 128,
+    },
+    cache = { enabled = true, max_bytes = 104857600, namespace = "default" },
+    -- Add cache.decoder_key = "my-decoder-v1" for custom-decoder disk reuse.
   })
 <
 The user-created primary "explain" agent and provider/model must already be
@@ -48,13 +54,14 @@ COMMANDS                                                *explainr-commands*
   :ExplainrRefresh
   :ExplainrCancel
   :ExplainrClose
+  :ExplainrCacheClear
   :ExplainrToggleAutoExplain
 <
 ExplainrToggleAutoExplain switches diff.auto_explain for all tabs in this Neovim
 process and reports enabled/disabled through vim.notify. Its Lua equivalent,
 require("explainr").toggle_auto_explain(), returns the new boolean without
 resetting other configuration. Setup supplies its initial value (default false);
-calling setup again resets configuration normally. Nothing persists on restart.
+calling setup again resets configuration normally. The toggle is not persisted.
 Enabling applies to subsequent navigation only, not the current file or earlier
 navigation still resolving. Disabling leaves started requests and notes intact;
 use ExplainrCancel to stop work explicitly. Manual requests and saved-note
@@ -132,8 +139,8 @@ capture live endpoints, virtual offsets, and the current selection option:
     require("explainr").explain("selection", selection)
   end)
 <
-Lua equivalents are explain(scope?, selection?), review(), refresh(), cancel()
-and close() on require("explainr"). explain() defaults to "file".
+Lua equivalents are explain(scope?, selection?), review(), refresh(), cancel(),
+close() and clear_cache() on require("explainr"). explain() defaults to "file".
 
 DIFF SCOPE                                               *explainr-review*
 
@@ -167,11 +174,25 @@ do not steal focus. Missing Git/Diffview, repository/HEAD, or eligible text and
 incompatible Diffview defaults fail visibly without a substitute comparison or
 changes to global defaults.
 
-Explainr review explicitly requests one whole-change narrative and all
-eligible files' notes in a single invocation. It always requires complete
-coverage, regardless of context.diff, and never silently falls back or splits
-into multiple requests. Binary/both-empty entries retain metadata but receive
-no invented anchors. No eligible text targets means no inference.
+Explainr review requests a whole-change narrative and all eligible files' notes
+through one sequential job: annotate, reduce findings when needed, synthesize.
+It requires complete job-wide text coverage regardless of context.diff. Whole
+files are preferred; oversized files/hunks split into original-coordinate units
+without truncating lines or omitting unchanged text. Each invocation sees only
+its supplied chunks, not all source simultaneously. Fragment units have no
+whole-file overview. Binary/both-empty entries retain metadata but receive no
+invented anchors. No eligible text targets means no inference. Distributed
+coverage proves neither semantic completeness nor explanation correctness.
+
+Successful invocations become internal, memory-only checkpoints. Repeat
+:Explainr review in the owning comparison, file panel or associated reader to
+recollect/revalidate matching work and resume failed/unstarted invocations.
+Cancel keeps validated checkpoints while that owner stays open. Close, stale or
+replaced comparisons, and restart discard unfinished work. Review Refresh
+discards checkpoints and regenerates every phase. A request from ordinary code
+after opening has finished opens a new comparison, not another owner's unfinished
+job. Repeats during opening only coalesce. Completed exact answers can be reused
+across owners through the shared cache; unfinished checkpoints cannot.
 
 ExplainrReview (or require("explainr").review()) only opens the narrative, without
 inference. It requires a supported existing comparison and never opens Diffview.
@@ -181,8 +202,11 @@ shows File notes; prose Enter is inert. Esc returns to File overview; q closes.
 Reopening the same narrative preserves its reading position. Empty, pending,
 failed and stale states are explicit. <Plug>(ExplainrReview) is pane-local;
 there is no global default mapping. See |explainr-ui.txt| for a shortcut example.
-Review responses use version 2; wrappers serving code/file/hunk retain version 1.
-Incomplete or malformed reviews install neither narrative nor partial file notes.
+Review wire responses use version 3 phase envelopes; code/file/hunk keep version 1.
+Version 2 is internal assembled review data only, not an accepted wire response.
+Only after all phases and freshness checks succeed are narrative and file notes
+installed together. Incomplete or malformed reviews install neither; older fresh
+accepted results remain. Failure starts no repair, fallback or automatic retry.
 See |explainr-agents.txt| for the complete contract and output-limit guidance.
 
 For file/hunk scope only:
@@ -213,13 +237,31 @@ See |explainr-diff.txt| for supported revision pairs and explicit limitations.
 SNAPSHOTS, BUDGETS AND STATUS                              *explainr-status*
 
 The complete serialized UTF-8 prompt (instructions, contract, context, target)
-must fit context.max_bytes. On overflow nothing is omitted and no command is
-started in strict review mode. Auto/focused mode explicitly omits optional
+must fit context.max_bytes. File/hunk with context.diff="review" fails on overflow,
+without omitting context or starting a command. Auto/focused mode omits optional
 context, never truncates the selected target, and fails if that target and
 request overhead cannot fit. Prefer hunk scope to file scope for large files.
 Byte count is not provider token count: the external tool may still reject a
 prompt below the budget. Lower max_bytes (for example, 65536) or use focused
 mode for a smaller-context provider.
+
+Explicit review has separate positive finite integer limits:
+  review.request_max_bytes   65536     complete per-call prompt bytes
+  review.response_max_bytes  32768     decoded final JSON bytes per call
+  review.max_snapshot_bytes  16777216  canonical serialized snapshot admission
+  review.max_requests        128       new calls per explicit run/resume
+The effective input cap is min(context.max_bytes, review.request_max_bytes).
+Raising context.max_bytes alone does not enlarge review batches. Snapshot bytes
+are not Lua heap usage. Output allowances also bound counts and text per item;
+see |explainr-agent-review|. All annotation requests are admitted before inference.
+Later reduction/synthesis depends on actual findings and can still fail: an
+indivisible line/evidence packet, mandatory manifest, or nonshrinking reduction
+is not silently clipped. max_requests counts launches across all phases; another
+explicit resume grants another bounded run, reusing validated checkpoints.
+ai.timeout_ms applies to each call. Multiple calls can increase latency and cost.
+These byte guardrails do not control provider tokens/output limits or guarantee
+capacity, and do not fix or disable OpenCode compaction. Reduce limits or filter
+the comparison/use file or hunk scope if the provider still fails.
 
 Pending/Ready/Failed/Stale/Cancelled use a separate matched header from the
 moment the pane opens, never content rows. Source windows without winbars get
@@ -245,8 +287,8 @@ still perform CPU work on the editor's main thread.
 
 Validated results and serialized whole-context blocks are reused in memory by
 supplied coverage/target and agent/context configuration. Fresh collection checks
-current inputs before cache reuse. Cache entries live only in this Neovim
-process; no Explainr disk history or implicit external conversation is added.
+current inputs before cache reuse. Completed answers also use the shared disk
+cache described below; no implicit external conversation is added.
 Completed diff batches are also retained per repository, comparison/filter and
 file for the current run. Navigation alone hides notes, not invalidates them.
 Returning to a file revalidates every retained batch under its original coverage
@@ -261,9 +303,55 @@ Auto keeps at most one unstarted latest-file candidate while busy, behind explic
 requests. Turning Auto off drops that candidate, not running or explicit work.
 A queued/running review suppresses automatic file candidates; its failure does
 not trigger per-file retries. Cancel/Close stop comparison-wide pending work;
-tab switching alone does not. Nothing is persisted across Neovim restarts.
+tab switching alone does not. Unfinished jobs do not survive Neovim restarts.
 External tools may independently retain supplied code or continue attached
 remote generation after their local client is killed; see |explainr-agents.txt|.
+
+COMPLETED RESULT CACHE                                     *explainr-cache*
+
+All five scopes support exact-input completed-answer reuse across processes.
+cache.enabled=true, cache.max_bytes=104857600 (100 MiB), and
+cache.namespace="default" are the defaults. enabled must be boolean, max_bytes
+a positive finite integer, and namespace a nonempty string. Set enabled=false
+to disable disk reads/writes without disabling current-process note retention.
+An optional cache.decoder_key must be nonempty text. Custom ai.output functions
+without it opt out of disk reuse, retaining in-memory decoder identity checks.
+For example, use decoder_key="my-decoder-v1" and change it with decoder behavior.
+
+Identity includes the canonical worktree/source namespace, resolved mode/scope,
+exact normalized target and supplied context, comparison and generation settings.
+Code/diff file modes and different scopes do not alias. Buffer/window IDs and
+opening method do not prevent otherwise identical matches; selection byte and
+virtual spans remain exact. Equivalent manually/automatically opened reviews can
+share completed results only after readiness and fresh capture. Hidden external
+provider/agent config, environment or wrapper changes cannot be detected: change
+cache.namespace/decoder_key or explicitly Refresh when those change. Raw command
+argv is hashed for identity rather than persisted as plaintext configuration.
+
+Storage is private plaintext JSON, not encryption:
+  stdpath("cache")/explainr/results/v1/<source-hash>/<request-key>.json
+Directories/files are created with 0700/0600 permissions where supported. Records
+exclude full source snapshots, prompts, process streams and unfinished job state,
+but result prose may contain sensitive source snippets. Complete review records
+retain validated phase outputs for local replay of request/provenance validation,
+not external inference or a resumable disk job. Hits undergo schema, identity,
+range/coverage and final freshness checks before atomic display as Ready · cached.
+
+Atomic replacement and least-recently-used pruning manage committed entries;
+individually oversized entries are skipped. The configured limit is not a hard
+whole-directory capacity guarantee including temporary files/external changes.
+Corrupt/incompatible entries are misses. Cache I/O/maintenance failures are
+nonfatal; bounded warnings report unavailable storage. Simultaneous misses in
+different processes can both invoke the agent; there is no cross-process
+single-flight inference or provider billing-discount guarantee.
+
+:ExplainrCacheClear and require("explainr").clear_cache() clear plugin-owned disk
+entries and reusable memory answers without closing panes or removing displayed
+valid notes. Unfinished checkpoints remain governed by Cancel/Review Refresh.
+This process's pre-clear work cannot repopulate the cache; another Neovim can
+create later entries. Refresh bypasses both answer caches for the visible scope;
+Review Refresh also bypasses checkpoints. An existing disk answer is replaced
+only after successful validation, not deleted by a failed Refresh.
 
 NAVIGATION                                                *explainr-reading*
 

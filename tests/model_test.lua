@@ -239,8 +239,130 @@ T.test("one invalid review sibling or section rejects atomically without changin
   T.eq(nil, model.validate('{"version":2,"review":', s))
 end)
 
-T.test("documented review example validates against asymmetric review fixture", function()
-  local help = table.concat(vim.fn.readfile("doc/explainr-agents.txt"), "\n")
-  local example = assert(help:match("REVIEW JSON EXAMPLE[^\n]*\n>\n(.-)\n<"))
-  assert(model.validate(example, review_fixture()))
+local function phase_fixture()
+  local req = { version = 3, phase = "annotate", request_id = "request", snapshot_id = "snapshot",
+    manifest = { { file_id = "code" }, { file_id = "docs" }, { file_id = "binary" } },
+    files = { { path = "old.lua", side = "old", chunks = { { start_line = 5, lines = { "a", "b" } } } },
+      { path = "new.lua", side = "new", chunks = { { start_line = 9, lines = { "c", "d", "e" } } } },
+      { path = "adr.md", side = "new", chunks = { { start_line = 1, lines = { "rule" } }, { start_line = 3, lines = { "rationale" } } } } },
+    units = { { unit_id = "unit", file_id = "code", target = { scope = "hunk",
+      anchors = { anchor("old.lua", "old", 5, 6), anchor("new.lua", "new", 9, 11) } } } },
+    output_limits = { response_bytes = 8192, unit_bytes = 7000, notes_per_unit = 8, findings_per_unit = 4,
+      summary_bytes = 256, detail_bytes = 1024, finding_bytes = 512, evidence_per_item = 8,
+      file_ids_per_item = 16, findings = 4, sections = 4, title_bytes = 256, heading_bytes = 256 } }
+  local value = { version = 3, phase = req.phase, request_id = req.request_id, snapshot_id = req.snapshot_id,
+    units = { { unit_id = "unit", notes = { { summary = "é中 effect", detail = "Details.",
+      anchors = { anchor("old.lua", "old", 5), anchor("new.lua", "new", 9) }, intent_basis = "documented",
+      evidence = { anchor("adr.md", "new", 1) } } }, findings = { { text = "A documented finding", intent_basis = "documented",
+      evidence = { anchor("adr.md", "new", 3) }, file_ids = { "code", "docs" } } } } } }
+  return req, value
+end
+
+T.test("version2 assembled review remains internal and cannot satisfy a version3 wire request", function()
+  local snapshot, result = review_fixture()
+  assert(model.validate(result, snapshot))
+  local req = phase_fixture()
+  T.eq(nil, model.validate_review(vim.json.encode(result), req))
+end)
+
+T.test("v3 annotation validates independent coordinates evidence and exact unit acknowledgements", function()
+  local req, value = phase_fixture()
+  T.eq(value, assert(model.validate_review(vim.json.encode(value), req)))
+  value.units[1].notes, value.units[1].findings = {}, {}
+  assert(model.validate_review(value, req))
+  for _, mutate in ipairs({
+    function(v) v.version = 2 end,
+    function(v) v.phase = "synthesize" end,
+    function(v) v.request_id = "other" end,
+    function(v) v.snapshot_id = "other" end,
+    function(v) v.units = {} end,
+    function(v) v.units[2] = vim.deepcopy(v.units[1]) end,
+    function(v) v.units[1].unit_id = "binary" end,
+    function(v) v.units[1].unit_id = nil end,
+    function(v) v.units[1].notes = nil end,
+    function(v) v.units[1].findings = nil end,
+    function(v) v.units[1].notes = vim.empty_dict() end,
+    function(v) v.units[1].notes[1].anchors[1].start_line = 9 end,
+    function(v) v.units[1].notes[1].anchors[2].end_line = 12 end,
+    function(v) v.units[1].notes[1].anchors[2].path = "old.lua" end,
+    function(v) v.units[1].notes[1].anchors = { anchor("adr.md", "new", 1) } end,
+    function(v) v.units[1].notes[1].evidence = { anchor("adr.md", "new", 1, 3) } end,
+    function(v) v.units[1].findings[1].evidence = { anchor("adr.md", "new", 2) } end,
+    function(v) v.units[1].findings[1].file_ids = { "unknown" } end,
+    function(v) v.units[1].findings[1].file_ids = { "code", "code" } end,
+    function(v) v.units[1].findings[1].evidence = {} end,
+    function(v) v.units[1].notes[1].kind = "overview" end,
+    function(v) v.units[1].notes[1].summary = "multi\nline" end,
+    function(v) v.raw_prompt = "forbidden" end,
+  }) do
+    local request, response = phase_fixture(); mutate(response)
+    local before = vim.deepcopy(response)
+    local accepted, err = model.validate_review(response, request)
+    T.eq(nil, accepted); assert(err); T.eq(before, response)
+  end
+end)
+
+T.test("v3 finite note finding text and exact decoded UTF8 response byte allowances", function()
+  local req, value = phase_fixture()
+  local raw = vim.json.encode(value)
+  assert(#raw > vim.fn.strchars(raw))
+  req.output_limits.response_bytes = #raw
+  assert(model.validate_review(raw, req))
+  T.eq(nil, model.validate_review(raw .. " ", req))
+  req.output_limits.response_bytes = #raw - 1
+  T.eq(nil, model.validate_review(raw, req))
+  for _, mutate in ipairs({
+    function(r) r.output_limits.notes_per_unit = 0 end,
+    function(r) r.output_limits.findings_per_unit = 0 end,
+    function(r) r.output_limits.summary_bytes = 2 end,
+    function(r) r.output_limits.detail_bytes = 2 end,
+    function(r) r.output_limits.finding_bytes = 2 end,
+    function(r) r.output_limits.evidence_per_item = 0 end,
+    function(r) r.output_limits.file_ids_per_item = 1 end,
+    function(r) r.output_limits.unit_bytes = 20 end,
+  }) do local r, v = phase_fixture(); mutate(r); T.eq(nil, model.validate_review(v, r)) end
+end)
+
+T.test("v3 whole-file overview remains optional exact and restricted to its own unit", function()
+  local req, value = phase_fixture()
+  req.units[1].target.scope = "file"
+  value.units[1].notes[1].kind = "overview"
+  value.units[1].notes[1].anchors = vim.deepcopy(req.units[1].target.anchors)
+  assert(model.validate_review(value, req))
+  value.units[1].notes[2] = vim.deepcopy(value.units[1].notes[1])
+  T.eq(nil, model.validate_review(value, req))
+  value.units[1].notes[2] = nil; value.units[1].notes[1].anchors[2].end_line = 10
+  T.eq(nil, model.validate_review(value, req))
+end)
+
+T.test("v3 reduction and synthesis require all children and only current original evidence", function()
+  local req, annotation = phase_fixture()
+  req.units, req.phase, req.child_ids = nil, "reduce", { "a", "b" }
+  local reduced = { version = 3, phase = "reduce", request_id = req.request_id, snapshot_id = req.snapshot_id,
+    child_ids = { "b", "a" }, findings = annotation.units[1].findings }
+  assert(model.validate_review(reduced, req))
+  for _, ids in ipairs({ { "a" }, { "a", "a" }, { "a", "b", "c" } }) do
+    local value = vim.deepcopy(reduced); value.child_ids = ids; T.eq(nil, model.validate_review(value, req))
+  end
+  local stale = vim.deepcopy(reduced); stale.findings[1].evidence = { anchor("adr.md", "new", 1, 3) }
+  T.eq(nil, model.validate_review(stale, req))
+  req.phase = "synthesize"
+  local value = { version = 3, phase = "synthesize", request_id = req.request_id, snapshot_id = req.snapshot_id,
+    child_ids = { "a", "b" }, review = { title = "Change", sections = { { heading = "Relationship", detail = "Text",
+      intent_basis = "documented", evidence = { anchor("adr.md", "new", 3) }, file_ids = { "code", "binary" } } } } }
+  assert(model.validate_review(value, req))
+  for _, mutate in ipairs({
+    function(v) v.review.sections = {} end,
+    function(v) v.review.title = "" end,
+    function(v) v.review.title = "two\nlines" end,
+    function(v) v.review.sections[1].heading = "two\nlines" end,
+    function(v) v.review.sections[1].detail = "" end,
+    function(v) v.review.sections[1].anchors = {} end,
+    function(v) v.review.sections[1].file_ids = { "unseen" } end,
+    function(v) v.review.sections[1].evidence = {} end,
+    function(v) v.review.sections[1].evidence = { anchor("adr.md", "new", 2) } end,
+    function(v) v.units = {} end,
+  }) do local v = vim.deepcopy(value); mutate(v); T.eq(nil, model.validate_review(v, req)) end
+  -- A citation in input findings is not authorization without its source text.
+  req.files = {}; T.eq(nil, model.validate_review(value, req))
 end)

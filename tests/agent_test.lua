@@ -244,7 +244,7 @@ T.test("cancel between process completion and scheduled delivery overrides queue
   assert(ok, err)
 end)
 
-T.test("all decoders preserve completed v2 output and reject unsuccessful or truncated review output", function()
+T.test("all decoders preserve assembled internal v2 output without interpreting schemas", function()
   local model = require("explainr.model")
   local snapshot = { mode = "diff", target = { scope = "review", files = {
     { scope = "file", file_id = "a", anchors = {} },
@@ -278,4 +278,59 @@ T.test("all decoders preserve completed v2 output and reject unsuccessful or tru
   failure("codex", wire({ item("item.completed", final) }), "completed final turn")
   failure("codex", wire({ item("item.completed", final), { type = "turn.failed", error = { message = "output limit" } } }), "output limit")
   failure(function() return nil, "output limit" end, final, "output limit")
+end)
+
+T.test("offline v3 phases survive all transports and reject nonzero, errors and truncation", function()
+  local model, review, prompt = require("explainr.model"), require("explainr.review"), require("explainr.prompt")
+  local anchor = { path = "a.lua", side = "new", start_line = 1, end_line = 1 }
+  local target = { scope = "file", file_id = "a", anchors = { anchor } }
+  local snapshot = { mode = "diff", target = { scope = "review", files = { target } },
+    files = { { path = "a.lua", side = "new", lines = { "return true" } } },
+    comparison = { manifest = { { file_id = "a", path = "a.lua", status = "A" } } } }
+  local job = assert(review.create(snapshot, {}))
+  local annotation = review.inspect(job).annotations[1].request
+  local custom = function(stdout, stderr, status)
+    assert(status == 0 or stderr:find("authentication", 1, true))
+    return stdout
+  end
+  spy(function(calls)
+    for _, phase in ipairs({ "annotate", "reduce", "synthesize" }) do
+      local request = vim.deepcopy(annotation)
+      request.phase = phase
+      request.child_ids = { "child-a", "child-b" }
+      local input = assert(prompt.review(request, 65536))
+      local final
+      for _, decoder in ipairs({ "plain", "opencode", "codex", custom }) do
+        local mode = type(decoder) == "function" and "plain" or decoder
+        local value, err = wait(start("whole-review-" .. mode, decoder, nil, input))
+        T.eq(nil, err)
+        local accepted = assert(model.validate_review(value, request))
+        T.eq(3, accepted.version); T.eq(phase, accepted.phase)
+        T.eq(request.request_id, accepted.request_id); T.eq(request.snapshot_id, accepted.snapshot_id)
+        if phase == "annotate" then T.eq(#request.units, #accepted.units)
+        else T.eq(request.child_ids, accepted.child_ids) end
+        final = value
+        failure(decoder, mode == "opencode" and wire({ text("final", "a", value) })
+          or mode == "codex" and wire({ item("item.completed", value), { type = "turn.completed" } })
+          or value, "status 7", 7)
+        local truncated = value:sub(1, -8)
+        local encoded = mode == "opencode" and wire({ text("final", "a", truncated) })
+          or mode == "codex" and wire({ item("item.completed", truncated), { type = "turn.completed" } })
+          or truncated
+        T.eq(nil, model.validate_review(assert(agent.decode(decoder, encoded, "", 0)), request))
+      end
+      for _, mode in ipairs({ "opencode-error", "codex-error", "nonzero" }) do
+        local decoder = mode:match("^opencode") and "opencode" or mode:match("^codex") and "codex" or "plain"
+        local value, err = wait(start("whole-review-" .. mode, decoder, nil, input))
+        T.eq(nil, value); assert(err:find(mode == "opencode-error" and "usage limit" or "authentication", 1, true), err)
+      end
+      local value, err = wait(start("whole-review-truncated", "plain", nil, input))
+      T.eq(nil, err); T.eq(nil, model.validate_review(value, request))
+      failure("opencode", wire({ text("final", "a", final, false) }), "completed final")
+      failure("codex", wire({ item("item.completed", final) }), "completed final turn")
+      failure(function() return nil, "output limit" end, final, "output limit")
+      T.eq(nil, model.validate_review('{"version":2,"files":[]}', request))
+    end
+    T.eq(24, #calls) -- no repair, fallback, or paid provider process
+  end)
 end)

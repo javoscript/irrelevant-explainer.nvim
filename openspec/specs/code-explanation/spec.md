@@ -34,33 +34,13 @@ The plugin SHALL offer whole-file and visual-selection explanation in ordinary t
 - **WHEN** a Visual region is reversed, exclusive, or crosses tabs, multibyte characters or virtual columns
 - **THEN** collection preserves Neovim's selected text and per-line column spans without editing source text or leaving virtual-edit options changed
 
-### Requirement: Structural scopes
-
-The plugin SHALL resolve the smallest enclosing function or class at the cursor using Tree-sitter and supported language queries. Missing parsers, queries, or enclosing structures SHALL produce an actionable message instead of silently explaining a different scope.
-
-#### Scenario: Nested function
-- **WHEN** the cursor is inside a function nested within another function and function scope is requested
-- **THEN** the inner function is the explanation target
-
-#### Scenario: Class scope
-- **WHEN** the cursor is inside a method of a class in a supported language and class scope is requested
-- **THEN** the enclosing class, not only the method, is the explanation target
-
-#### Scenario: Structural scope unavailable
-- **WHEN** function or class scope cannot be resolved because the parser, query, or enclosing structure is unavailable
-- **THEN** the plugin explains the limitation and offers file or visual scope without automatically sending a broader target
-
-#### Scenario: Supported grammars
-- **WHEN** compatible Lua, Python, JavaScript or TypeScript parsers are installed
-- **THEN** function scope supports the shipped grammar queries, class scope supports Python/JavaScript/TypeScript classes, and unsupported constructs or languages do not silently widen the target
-
 ### Requirement: Target and context separation
 
-The request SHALL distinguish the code to annotate from contextual code. In code mode the current file SHALL provide context for a narrower target, while notes SHALL anchor only to lines intersecting that target.
+The request SHALL distinguish the code to annotate from contextual code. In code mode the current file SHALL provide context for a visual-selection target, while notes SHALL anchor only to lines intersecting that target.
 
 #### Scenario: Function depends on an import
-- **WHEN** a selected function calls a helper imported outside its range
-- **THEN** the request includes the current file as context, identifies the function as the target, and permits notes only inside that function
+- **WHEN** a function explicitly selected with Visual mode calls a helper imported outside its range
+- **THEN** the request includes the current file as context, identifies the selection as the target, and permits notes only inside that selection
 
 ### Requirement: Behavior-focused notes
 
@@ -79,7 +59,7 @@ Only file-scoped code requests SHALL ask for a short first overview, marked kind
 - **THEN** the prompt asks for a concise overview before ordinary behavior notes, and a returned overview refers to all target lines rather than only the first line
 
 #### Scenario: Narrower request
-- **WHEN** function, class or selection scope is requested
+- **WHEN** selection scope is requested
 - **THEN** no overview instruction is included and an overview result is rejected for that scope
 
 #### Scenario: No valid file anchor
@@ -91,7 +71,7 @@ Only file-scoped code requests SHALL ask for a short first overview, marked kind
 Requests for different scopes in the same source-buffer session SHALL accumulate accepted notes in the existing pane. An identical target SHALL update only its batch; distinct overlapping targets SHALL coexist. A new code request SHALL supersede pending work, not previously accepted fresh batches. Failed collection, budget validation, generation or explicit cancellation SHALL preserve fresh accepted notes.
 
 #### Scenario: Add a selection after a function
-- **WHEN** a function has valid notes and the user explains a different visual selection in the same buffer
+- **WHEN** a function explained through an explicit visual selection has valid notes and the user explains a different visual selection in the same buffer
 - **THEN** both batches remain visible and the pane is reused rather than replaced with only the latest answer
 
 #### Scenario: Repeat one target
@@ -120,11 +100,11 @@ An explanation SHALL remain bound to the source snapshot used to request it. Sou
 
 ### Requirement: Code commands and refresh
 
-The plugin SHALL expose ExplainrCode with file/function/class/selection scopes and file as the default, plus Lua equivalents and Refresh/Cancel/Close controls. Commands invoked from notes/detail SHALL target the followed source, not Markdown. Refresh SHALL bypass result caching for the current scope, retaining visual selection boundaries and recapturing structural scopes at the source cursor. Setup SHALL not install global editing mappings.
+The plugin SHALL expose `Explainr [file|selection|hunk|review]` with file as the default and `require("explainr").explain(scope, selection)`, plus Refresh/Cancel/Close controls. Commands invoked from notes/detail SHALL target the followed source, not Markdown. Refresh SHALL bypass result caching for the current scope and retain visual selection boundaries. Completion SHALL list only supported scopes. Setup SHALL not install global editing mappings. ExplainrCode/ExplainrDiff and public code()/diff() aliases SHALL be removed.
 
 #### Scenario: Explain from the reading pane
-- **WHEN** a code action is invoked while the explanation pane has focus
-- **THEN** collection uses the associated source buffer and never explains the explanation text
+- **WHEN** an explanation action is invoked while the explanation pane has focus
+- **THEN** routing and collection use the associated source window and never explain the explanation text
 
 #### Scenario: Refresh a selection
 - **WHEN** a selection explanation is refreshed after focus or cursor movement
@@ -133,10 +113,91 @@ The plugin SHALL expose ExplainrCode with file/function/class/selection scopes a
 #### Scenario: Optional integrations absent
 - **WHEN** the plugin is loaded on Neovim 0.11+ without Diffview or an external AI executable installed
 - **THEN** code-mode loading and setup still work, file/selection collection needs no parser, and attempting inference without a configured executable reports an actionable failure
+- **AND** ordinary code routing does not load Diffview
+
+#### Scenario: Default and completion
+- **WHEN** the user invokes Explainr without an argument, calls explain() without a scope, or requests command completion
+- **THEN** the default is file, and completion offers file, selection, hunk, and review without function or class
+
+#### Scenario: Retired scope from a command or Lua call
+- **WHEN** the user requests function or class through Explainr or explain()
+- **THEN** the plugin rejects the scope before cache lookup or inference and recommends file or explicit visual selection
+- **AND** it does not resolve a syntax node, reuse a retired-scope answer, silently broaden the target or remove fresh accepted notes
+
+#### Scenario: Removed public entrypoints
+- **WHEN** the plugin initializes in a fresh Neovim session
+- **THEN** it registers neither ExplainrCode nor ExplainrDiff and exposes neither public code() nor diff() aliases
+- **AND** migration examples use Explainr or explain(), while ExplainrReview and review() remain display-only
+
+#### Scenario: Exact visual descriptor
+- **WHEN** selection is requested through an Ex Visual command or a Lua mapping supplying captured selection endpoints
+- **THEN** the request preserves characterwise, linewise, or blockwise boundaries through the existing selection contract rather than treating an Ex line range as complete selection geometry
+- **AND** selection explains selected source text, not a guessed diff hunk or a structural scope
+
+### Requirement: Source-aware file routing
+
+File requests SHALL explain changes when the originating source window belongs to a Diffview source pane and code otherwise. Notes/detail SHALL resolve their followed source before classification. Filetype, path, shared buffer identity, or the diff option alone SHALL NOT imply Diffview ownership. Loading or unsupported Diffview sources SHALL fail explicitly rather than fall back to code. Non-source utility buffers SHALL NOT become code targets.
+
+#### Scenario: Ordinary file with local changes
+- **WHEN** Explainr file is requested in an ordinary source window whose file also has Git changes
+- **THEN** the whole current buffer is explained as code, including unsaved text, without opening Diffview
+
+#### Scenario: Same buffer in different windows
+- **WHEN** an ordinary window and a Diffview source window show the same working-file buffer
+- **THEN** invoking Explainr in the ordinary window requests code, while invoking it in the Diffview window requests that comparison's diff file
+
+#### Scenario: Unsupported or loading view
+- **WHEN** file scope is requested from a Diffview-owned source that is loading, conflicting, or otherwise unsupported
+- **THEN** the plugin reports the comparison limitation without invoking the agent or substituting a code explanation
+
+#### Scenario: File panel or unrelated utility buffer
+- **WHEN** file scope is requested from the Diffview file panel, a terminal, or another non-source utility buffer
+- **THEN** the plugin reports that a source window is required without treating the utility content as code
+- **AND** review remains available from a live Diffview file panel
+
+### Requirement: Cross-session code result reuse
+
+Completed code-file and visual-selection explanations SHALL support cross-session reuse for exact source, resolved mode, normalized target, supplied context and generation matches, including unsaved/unnamed inputs. Code-file and diff-file identities SHALL remain distinct; selection SHALL remain code. Keys SHALL preserve selection text and byte/virtual spans, excluding transient editor IDs. Restored notes SHALL bind only after validation and freshness checks.
+
+#### Scenario: Same named file in another process
+- **WHEN** a completed code-file request is repeated after restarting Neovim with identical content and generation settings
+- **THEN** a valid retained result is installed without invoking the external agent, even if buffer numbers differ
+
+#### Scenario: Shared buffer in code and diff windows
+- **WHEN** an ordinary source window and a Diffview source window show the same working buffer and the user invokes Explainr file in each
+- **THEN** source-window ownership resolves code-file and diff-file requests before cache lookup, and their entries remain distinct
+- **AND** invocation from an associated reader uses its followed source rather than the reader's Markdown or the other window's cached mode
+
+#### Scenario: Selection from a Diffview source
+- **WHEN** Explainr selection or explain("selection", descriptor) is invoked from a Diffview source
+- **THEN** lookup uses the exact selected-code target and supplied code context, not diff-file or hunk identity
+- **AND** an equivalent ordinary-source selection can reuse that result only when source namespace, normalized target, supplied context and generation settings all match
+
+#### Scenario: Unnamed or unsaved input
+- **WHEN** an unnamed or unsaved buffer recreates the same normalized source, text and target in the same source namespace
+- **THEN** matching retained notes can be reused without requiring a disk save or matching runtime buffer number
+- **AND** structured source references bind to the current buffer without rewriting arbitrary explanation prose
+
+#### Scenario: Same lines with different columns
+- **WHEN** two selections span the same line numbers but select different text, byte columns or virtual spans
+- **THEN** they do not share a cached answer merely because their line anchors match
+
+#### Scenario: Equivalent reversed selection
+- **WHEN** opposite endpoint directions select exactly the same text and normalized per-line spans
+- **THEN** endpoint direction alone does not prevent reuse
+- **AND** blockwise, exclusive, tab and multibyte boundaries retain their actual selected-region semantics
+
+#### Scenario: Surrounding context changes
+- **WHEN** selected text is unchanged but another supplied part of the current buffer changes
+- **THEN** the old selection answer is not reused because its supplied context differs
+
+#### Scenario: Source changes during cache lookup
+- **WHEN** a matching entry is read but the source changes or the request is cancelled before installation
+- **THEN** the late hit cannot install notes against the changed or superseded target
 
 ## Decisions
 
 - Read current buffers, including unsaved/unnamed text, rather than substituting disk versions. Keep the whole current file as context for narrow code targets; code mode does not use the diff-specific focused-context fallback.
-- Use the smallest enclosing supported Tree-sitter capture for structure, with explicit failure rather than automatic parser installation or scope broadening. A Visual descriptor preserves exact user selection semantics.
+- Use explicit Visual descriptors for narrower code targets, preserving exact user selection semantics without parser-based structural scopes or automatic scope broadening.
 - Request file-purpose overviews only for whole-file scope. Overview presence and semantic quality are agent outcomes, not fabricated by the plugin; supplied overview kinds/ranges are validated.
 - Accumulate independent scopes instead of replacing the reader on every request. Refresh updates the current target, not every displayed explanation; selecting another code scope supersedes pending work but not fresh accepted notes.

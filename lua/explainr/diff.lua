@@ -39,6 +39,9 @@ local function run(work, callback, max_bytes)
   function io.hash(value) return io.main(function() return hash(value) end) end
   function io.size(size)
     if size > max_bytes then
+      if io.snapshot then
+        error(string.format("Review snapshot requires at least %d UTF-8 bytes; review.max_snapshot_bytes is %d. Nothing was omitted.", size, max_bytes), 0)
+      end
       error(string.format("Complete prompt requires at least %d UTF-8 bytes; context.max_bytes is %d. "
         .. "The budget includes complete old/new file contents, patches and request overhead, not only changed lines. "
         .. "Nothing was omitted. Increase the budget, filter the comparison, or request file/hunk scope.", size, max_bytes), 0)
@@ -477,7 +480,7 @@ local function gather(state, io, strategy)
         else
           local a, b = old.bytes or "", new.bytes or ""
           io.main(function()
-            if not (io.unbounded and io.hunk) then
+            if not io.snapshot and not (io.unbounded and io.hunk) then
               item.patch = "--- " .. vim.json.encode(old.present and oldpath or "/dev/null") .. "\n+++ "
                 .. vim.json.encode(new.present and path or "/dev/null") .. "\n"
                 .. vim.diff(a, b, { result_type = "unified", ctxlen = 3, algorithm = "myers" })
@@ -602,14 +605,15 @@ local function excerpt(item, target, radius)
   return copy, files
 end
 
-local function current(win, max_bytes)
+local function current(win, max_bytes, snapshot)
   -- Explicit review bounds complete panes before the adapter copies them.
   -- Focused/auto can explain a small hunk even when its source file is huge.
   for _, candidate in ipairs(api.nvim_tabpage_list_wins(api.nvim_win_get_tabpage(win))) do
     if candidate == win or vim.wo[candidate].diff then
       local buf = api.nvim_win_get_buf(candidate)
       assert(not max_bytes or api.nvim_buf_get_offset(buf, api.nvim_buf_line_count(buf)) <= max_bytes,
-        "Complete prompt exceeds context.max_bytes; required pane is too large. Nothing was omitted.")
+        snapshot and "Review snapshot exceeds review.max_snapshot_bytes; required pane is too large. Nothing was omitted."
+          or "Complete prompt exceeds context.max_bytes; required pane is too large. Nothing was omitted.")
     end
   end
   local state, err = require("explainr.diffview").current(win)
@@ -725,8 +729,12 @@ local function capture(state, scope, retained, row, io, requested)
         context = { strategy = "review", radius = io.radius, omitted_files = 0 } }
     end
     io.main(function()
-      local prompt, err = require("explainr.prompt").build(selected, io.max_bytes)
-      assert(prompt, err)
+      if io.snapshot then
+        io.size(#canonical({ context = vim.json.decode(require("explainr.prompt").context(selected)), target = selected.target }))
+      else
+        local prompt, err = require("explainr.prompt").build(selected, io.max_bytes)
+        assert(prompt, err)
+      end
     end)
     return selected, guards
   end
@@ -766,6 +774,7 @@ local function capture(state, scope, retained, row, io, requested)
   snapshot.review_fingerprint = hash(context_identity)
   snapshot.fingerprint = hash({ snapshot.review_fingerprint, snapshot.target })
   snapshot.max_bytes = io.max_bytes
+  snapshot.snapshot_max_bytes = io.snapshot and io.max_bytes or nil
   snapshot.capture = { state = state, guards = guards, target = vim.deepcopy(snapshot.target) }
   return snapshot
 end
@@ -775,6 +784,9 @@ function M.collect_async(win, scope, callback, options)
   local config = require("explainr").config.context
   local max_bytes, strategy, radius = options.max_bytes or config.max_bytes, options.diff or config.diff, options.radius or config.radius
   if scope == "review" then strategy = "review" end
+  local snapshot_max_bytes = scope == "review"
+    and (options.snapshot_max_bytes or require("explainr").config.review.max_snapshot_bytes) or nil
+  max_bytes = snapshot_max_bytes or max_bytes
   local ok, state, row = pcall(function()
     assert(type(max_bytes) == "number" and max_bytes > 0 and max_bytes < math.huge and max_bytes % 1 == 0,
       "invalid context.max_bytes")
@@ -782,12 +794,13 @@ function M.collect_async(win, scope, callback, options)
     assert(type(radius) == "number" and radius >= 0 and radius < math.huge and radius % 1 == 0, "invalid context.radius")
     win = (not win or win == 0) and api.nvim_get_current_win() or win
     local value = options.state and require("explainr.diffview").detached(options.state)
-      or current(win, strategy == "review" and max_bytes or nil)
+      or current(win, strategy == "review" and max_bytes or nil, snapshot_max_bytes ~= nil)
     return freeze(value), options.state and 1 or api.nvim_win_get_cursor(value.source)[1]
   end)
   local job = run(function(io)
     assert(ok, state)
     io.max_bytes, io.radius, io.auto, io.hunk = max_bytes, radius, strategy == "auto", scope == "hunk"
+    io.snapshot = snapshot_max_bytes ~= nil
     return capture(state, scope, options.target, row, io, strategy)
   end, callback, max_bytes)
   -- Reuse the captured view for pending UI/ownership without collecting twice.
@@ -801,6 +814,7 @@ function M.fresh_async(snapshot, callback)
     callback(current ~= nil and vim.deep_equal(content(current), content(snapshot))
       and same_guards(snapshot.capture.guards, current.capture.guards))
   end, { state = snapshot.capture.state, target = snapshot.capture.target, max_bytes = snapshot.max_bytes,
+    snapshot_max_bytes = snapshot.snapshot_max_bytes,
     diff = snapshot.context and snapshot.context.strategy or "review",
     radius = snapshot.context and (snapshot.context.requested_radius or snapshot.context.radius) or 20 })
 end

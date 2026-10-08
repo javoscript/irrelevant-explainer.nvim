@@ -17,23 +17,47 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
-if vim.g.capture_state == "diff-review-open" then
+if vim.g.capture_state:match("^diff%-review%-open") then
   local api = vim.api
   local fixture = dofile("tests/review.lua").open(true)
   require("diffview").close()
   vim.cmd.edit(vim.fn.fnameescape(fixture.root .. "/policy.lua"))
   local plugin = require("explainr")
   plugin.setup({ ai = { command = { "python3", fixture.cwd .. "/tests/fixtures/agent.py", "whole-review" } } })
+  local held
+  if vim.g.capture_state == "diff-review-open-annotations" then
+    require("explainr.agent").run = function(input)
+      held = vim.json.decode(assert(input:match("UNTRUSTED REVIEW REQUEST JSON:\n(.*)")))
+      assert(held.phase == "annotate")
+      return { cancel = function() end }
+    end
+  end
   local operation = plugin.explain("review")
   local session
   assert(vim.wait(10000, function()
     session = operation.view and require("explainr.session").sessions[operation.view.tabpage]
-    return session and session.pane.review and not session.pending
+    return session and (held or session.pane.review and not session.pending)
   end, 20), "outside review did not finish")
   fixture.view = operation.view
   _G.capture_review, _G.capture_pane = fixture, session.pane
   assert(session.pane.review_mode)
   api.nvim_set_current_win(session.pane.win)
+  if vim.g.capture_state == "diff-review-open-cached" then
+    -- Reopen an equivalent comparison: completed cache reuse, not checkpoints.
+    vim.wait(300)
+    require("diffview").close()
+    vim.cmd.edit(vim.fn.fnameescape(fixture.root .. "/policy.lua"))
+    local agent, launches = require("explainr.agent"), 0
+    agent.run = function() launches = launches + 1; error("cached review invoked inference") end
+    operation = plugin.explain("review")
+    assert(vim.wait(10000, function()
+      session = operation.view and require("explainr.session").sessions[operation.view.tabpage]
+      return session and session.pane.review and not session.pending
+    end, 20), "outside cached review did not finish")
+    fixture.view, _G.capture_pane = operation.view, session.pane
+    assert(launches == 0 and session.pane.review_status == "Ready · cached", session.pane.review_status)
+    api.nvim_set_current_win(session.pane.win)
+  end
   vim.cmd("redraw!")
   return
 end
@@ -62,8 +86,42 @@ if vim.g.capture_state:match("^review%-reader") then
     or state:find("stale") and "Stale · regenerate review"
     or state:find("failed") and "Failed · see :messages"
     or state:find("empty") and "No review · :Explainr review" or "Ready"
+  -- UI projection fixtures: no job is invented and no provider is launched.
+  -- Keep an accepted narrative visible across each background job transition.
+  if state:find("batch") then
+    local count = (state:find("annotation") or not state:find("reduction") and not state:find("synthesis")) and "3/12" or "12/12"
+    status = state:find("annotation") and "Pending · Annotations 3/12"
+      or state:find("reduction") and "Pending · reducing"
+      or "Pending · synthesizing"
+    if state:find("failed") then
+      local phase = state:find("annotation") and "annotate" or state:find("reduction") and "reduce" or "synthesize"
+      status = "Failed · " .. phase .. " · " .. count .. " units · :Explainr review to resume; Refresh regenerates"
+    elseif state:find("resume") and not state:find("reduction") and not state:find("synthesis") then
+      status = "Pending · Annotations 3/12"
+    elseif state:find("cancel") then status = "Cancelled · " .. count .. " units · :Explainr review to resume"
+    elseif state:find("cached") then status = "Ready · cached" end
+  end
   p:set_review(not state:find("empty") and not state:find("stale") and narrative or nil, manifest, status)
   p:show_review()
+  if state:find("batch") then
+    api.nvim_set_current_win(p.win)
+    api.nvim_win_set_cursor(p.win, { 7, 0 })
+    local view = api.nvim_win_call(p.win, vim.fn.winsaveview)
+    p:set_review(narrative, manifest, "Pending · Annotations 3/12")
+    p:set_review(narrative, manifest, status)
+    assert(vim.deep_equal(view, api.nvim_win_call(p.win, vim.fn.winsaveview)), "status moved Review reading position")
+    assert(api.nvim_get_current_win() == p.win)
+    if state:find("file") then
+      p:set({ notes = { { summary = "Delegate authorization to policy.",
+        detail = "The caller delegates to `policy.allow`.\n\nThis accepted File detail stays readable while the review changes phase.",
+        intent_basis = "inferred", anchors = { { path = "caller.lua", side = "new", start_line = 4, end_line = 4 } } } } },
+        state:find("cached") and "Ready · cached" or "Ready")
+      p:show_file(); p:detail(1)
+      local detail = p.detail_buf
+      p.background = status; p:header()
+      assert(p.detail_buf == detail and api.nvim_get_current_win() == p.win)
+    end
+  end
   if state:find("narrow") then api.nvim_win_set_width(p.win, 32) end
   if state:find("background") then p.background = "Generating caller.lua"; p:header() end
   _G.capture_pane = p
@@ -1032,6 +1090,12 @@ elseif vim.g.capture_state == "pending" or vim.g.capture_state == "pending-folde
     vim.api.nvim_set_hl(0, "CursorLine", { bg = "#263544" })
     vim.api.nvim_win_set_cursor(capture_pane.win, { 5, 0 }); capture_pane:sync(capture_pane.win)
   end
+elseif vim.g.capture_state == "cached-code" then
+  local accepted = vim.deepcopy(capture_pane.result)
+  vim.api.nvim_set_current_win(capture_pane.win)
+  capture_pane:set(accepted, "Ready · cached")
+  assert(vim.deep_equal(accepted, capture_pane.result))
+  assert(vim.api.nvim_get_current_win() == capture_pane.win)
 elseif vim.g.capture_state == "failed" then
   vim.wo[source].winbar = ""; capture_pane:set(nil, "Failed · external agent exit 1")
 elseif vim.g.capture_state == "stale" then

@@ -67,6 +67,7 @@ function M.validate(raw, snapshot)
       for _, entry in ipairs(snapshot.comparison.manifest) do manifest[entry.file_id] = true end
       for _, target in ipairs(snapshot.target.files) do targets[target.file_id] = target end
       for _, section in ipairs(value.review.sections) do
+        assert(section.anchors == nil, "narrative sections must not have anchors")
         text(section.heading, "section.heading")
         assert(not section.heading:find("[\r\n]"), "section.heading must occupy one line")
         text(section.detail, "section.detail")
@@ -139,6 +140,118 @@ function M.validate(raw, snapshot)
   local guidance = snapshot.target.scope == "review"
     and " Reduce the explicit comparison or use file/hunk scope; no partial review was accepted." or ""
   return nil, "Invalid explanation: " .. tostring(result) .. guidance
+end
+
+local function fields(value, names)
+  assert(type(value) == "table", "expected object")
+  local allowed = {}
+  for name in names:gmatch("%S+") do allowed[name] = true end
+  for name in pairs(value) do assert(allowed[name], "unexpected field: " .. tostring(name)) end
+end
+
+local function limited_text(value, name, bytes)
+  text(value, name)
+  assert(#value <= bytes, name .. " exceeds " .. bytes .. " bytes")
+end
+
+local function acknowledgements(actual, expected, name)
+  array(actual, name)
+  local wanted, seen = {}, {}
+  for _, id in ipairs(expected) do wanted[id] = true end
+  for _, id in ipairs(actual) do
+    assert(type(id) == "string" and wanted[id], "unknown " .. name)
+    assert(not seen[id], "duplicate " .. name)
+    seen[id] = true
+  end
+  for _, id in ipairs(expected) do assert(seen[id], "missing " .. name .. ": " .. id) end
+end
+
+-- Validate against precisely the transmitted request, not the frozen job. Version
+-- 2 remains an INTERNAL assembly shape accepted by validate(), never a wire phase.
+function M.validate_review(raw, request)
+  local ok, result = pcall(function()
+    local limits = request.output_limits
+    local encoded = type(raw) == "string" and raw or vim.json.encode(raw)
+    assert(#encoded <= limits.response_bytes, "response is " .. #encoded .. " bytes; response_max_bytes is " .. limits.response_bytes)
+    local value = type(raw) == "string" and vim.json.decode(raw) or vim.deepcopy(raw)
+    assert(type(value) == "table" and value.version == 3, "expected version 3 review response")
+    for _, key in ipairs({ "phase", "request_id", "snapshot_id" }) do
+      assert(value[key] == request[key], "wrong review " .. key)
+    end
+    local view = { mode = "diff", target = { scope = "review", files = {} },
+      files = request.files, comparison = { manifest = request.manifest } }
+    local function citations(item)
+      array(item.evidence, "evidence")
+      assert(#item.evidence <= limits.evidence_per_item, "too many evidence citations")
+      for _, citation in ipairs(item.evidence) do fields(citation, "path side start_line end_line") end
+    end
+    local function section(item)
+      citations(item)
+      array(item.file_ids, "file_ids")
+      assert(#item.file_ids <= limits.file_ids_per_item, "too many file_ids")
+      local valid, err = M.validate({ version = 2, review = { title = "validation", sections = { item } }, files = {} }, view)
+      assert(valid, err)
+    end
+    local function findings(items, count)
+      array(items, "findings")
+      assert(#items <= count, "too many findings")
+      for _, finding in ipairs(items) do
+        fields(finding, "text intent_basis evidence file_ids")
+        limited_text(finding.text, "finding.text", limits.finding_bytes)
+        section({ heading = "finding", detail = finding.text, intent_basis = finding.intent_basis,
+          evidence = finding.evidence, file_ids = finding.file_ids })
+      end
+    end
+    if request.phase == "annotate" then
+      fields(value, "version phase request_id snapshot_id units")
+      array(value.units, "units")
+      local expected, actual, units = {}, {}, {}
+      for _, unit in ipairs(request.units) do expected[#expected + 1] = unit.unit_id; units[unit.unit_id] = unit end
+      for _, entry in ipairs(value.units) do actual[#actual + 1] = entry.unit_id end
+      acknowledgements(actual, expected, "unit_id")
+      for _, entry in ipairs(value.units) do
+        fields(entry, "unit_id notes findings")
+        assert(#vim.json.encode(entry) <= limits.unit_bytes, "unit output exceeds allocated unit_bytes " .. limits.unit_bytes)
+        array(entry.notes, "notes")
+        assert(#entry.notes <= limits.notes_per_unit, "too many notes")
+        for _, note in ipairs(entry.notes) do
+          fields(note, "summary detail anchors intent_basis evidence kind")
+          limited_text(note.summary, "summary", limits.summary_bytes)
+          limited_text(note.detail, "detail", limits.detail_bytes)
+          citations(note)
+          array(note.anchors, "anchors")
+          for _, anchor in ipairs(note.anchors) do fields(anchor, "path side start_line end_line") end
+        end
+        local valid, err = M.validate({ version = 1, notes = entry.notes },
+          { mode = "diff", target = units[entry.unit_id].target, files = request.files })
+        assert(valid, err)
+        findings(entry.findings, limits.findings_per_unit)
+      end
+    else
+      acknowledgements(value.child_ids, request.child_ids, "child_ids")
+      if request.phase == "reduce" then
+        fields(value, "version phase request_id snapshot_id child_ids findings")
+        findings(value.findings, limits.findings)
+      else
+        assert(request.phase == "synthesize", "unsupported review phase")
+        fields(value, "version phase request_id snapshot_id child_ids review")
+        fields(value.review, "title sections")
+        limited_text(value.review.title, "review.title", limits.title_bytes)
+        assert(not value.review.title:find("[\r\n]"), "review.title must occupy one line")
+        array(value.review.sections, "sections")
+        assert(#value.review.sections > 0 and #value.review.sections <= limits.sections, "invalid section count")
+        for _, item in ipairs(value.review.sections) do
+          fields(item, "heading detail intent_basis evidence file_ids")
+          limited_text(item.heading, "heading", limits.heading_bytes)
+          limited_text(item.detail, "detail", limits.detail_bytes)
+          section(item)
+        end
+      end
+    end
+    return value
+  end)
+  if ok then return result end
+  return nil, "Invalid " .. tostring(request.phase) .. " response: " .. tostring(result)
 end
 
 return M

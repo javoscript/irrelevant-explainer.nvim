@@ -11,6 +11,30 @@ prompt = sys.stdin.buffer.read()
 answer = '{"version":1,"notes":[]}'
 progress = '{"version":1,"notes":[],"progress":true}'
 
+if mode.startswith("whole-review"):
+    request = json.loads(prompt.decode().split("UNTRUSTED REVIEW REQUEST JSON:\n", 1)[1])
+    response = {key: request[key] for key in ("phase", "request_id", "snapshot_id")}
+    response["version"] = 3
+    if request["phase"] == "annotate":
+        response["units"] = [{"unit_id": unit["unit_id"], "notes": [], "findings": []}
+                             for unit in request["units"]]
+    elif request["phase"] == "reduce":
+        response.update(child_ids=request["child_ids"], findings=[])
+    else:
+        assert request["phase"] == "synthesize"
+        response.update(child_ids=request["child_ids"], review={
+            "title": "Working-tree review", "sections": [{
+                "heading": "Net changes since HEAD",
+                "detail": "Distributed annotations connect the comparison's changes. This offline fixture tests the reader, not semantic correctness; intent remains unknown.",
+                "intent_basis": "unknown", "evidence": [],
+                "file_ids": [file["file_id"] for file in request["manifest"]],
+            }],
+        })
+    answer = json.dumps(response)
+    mode = mode.removeprefix("whole-review").lstrip("-") or "plain"
+    if mode == "truncated":
+        answer, mode = answer[:-8], "plain"
+
 
 def event(value):
     return json.dumps(value, ensure_ascii=False) + "\n"
@@ -79,19 +103,6 @@ elif mode == "slow":
     sys.stdout.flush()
 elif mode == "eof":
     sys.stdout.buffer.write(prompt)
-elif mode == "whole-review":
-    target = json.loads(prompt.decode().split("FOCUSED TARGET JSON:\n", 1)[1])
-    assert target["scope"] == "review"
-    sys.stdout.write(json.dumps({
-        "version": 2,
-        "review": {"title": "Working-tree review", "sections": [{
-            "heading": "Net changes since HEAD",
-            "detail": "The comparison connects the authorization policy with its requirement, decision record and tests.\n\nThis offline fixture exercises opening Diffview and displaying a complete review; it is not an AI correctness claim.",
-            "intent_basis": "unknown", "evidence": [],
-            "file_ids": [file["file_id"] for file in target["files"]],
-        }]},
-        "files": [{"file_id": file["file_id"], "notes": []} for file in target["files"]],
-    }))
 elif mode in ("review", "review-overview"):
     context = json.loads(prompt.decode().split("UNTRUSTED SNAPSHOT JSON:\n", 1)[1].split("\nFOCUSED TARGET JSON:\n", 1)[0])
     files = {(f["path"], f["side"]): f["lines"] for f in context["files"]}

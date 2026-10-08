@@ -90,12 +90,14 @@ local function fixture(run)
   vim.cmd("tabnew"); f.origin_tab, f.origin = api.nvim_get_current_tabpage(), api.nvim_get_current_win()
   vim.cmd.edit(vim.fn.fnameescape(root .. "/mixed.lua"))
   dv.setup({ watch_index = false, use_icons = false })
-  plugin.setup({ ai = { command = { "fixture-only" } }, diff = { auto_explain = true } })
+  plugin.setup({ ai = { command = { "fixture-only" } }, diff = { auto_explain = true }, cache = { enabled = false } })
   vim.notify = function(message, level)
     if level == vim.log.levels.ERROR then f.errors[#f.errors + 1] = message end
   end
   agent.run = function(prompt, config, _, callback)
-    local job = { target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)")), config = config, callback = callback }
+    local request = prompt:match("UNTRUSTED REVIEW REQUEST JSON:\n(.*)")
+    local job = { request = request and vim.json.decode(request), config = config, callback = callback }
+    if not request then job.target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)")) end
     job.cancel = function() job.cancelled = true end
     f.jobs[#f.jobs + 1] = job
     return job
@@ -142,11 +144,18 @@ T.test("outside review captures net HEAD-to-working changes and window-owned fil
     local s, state = sessions.current(), adapter.current(op.view.cur_layout.b.id)
     T.eq(f.root, state.cwd); T.eq(f.head, state.pair.old.commit); T.eq("local", state.pair.new.type)
     T.eq({}, state.path_args); T.eq(false, state.show_untracked)
-    local versions, paths = {}, {}
+    local versions, originals, paths = {}, {}, {}
     for _, file in ipairs(s.pending.snapshot.files) do
       if file.side == "new" then versions[file.path] = table.concat(file.lines, "\n") end
+      if file.side == "old" then originals[file.path] = table.concat(file.lines, "\n") end
     end
-    for _, file in ipairs(f.jobs[1].target.files) do paths[#paths + 1] = file.path end
+    T.eq({ ["added.lua"] = "staged", ["mixed.lua"] = "final", ["staged.lua"] = "staged", ["working.lua"] = "working" }, versions)
+    T.eq({ ["mixed.lua"] = "base", ["staged.lua"] = "base", ["working.lua"] = "base" }, originals)
+    for _, entry in ipairs(s.pending.snapshot.comparison.manifest) do T.eq(nil, entry.patch) end
+    T.eq("annotate", f.jobs[1].request.phase)
+    local plan = require("explainr.review").inspect(s.review_job)
+    T.eq(2, #plan.annotations); T.eq(3, #f.jobs[1].request.units)
+    for _, unit in ipairs(plan.units) do paths[#paths + 1] = unit.target.path end
     table.sort(paths)
     T.eq({ "added.lua", "mixed.lua", "staged.lua", "working.lua" }, paths)
     T.eq("final", versions["mixed.lua"]); T.eq("staged", versions["staged.lua"])
@@ -178,15 +187,30 @@ T.test("opening waits for buffers, deduplicates in the new view and preserves co
     local current, held = adapter.current, true
     adapter.current = function(...) if held then return nil, "loading" end; return current(...) end
     local ok, err = xpcall(function()
+      local captured = vim.deepcopy(plugin.config)
+      local epoch = require("explainr.cache").epoch()
       local op = plugin.explain("review")
-      plugin.setup({ ai = { command = { "changed-after-invocation" } } })
+      plugin.clear_cache() -- Opening is already pending, even before collection.
+      plugin.setup({ ai = { command = { "changed-after-invocation" }, timeout_ms = 1 },
+        context = { max_bytes = 100, radius = 0 }, review = { request_max_bytes = 100, max_requests = 1 },
+        cache = { enabled = true, namespace = "changed-after-invocation" } })
       f.wait(function() return op.view and op.view.initialized end)
       T.eq(0, #f.jobs); T.eq(nil, sessions.current()); T.eq(op, plugin.explain("review"))
       op.view.emitter:emit("file_open_post", op.view.cur_entry); op.view.emitter:emit("files_updated", op.view.files)
       vim.wait(100); T.eq(0, #f.jobs)
+      api.nvim_buf_set_lines(api.nvim_win_get_buf(f.origin), 0, -1, false, { "edited while opening" })
       held = false
       f.wait(function() return #f.jobs == 1 end)
       T.eq({ "fixture-only" }, f.jobs[1].config.command)
+      T.eq(epoch, sessions.current().pending.cache_epoch)
+      assert(epoch ~= require("explainr.cache").epoch())
+      local config = require("explainr.review").config(sessions.current().review_job)
+      for _, key in ipairs({ "ai", "context", "review", "cache" }) do T.eq(captured[key], config[key]) end
+      local found
+      for _, file in ipairs(sessions.current().pending.snapshot.files) do
+        if file.path == "mixed.lua" and file.side == "new" then found = file.lines end
+      end
+      T.eq({ "edited while opening" }, found)
       T.eq(true, sessions.current().pane.auto_explain)
       op.view.emitter:emit("file_open_post", op.view.cur_entry); vim.wait(100); T.eq(1, #f.jobs)
     end, debug.traceback)
@@ -214,7 +238,7 @@ T.test("cancel close replacement and source/view loss retire opening callbacks",
         vim.uv.now = clock
         adapter.current = current
         op.view.emitter:emit("file_open_post", op.view.cur_entry); vim.wait(120)
-        for _, job in ipairs(f.jobs) do assert(job.target.scope ~= "review", action) end
+        for _, job in ipairs(f.jobs) do assert(not job.request, action) end
         if action == "cancel" or action == "close" then assert(api.nvim_tabpage_is_valid(op.view.tabpage)) end
         T.eq(nil, next(sessions.openings))
       end, debug.traceback)
@@ -261,7 +285,7 @@ T.test("unnamed origin and linked worktree resolve their own repository", functi
       local op = f.open()
       f.wait(function() return #f.jobs == 1 end)
       T.eq(expected, adapter.current(op.view.cur_layout.b.id).cwd)
-      if kind == "worktree" then T.eq(1, #f.jobs[1].target.files); T.eq("mixed.lua", f.jobs[1].target.files[1].path) end
+      if kind == "worktree" then T.eq(1, #f.jobs[1].request.units); T.eq("mixed.lua", f.jobs[1].request.units[1].target.path) end
     end)
   end
 end)
@@ -290,17 +314,28 @@ T.test("background opening preserves focus and unsaved text then reuses and refr
       for _, file in ipairs(snapshot.files) do
         if file.path == "mixed.lua" and file.side == "new" then T.eq({ "unsaved overlay" }, file.lines) end
       end
-      local job = f.jobs[1]
-      job.callback({ version = 2, review = { title = "Net change", sections = {
+      for n = 1, 2 do
+        f.wait(function() return #f.jobs == n end)
+        local job, req = f.jobs[n], f.jobs[n].request
+        T.eq("annotate", req.phase); T.eq(nil, s.pane.review)
+        job.callback({ version = 3, phase = req.phase, request_id = req.request_id, snapshot_id = req.snapshot_id,
+          units = vim.tbl_map(function(unit) return { unit_id = unit.unit_id, notes = {}, findings = {} } end, req.units) })
+      end
+      f.wait(function() return #f.jobs == 3 end)
+      T.eq(nil, s.pane.review)
+      local req = f.jobs[3].request
+      T.eq("synthesize", req.phase)
+      f.jobs[3].callback({ version = 3, phase = req.phase, request_id = req.request_id, snapshot_id = req.snapshot_id,
+        child_ids = req.child_ids, review = { title = "Net change", sections = {
         { heading = "Working tree", detail = "The supplied changes update the files.", intent_basis = "unknown",
-          evidence = {}, file_ids = { job.target.files[1].file_id } },
-      } }, files = vim.tbl_map(function(file) return { file_id = file.file_id, notes = {} } end, job.target.files) })
+          evidence = {}, file_ids = { req.manifest[1].file_id } },
+      } } })
       f.wait(function() return not s.pending end)
       T.eq(focus, api.nvim_get_current_win()); T.eq("Net change", s.pane.review.title)
       T.eq(f.index, f.git("write-tree")); T.eq("final", vim.fn.readfile(f.root .. "/mixed.lua")[1])
       api.nvim_set_current_win(s.pane.win)
-      plugin.explain("review"); f.wait(function() return not s.pending end); T.eq(1, #f.jobs)
-      plugin.refresh(); f.wait(function() return #f.jobs == 2 end); T.eq("review", f.jobs[2].target.scope)
+      plugin.explain("review"); f.wait(function() return not s.pending end); T.eq(3, #f.jobs)
+      plugin.refresh(); f.wait(function() return #f.jobs == 4 end); T.eq("annotate", f.jobs[4].request.phase)
     end, debug.traceback)
     adapter.current = current
     assert(ok, err)

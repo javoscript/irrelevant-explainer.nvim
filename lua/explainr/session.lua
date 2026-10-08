@@ -120,7 +120,7 @@ local function progress(session, request, status)
 end
 
 local function stop_jobs(session)
-  for _, key in ipairs({ "collection", "checking", "invocation", "restoration" }) do
+  for _, key in ipairs({ "collection", "checking", "invocation", "restoration", "cache_lookup" }) do
     if session[key] then session[key].cancel(); session[key] = nil end
   end
   for _, request in ipairs(session.queue or {}) do
@@ -145,6 +145,7 @@ function M.close(session)
   remember(session)
   session.closed = true
   discard_pending(session)
+  session.review_job = nil
   if session.timer then session.timer:stop(); session.timer:close(); session.timer = nil end
   if session.group then api.nvim_del_augroup_by_id(session.group) end
   if M.sessions[session.tab] == session then M.sessions[session.tab] = nil end
@@ -155,7 +156,7 @@ function M.cancel()
   cancel_opening()
   local session = M.current()
   if session and not session.closed then
-    session.review_status = "Cancelled · refresh explicitly"
+    session.review_status = "Cancelled · :Explainr review to resume"
     session.auto_explain_navigation = false
     discard_pending(session)
     render(session, "Cancelled · refresh explicitly")
@@ -249,6 +250,7 @@ local function check(session, callback, dirty)
     if stale_pending then
       if session.pending.scope == "review" then
         session.review_status = "Stale · context changed · refresh"
+        session.review_job = nil
       end
       session.stale = true
       discard_pending(session)
@@ -462,8 +464,8 @@ local function fail(session, err)
   local request = session.pending
   local visible = not request or session.mode == "code" or request.scope ~= "review" and request.key == session.review_key
   if request and request.scope == "review" then
-    session.review_status = "Failed · see :messages"
-    if not err:find("context.max_bytes", 1, true) then
+    session.review_status = "Failed · " .. (request.status or "see :messages"):gsub("^Pending · ", "")
+    if not err:find("resume", 1, true) and not err:find("context.max_bytes", 1, true) then
       err = err .. " Reduce the comparison or request file/hunk scope; no fallback was started."
     end
     err = "Review: " .. err
@@ -523,28 +525,47 @@ launch = function(session, snapshot, options, config)
   owned_request.snapshot, owned_request.windows = snapshot, snapshot.windows
   progress(session, owned_request, "Pending · building prompt")
   local prompt = require("explainr.prompt")
-  local context_key = snapshot.review_fingerprint or snapshot.fingerprint
-  contexts[context_key] = contexts[context_key] or prompt.context(snapshot)
-  local request, err = prompt.build(snapshot, config.context.max_bytes, contexts[context_key])
-  if not request then return fail(session, err) end
+  local is_review = snapshot.target.scope == "review"
+  local request, err
+  if not is_review then
+    local context_key = snapshot.review_fingerprint or snapshot.fingerprint
+    contexts[context_key] = contexts[context_key] or prompt.context(snapshot)
+    request, err = prompt.build(snapshot, config.context.max_bytes, contexts[context_key])
+    if not request then return fail(session, err) end
+  end
+  local store, semantic = require("explainr.cache"), require("explainr.identity")
+  local source_hash, disk_key = semantic.key(snapshot, config)
+  local memory_config = vim.deepcopy(config)
+  memory_config.cache.decoder_key = memory_config.cache.decoder_key or "memory-only"
+  local _, result_key = semantic.key(snapshot, memory_config)
+  local epoch = owned_request.cache_epoch
   -- Function keys preserve decoder identity; captured configuration also keys
   -- the cache, rather than whatever setup() contains when output arrives.
   results[config.ai.output] = results[config.ai.output] or {}
   local cache = results[config.ai.output]
-  local result_key = snapshot.fingerprint .. "\0" .. vim.inspect({ config.ai, config.context })
   local generation = session.generation
-  local function accept(raw, failure, cached)
-    if session.closed or session.generation ~= generation
-      or not session.pending or session.pending.snapshot ~= snapshot then return end
+  local function owned()
+    return not session.closed and session.generation == generation
+      and session.pending == owned_request and session.pending.snapshot == snapshot
+  end
+  local function accept(raw, failure, cached, record)
+    if not owned() then return end
     session.invocation = nil
     progress(session, owned_request, "Pending · checking result context")
     check(session, function()
+      if not owned() then return end
       local value
       if not failure then value, failure = require("explainr.model").validate(raw, snapshot) end
       if failure then fail(session, failure); return end
-      cache[result_key] = vim.deepcopy(value)
+      local envelope = { version = 1, source = source_hash, key = disk_key, scope = snapshot.target.scope,
+        answer = is_review and record or { version = 1, notes = value.notes } }
+      if epoch == store.epoch() then
+        cache[result_key] = vim.deepcopy(envelope.answer)
+        if not cached and disk_key then store.write(source_hash, disk_key, envelope, config.cache) end
+      end
       local status = cached and "Ready · cached" or "Ready"
       if owned_request.scope == "review" then
+        session.review_job = nil
         narratives[session.comparison_key] = { snapshot = snapshot, result = value, config = config }
         if not cached then session.pane.review = nil end -- A new generation starts at its beginning, even for equal prose.
         session.review_checking = nil
@@ -569,17 +590,32 @@ launch = function(session, snapshot, options, config)
       advance_queue(session, session.mode == "code" and status or nil)
     end)
   end
-  local reusable = cache[result_key]
-  if not reusable and owned_request.scope == "file" then
-    local saved = retained[owned_request.key]
-    for _, batch in ipairs(saved and saved.batches or {}) do
-      if vim.deep_equal(batch.config, config) and vim.deep_equal(batch.snapshot.target, snapshot.target)
-        and batch.snapshot.review_fingerprint == snapshot.review_fingerprint then reusable = batch.result; break end
-    end
+  local function reuse(answer)
+    if not answer or not owned() or epoch ~= store.epoch() then return false end
+    local value
+    if is_review then value = require("explainr.review").validate_record(answer, snapshot, config)
+    else value = require("explainr.model").validate(answer, snapshot) end
+    if not value then return false end
+    accept(value, nil, true, is_review and answer or nil)
+    return true
   end
-  if not options.refresh and reusable then
-    accept(vim.deepcopy(reusable), nil, true)
-  else
+  local function generate()
+    if not owned() then return end
+    if is_review then
+      local review = require("explainr.review")
+      local job, failure = review.create(snapshot, config, not options.refresh and session.review_job or nil)
+      if not job then fail(session, failure); return end
+      session.review_job = job
+      session.invocation = review.start(job, {
+        progress = function(status) if owned() then progress(session, owned_request, "Pending · " .. status:gsub("^Pending · ", "")) end end,
+        fresh = function(done)
+          if not owned() then done(false); return end
+          check(session, function() done(owned()) end)
+        end,
+        complete = function(value, failure, record) accept(value, failure, false, record) end,
+      })
+      return
+    end
     progress(session, owned_request, "Pending · external agent")
     local delivered = false
     local job = require("explainr.agent").run(request, config.ai, snapshot.cwd, function(raw, failure)
@@ -589,6 +625,20 @@ launch = function(session, snapshot, options, config)
     end)
     if not delivered then session.invocation = job end
   end
+  if not options.refresh and reuse(cache[result_key]) then return session end
+  if not options.refresh and disk_key and config.cache.enabled then
+    progress(session, owned_request, "Pending · checking completed cache")
+    session.cache_lookup = store.read(source_hash, disk_key, config.cache, function(envelope)
+      if not owned() then return end
+      session.cache_lookup = nil
+      check(session, function()
+        if not owned() then return end
+        if type(envelope) == "table" and envelope.version == 1 and envelope.source == source_hash
+          and envelope.key == disk_key and envelope.scope == snapshot.target.scope and reuse(envelope.answer) then return end
+        generate()
+      end)
+    end)
+  else generate() end
   return session
 end
 
@@ -632,6 +682,7 @@ function M.explain(scope, selection)
   if scope == "file" and kind == "code" then return M.start("code", scope, { win = source }) end
   if scope == "review" and kind == "code" then
     local tab, config = api.nvim_get_current_tabpage(), vim.deepcopy(require("explainr").config)
+    local cache_epoch = require("explainr.cache").epoch()
     local operation
     operation = adapter.open_review(source, function(state, err)
       if M.openings[tab] ~= operation then return end
@@ -641,7 +692,7 @@ function M.explain(scope, selection)
         assert(api.nvim_win_is_valid(source) and api.nvim_win_is_valid(state.source), "Review source was closed")
         assert(comparison_key(adapter.selection(state.source)) == comparison_key(state), "Review comparison changed while opening")
         return api.nvim_win_call(state.source, function()
-          return M.start("diff", "review", { win = state.source, config = config }) ~= nil
+          return M.start("diff", "review", { win = state.source, config = config, cache_epoch = cache_epoch }) ~= nil
         end)
       end)
       if not ok then notify("Opening review failed: " .. tostring(result))
@@ -695,7 +746,7 @@ function M.start(mode, scope, options)
   local config = vim.deepcopy(options.config or require("explainr").config)
   local snapshot, err, collection, session, generation
   local request = { source = source, scope = scope, row = api.nvim_win_get_cursor(source)[1],
-    options = vim.deepcopy(options), config = config }
+    options = vim.deepcopy(options), config = config, cache_epoch = options.cache_epoch or require("explainr.cache").epoch() }
   local previous_windows = previous and (previous.snapshot and previous.snapshot.windows
     or previous.pane.pending and previous.pane.pending.windows)
   if mode == "code" then
@@ -743,7 +794,8 @@ function M.start(mode, scope, options)
         if request.error then fail(session, request.error); return end
         launch(session, value, options, config)
       else render(session) end
-    end, vim.tbl_extend("force", config.context, { target = options.target }))
+    end, vim.tbl_extend("force", config.context, { target = options.target,
+      snapshot_max_bytes = scope == "review" and config.review.max_snapshot_bytes or nil }))
   end
   local state = display_state or collection and collection.state
   local context = identity(mode, snapshot, state)
@@ -758,6 +810,7 @@ function M.start(mode, scope, options)
   end
   local append = compatible and mode == "diff" and previous.pending and not options.refresh
   if previous and mode == "diff" and options.refresh then discard_pending(previous) end
+  if previous and options.refresh and scope == "review" then previous.review_job = nil end
   if previous and not compatible then M.close(previous) end
   session = compatible and previous or { mode = mode, generation = 1, batches = {}, tab = api.nvim_get_current_tabpage() }
   if mode == "diff" then
@@ -837,5 +890,10 @@ function M.refresh()
 end
 
 function M.review() return M.start("diff", "review", { display_only = true }) end
+
+function M.clear_cache()
+  contexts, results, retained = {}, {}, {}
+  return require("explainr.cache").clear(require("explainr").config.cache)
+end
 
 return M

@@ -58,66 +58,161 @@ Every returned explanation still needs the caller's common model validation.
 REVIEW PAYLOAD                                         *explainr-agent-review*
 
 Code/file/hunk requests keep version=1 with a notes array. Explicit review scope
-requires version=2 with review and files; a legacy flat answer is not complete
-review coverage. Plain, OpenCode, Codex and custom decoders still select final
-text in the same way. Wrappers must honor the scope-specific prompt contract;
-no provider-specific conversion or fallback is performed.
+uses sequential version=3 phase envelopes, not one version-2 wire response.
+Plain, OpenCode, Codex and custom decoders still select final text in the same
+way. Wrappers must honor phase, request_id and snapshot_id exactly as supplied.
+Version 2 remains the host's internal final {review, files} assembly only; old
+version-2-only review wrappers fail, without conversion or fallback.
 
-review contains a nonempty single-line title and nonempty sections array. Each
-section has a nonempty single-line heading, Markdown detail, intent_basis
-(documented/inferred/unknown), evidence array, and file_ids array of unique
-supplied manifest identities. Explain the overall change, cross-file connections,
-and intent/caveats separately from anchored file notes. Narrative sections need
-no source anchors. Documented sections require nonempty supplied-range evidence.
+Every request contains version, phase, request_id, snapshot_id, output_limits,
+files, manifest and coverage. files supplies chunks with original start_line and
+lines; gaps are unavailable, and old/new coordinates and rename paths remain
+independent. Redundant unified patches are not sent. Annotation adds units:
+each has unit_id, file_id, whole_file, fragment, hunk_indices and target (scope,
+file_id, path, anchors, hunks). Hunks are [old_start,old_count,new_start,new_count];
+zero counts mark boundaries, not source lines. Every eligible old/new line is
+owned by exactly one unit across the job. Affordable changed decision documents
+may accompany units as evidence, not additional annotation targets. Complete
+job-wide coverage is not simultaneous whole-source reasoning or semantic proof.
 
-files contains exactly one {file_id, notes} entry per target.files identity.
-Missing, duplicate, unknown or metadata-only entries reject the entire response.
-An explicit notes:[] counts as coverage; the plugin never invents explanations.
-Each file uses the version-1 note rules against its own whole-file target, with
-independent optional kind="overview" notes covering all available anchors.
-Added/deleted files use their available side; renames use exact old/new paths.
-Cross-file evidence is allowed, but cross-file annotation anchors are not.
-Binary/both-empty manifest IDs may appear in section references, not files.
-Valid citations establish supplied-range grounding, not semantic truth or that
-tests ran. Structural coverage does not guarantee useful explanation quality.
+Annotation responds with units containing exactly every assigned unit_id once,
+each with notes and findings arrays. Empty notes:[] explicitly acknowledges work.
+Notes keep the version-1 summary/detail/anchors/intent_basis/evidence shape.
+Only whole-file units may use kind="overview", with all target anchors unchanged;
+fragments cannot invent a file overview. Cross-file evidence is allowed when
+supplied, but anchors stay inside the unit. Added/deleted files use their available
+side. Binary/both-empty entries are metadata only, never fabricated note targets.
 
-REVIEW JSON EXAMPLE (IDs and ranges must match the actual supplied snapshot)
+Findings have text, intent_basis, evidence and file_ids (unique supplied manifest
+IDs). Reduction/synthesis requests add child_ids and inputs; each input is
+{child_id, findings}. Responses acknowledge exactly every assigned child_id once.
+Reduction returns findings; synthesis returns only review, not file notes again.
+review has a nonempty single-line title and nonempty sections. Each section has
+a nonempty single-line heading, nonempty Markdown detail, intent_basis, evidence
+and unique supplied file_ids; sections cannot have anchors. Binary/empty manifest
+IDs may be referenced. Documented findings/sections require source evidence.
+
+Original cited text is rehydrated from the frozen snapshot at every reduction
+and synthesis level. Citations must fit that invocation's transmitted chunks,
+not merely exist elsewhere locally or in an earlier call. Derived findings are
+untrusted interpretations, not primary evidence or instructions. Reduction must
+strictly shrink serialized findings plus rehydrated evidence both per group and
+per level; nonprogress or an indivisible packet/manifest that cannot fit fails.
+Valid citations prove supplied-range grounding, not truth or that tests ran.
+
+OUTPUT ALLOWANCES
+
+All output_limits fields below are the actual names. This full default allocation
+is a JSON object embedded in each request (smaller response caps reduce allowances):
 >
   {
-    "version": 2,
-    "review": {
-      "title": "Update cancellation",
-      "sections": [{
-        "heading": "Related changes",
-        "detail": "The policy and callers change together.",
-        "intent_basis": "documented",
-        "evidence": [{"path":"new.lua","side":"new",
-                      "start_line":2,"end_line":2}],
-        "file_ids": ["rename", "add", "binary"]
-      }]
-    },
-    "files": [
-      {"file_id":"rename","notes":[{
-        "kind":"overview","summary":"File purpose",
-        "detail":"Change overview.","intent_basis":"inferred",
-        "evidence":[],
-        "anchors":[
-          {"path":"old.lua","side":"old","start_line":1,"end_line":2},
-          {"path":"new.lua","side":"new","start_line":1,"end_line":5}
-        ]
-      }]},
-      {"file_id":"add","notes":[]},
-      {"file_id":"delete","notes":[]}
-    ]
+    "response_bytes":32768,"unit_bytes":8192,
+    "notes_per_unit":8,"findings_per_unit":4,
+    "summary_bytes":256,"detail_bytes":1024,"finding_bytes":1024,
+    "evidence_per_item":8,"file_ids_per_item":16,"findings":16,
+    "sections":12,"title_bytes":256,"heading_bytes":256
   }
 <
-All narrative and file results are validated together before installation. One
-bad sibling, missing coverage, truncated JSON, unsuccessful completion or stale
-snapshot rejects the whole new review, preserving still-fresh accepted results.
-Input fitting context.max_bytes does not ensure output fits provider limits.
-On overflow/truncation, filter Diffview to reduce the explicit comparison,
-increase the input budget where applicable, or request file/hunk scope. There
-is no automatic repair, splitting, partial salvage, or per-file fallback.
+response_bytes bounds decoded final JSON text, including whitespace/escaping;
+unit_bytes bounds each encoded unit entry including its ID, notes and findings.
+Count limits and text UTF-8 byte limits are checked too; arrays must be JSON []
+even when empty, never {}. Respect the actual request's limits, not these defaults.
+Default packing allows three 8192-byte units per 32768-byte response, subject to
+input fit; a small response cap can admit one smaller unit. No response is clipped
+to fit. The input cap is min(context.max_bytes, review.request_max_bytes), and
+all annotation requests are preflighted before inference. See |explainr-status|
+for snapshot/call caps and per-call timeout. These guardrails neither set provider
+output tokens nor guarantee capacity or disable/fix OpenCode compaction.
+
+VERSION-3 JSON EXAMPLES
+
+These are complete response envelopes, not literal responses to every job.
+Illustrative assigned IDs are snapshot-demo, annotate-demo, unit-demo,
+reduce-demo and synthesize-demo; production must echo the actual supplied IDs.
+For the annotation example, unit-demo owns new.lua/new lines 1-2, is a whole-file
+unit, and the request's manifest contains file-demo. Each example's request
+supplies new.lua/new line 2 ("return true") and the default allowances above.
+The reduction example acknowledges annotate-demo; synthesis acknowledges
+reduce-demo. An actual job reduces only when synthesis input cannot fit; these
+small examples demonstrate payloads, not a forced reduction schedule.
+
+ANNOTATE RESPONSE
+>
+  {
+    "version":3,"phase":"annotate",
+    "request_id":"annotate-demo","snapshot_id":"snapshot-demo",
+    "units":[{
+      "unit_id":"unit-demo",
+      "notes":[{
+        "summary":"Return success","detail":"Returns `true` to the caller.",
+        "anchors":[{"path":"new.lua","side":"new",
+                    "start_line":2,"end_line":2}],
+        "intent_basis":"inferred","evidence":[]
+      }],
+      "findings":[{
+        "text":"The function returns true on this path.",
+        "intent_basis":"inferred",
+        "evidence":[{"path":"new.lua","side":"new",
+                     "start_line":2,"end_line":2}],
+        "file_ids":["file-demo"]
+      }]
+    }]
+  }
+<
+REDUCE RESPONSE
+>
+  {
+    "version":3,"phase":"reduce",
+    "request_id":"reduce-demo","snapshot_id":"snapshot-demo",
+    "child_ids":["annotate-demo"],
+    "findings":[{
+      "text":"Returns true.","intent_basis":"inferred",
+      "evidence":[{"path":"new.lua","side":"new",
+                   "start_line":2,"end_line":2}],
+      "file_ids":["file-demo"]
+    }]
+  }
+<
+SYNTHESIZE RESPONSE
+>
+  {
+    "version":3,"phase":"synthesize",
+    "request_id":"synthesize-demo","snapshot_id":"snapshot-demo",
+    "child_ids":["reduce-demo"],
+    "review":{
+      "title":"Return a success value",
+      "sections":[{
+        "heading":"Observed behavior",
+        "detail":"The supplied path returns `true`; caller behavior is not supplied.",
+        "intent_basis":"inferred",
+        "evidence":[{"path":"new.lua","side":"new",
+                     "start_line":2,"end_line":2}],
+        "file_ids":["file-demo"]
+      },{
+        "heading":"Intent and limits",
+        "detail":"Business rationale is unavailable. Distributed coverage does not establish every cross-file relationship.",
+        "intent_basis":"unknown",
+        "evidence":[],
+        "file_ids":["file-demo"]
+      }]
+    }
+  }
+<
+Successful invocations checkpoint only after schema, size, range and freshness
+validation. One bad sibling rejects that entire invocation without partial salvage.
+All units and final synthesis must validate before one atomic new review installs.
+Failure preserves older fresh visible answers and matching internal checkpoints,
+but starts no automatic repair, error-driven subdivision, or per-file fallback.
+Explicit :Explainr review in the owning comparison/reader resumes matching work;
+Review Refresh regenerates. Multiple calls may cost more and take longer.
+
+Completed answers, including validated phase provenance for local replay, may
+persist as private plaintext JSON; unfinished checkpoints do not. Custom decoders
+need an explicit stable cache.decoder_key for disk reuse. Hidden external config
+changes require namespace/key invalidation or Refresh. See |explainr-cache| for
+the 100 MiB default, opt-out, clear controls, source-snippet privacy and success-only
+replacement. Cache replay reconstructs requests and validates responses locally;
+it never resumes an external conversation or launches reduction again.
 
 INTERNAL TRANSPORT API                                    *explainr-agent-api*
 >
@@ -180,8 +275,8 @@ COMPATIBILITY AND EVIDENCE                         *explainr-agent-compatibility
 Compatibility is with the CLI contracts above, not a guessed release range.
 No authenticated OpenCode or Codex release has been executed by the offline
 tests. No installed CLI version is claimed supported solely from its number.
-The explanation payload version (version=1 for code/file/hunk, version=2 for
-review) is distinct from CLI transport/event formats and is validated by the
+The explanation payload version (version=1 for code/file/hunk, version=3 for
+review phases) is distinct from CLI transport/event formats and is validated by the
 common model layer.
 
 Contract evidence inspected 2026-10-05:

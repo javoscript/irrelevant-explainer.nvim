@@ -7,6 +7,15 @@ end
 vim.opt.runtimepath:prepend(vim.fn.getcwd())
 vim.o.swapfile = false
 vim.o.shadafile = "NONE"
+-- Persistence tests and child editors must never read/write the user's cache.
+local cache_root
+if not vim.env.EXPLAINR_TEST_CACHE_ROOT then
+  cache_root = vim.fn.tempname()
+  vim.fn.mkdir(cache_root, "p")
+  cache_root = assert(vim.uv.fs_realpath(cache_root))
+  vim.env.EXPLAINR_TEST_CACHE_ROOT = cache_root
+  vim.env.XDG_CACHE_HOME = cache_root
+end
 local failures, passed = {}, 0
 _G.T = {}
 function T.eq(expected, actual)
@@ -23,6 +32,11 @@ for _, file in ipairs(vim.fn.glob(pattern, false, true)) do
   if not ok then failures[#failures + 1] = file .. "\n" .. err end
 end
 print(string.format("%d passed, %d failed", passed, #failures))
+if cache_root then
+  if package.loaded["explainr.session"] then require("explainr").close() end
+  vim.wait(200)
+  vim.fn.delete(cache_root, "rf")
+end
 if #failures > 0 then
   for _, failure in ipairs(failures) do print(failure) end
   vim.cmd("cquit 1")

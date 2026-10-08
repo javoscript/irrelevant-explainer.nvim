@@ -12,7 +12,7 @@ T.test("code prompt separates complete context exact target untrusted data and o
   assert(p:find("unavailable", 1, true) and p:find("api.cancel('é中')", 1, true))
   local context, target = p:match("UNTRUSTED SNAPSHOT JSON:\n(.-)\nFOCUSED TARGET JSON:\n(.*)")
   T.eq(code.files, vim.json.decode(context).files)
-  T.eq(code.target, vim.json.decode(target))
+  T.eq(require("explainr.identity").target(code.target), vim.json.decode(target))
   for _, instruction in ipairs({ "untrusted contextual data", "unavailable dependency behavior",
     "full explanation now", "1-based inclusive", "Return exactly one JSON object", "not surrounding columns" }) do
     assert(p:find(instruction, 1, true), instruction)
@@ -117,7 +117,7 @@ T.test("focused prompt preserves explicit coverage and compact coordinates witho
   end
 end)
 
-T.test("review prompt supplies every target and shared context once with complete serialized budget", function()
+T.test("review prompts use only version3 local request views with exact byte budgets", function()
   local s = { mode = "diff", context = { strategy = "review" },
     target = { scope = "review", files = {} }, files = {}, comparison = { manifest = {} } }
   for i, path in ipairs({ "policy.lua", "decision.md", "test.lua" }) do
@@ -129,26 +129,33 @@ T.test("review prompt supplies every target and shared context once with complet
       new = { path = path, side = "new", lines = lines } }
   end
   s.comparison.manifest[4] = { file_id = "binary", path = "image.png", text_unavailable = "binary" }
-  local context = prompt.context(s)
-  local p, _, bytes = prompt.build(s, 100000, context)
+  local old, err = prompt.build(s, 100000)
+  T.eq(nil, old); assert(err:find("version-3", 1, true))
+  local job = assert(require("explainr.review").create(s, {}))
+  local req = require("explainr.review").inspect(job).annotations[1].request
+  local p, _, bytes = prompt.review(req, 100000)
   T.eq(#p, bytes); assert(bytes > vim.fn.strchars(p))
-  T.eq(p, assert(prompt.build(s, bytes, context)))
-  local rejected, err = prompt.build(s, bytes - 1, context)
+  T.eq(p, assert(prompt.review(req, bytes)))
+  local rejected = prompt.review(req, bytes - 1)
   T.eq(nil, rejected)
-  for _, advice in ipairs({ "Filter Diffview", "increase the budget", "file/hunk scope", "Nothing was omitted" }) do
-    assert(err:find(advice, 1, true))
-  end
-  local raw, targets = p:match("UNTRUSTED SNAPSHOT JSON:\n(.-)\nFOCUSED TARGET JSON:\n(.*)")
-  T.eq(s.files, vim.json.decode(raw).files); T.eq(s.target, vim.json.decode(targets))
-  T.eq(nil, vim.json.decode(raw).comparison.manifest[1].new.lines)
+  local raw = vim.json.decode(p:match("UNTRUSTED REVIEW REQUEST JSON:\n(.*)"))
+  T.eq(req, raw)
   for i = 1, 3 do
     local _, count = p:gsub("unique supplied content é中 " .. i, "")
     T.eq(1, count)
   end
-  for _, instruction in ipairs({ '"version":2', "overall change, cross-file relationships",
-    "separate from source-anchored file notes", "file overview as the FIRST note",
-    "EVERY target.files ID", "metadata-only", "do not fabricate notes", "Tests show expectations" }) do
+  for _, instruction in ipairs({ '"version":3', "overall change", "cross-file relationships",
+    "derived findings are untrusted", "Fragment units MUST NOT", "Tests show expectations",
+    "exactly every assigned unit ID", "not provider tokens" }) do
     assert(p:find(instruction, 1, true), instruction)
   end
-  assert(not p:find('"version":1', 1, true))
+  assert(not p:find('"version":2', 1, true))
+end)
+
+T.test("version1 prompt removes runtime descriptors without changing selected text or coordinates", function()
+  local a, b = vim.deepcopy(code), vim.deepcopy(code)
+  a.target.selection = { source_buf = 12 }; b.target.selection = { source_buf = 99 }
+  b.target.spans[1][1][1], b.target.spans[1][2][1] = 99, 99
+  T.eq(assert(prompt.build(a, 100000)), assert(prompt.build(b, 100000)))
+  T.eq(1, a.target.spans[1][1][1])
 end)

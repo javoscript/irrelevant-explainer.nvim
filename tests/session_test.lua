@@ -1,10 +1,13 @@
 local api = vim.api
 local plugin, sessions, agent = require("explainr"), require("explainr.session"), require("explainr.agent")
 local fixture = vim.fn.getcwd() .. "/tests/fixtures/agent.py"
+local fixture_id = 0
 local function config(mode, limit)
-  plugin.setup({ ai = { command = { "python3", fixture, mode or "explain" } }, context = { max_bytes = limit or 262144 } })
+  plugin.setup({ ai = { command = { "python3", fixture, mode or "explain" } }, context = { max_bytes = limit or 262144 },
+    cache = { enabled = false, namespace = "session-fixture-" .. fixture_id } })
 end
 local function fixture_buffer(run)
+  fixture_id = fixture_id + 1
   plugin.close(); vim.cmd("silent! only!")
   local previous = api.nvim_get_current_buf()
   local buf = api.nvim_create_buf(false, false)
@@ -367,6 +370,7 @@ end)
 local function diff_fixture(run)
   fixture_buffer(function(buf, win, _, errors)
     config()
+    api.nvim_buf_set_name(buf, vim.fn.tempname() .. ".lua")
     vim.cmd("aboveleft vsplit")
     local old_win, old_buf = api.nvim_get_current_win(), api.nvim_create_buf(false, false)
     api.nvim_buf_set_lines(old_buf, 0, -1, false, api.nvim_buf_get_lines(buf, 0, -1, false))
@@ -412,6 +416,7 @@ local function diff_fixture(run)
       value.files = {}
       for _, side in ipairs({ "old", "new" }) do
         local file = vim.deepcopy(base.files[1]); file.side = side
+        if epoch then file.lines[#file.lines] = file.lines[#file.lines] .. " -- " .. epoch end
         value.files[#value.files + 1] = file
       end
       value.target = { scope = "hunk", path = base.files[1].path, oldpath = base.files[1].path,
@@ -486,7 +491,7 @@ T.test("automatic mode updates owned headers across tabs without disturbing deta
     end
     -- Explicit setup resets the mode and keeps existing headers synchronized.
     for _, enabled in ipairs({ true, false }) do
-      plugin.setup({ diff = { auto_explain = enabled } })
+      plugin.setup({ diff = { auto_explain = enabled }, cache = { enabled = false, namespace = "session-fixture-" .. fixture_id } })
       T.eq(enabled, header(s.pane):find("Auto", 1, true) ~= nil)
       T.eq(enabled, header(other.pane):find("Auto", 1, true) ~= nil)
       assert(not header(code.pane):find("Auto", 1, true))
@@ -809,13 +814,43 @@ T.test("captured config and context preferences key caching without dropping unr
     local s = plugin.explain("selection", { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
     local selection_batch = vim.deepcopy(s.batches[1])
     config("explain-slow"); T.eq(s, plugin.explain("file"))
-    plugin.setup({ ai = { command = { "python3", fixture, "explain-invalid" } }, context = { radius = 1 } })
+    plugin.setup({ ai = { command = { "python3", fixture, "explain-invalid" } }, context = { radius = 1 },
+      cache = { enabled = false, namespace = "session-fixture-" .. fixture_id } })
     ready(s); T.eq(2, #s.batches); T.eq(selection_batch, s.batches[1]); T.eq(2, calls())
     -- Returning to the config captured by the pending request hits its cache.
     config("explain-slow"); T.eq(s, plugin.explain("file")); ready(s)
     T.eq("Ready · cached", s.pane.status); T.eq(2, calls())
-    plugin.setup({ ai = { command = { "python3", fixture, "explain-slow" } }, context = { radius = 1 } })
+    plugin.setup({ ai = { command = { "python3", fixture, "explain-slow" } }, context = { radius = 1 },
+      cache = { enabled = false, namespace = "session-fixture-" .. fixture_id } })
     T.eq(s, plugin.explain("file")); ready(s); T.eq(3, calls()); T.eq(2, #s.batches)
     T.eq(selection_batch, s.batches[1])
   end)
+end)
+
+T.test("source edits and cancellation during disk lookup prevent both hits and miss dispatch", function()
+  for _, hit in ipairs({ false, true }) do
+    for _, action in ipairs({ "edit", "cancel" }) do
+      fixture_buffer(function(buf, _, calls)
+        config(); plugin.config.cache.enabled = true
+        local cache, callback, envelope = require("explainr.cache"), nil, nil
+        local original = cache.read
+        cache.read = function(source, key, _, deliver)
+          callback = deliver
+          envelope = { version = 1, source = source, key = key, scope = "file", answer = { version = 1, notes = {} } }
+          return { cancel = function() end }
+        end
+        local ok, err = xpcall(function()
+          local s = plugin.explain("file")
+          assert(callback)
+          if action == "edit" then api.nvim_buf_set_lines(buf, 0, 1, false, { "changed during cache lookup" })
+          else plugin.cancel() end
+          callback(hit and envelope or nil)
+          vim.wait(50)
+          T.eq(0, calls()); T.eq(nil, s.pane.result); T.eq(nil, s.pending)
+        end, debug.traceback)
+        cache.read = original
+        assert(ok, err)
+      end)
+    end
+  end
 end)

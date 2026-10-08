@@ -5,6 +5,8 @@ loaded. Output belongs under .amp/in/artifacts (locally excluded from Git).
 """
 from pathlib import Path
 import argparse
+import os
+import tempfile
 import pynvim
 from PIL import Image, ImageDraw, ImageFont
 
@@ -95,6 +97,9 @@ args = parser.parse_args()
 out = Path(args.output)
 out.mkdir(parents=True, exist_ok=True)
 font = ImageFont.truetype(args.font, 16)
+# Captures exercise real cache paths without touching the user's saved answers.
+cache_root = tempfile.TemporaryDirectory(prefix="explainr-render-cache-")
+os.environ["XDG_CACHE_HOME"] = str(Path(cache_root.name).resolve())
 for state in args.states:
     nvim = pynvim.attach("child", argv=[args.nvim, "--embed", "-u", "NONE", "-n"])
     width, height = (220 if state.startswith("diff") else 72 if state in ("narrow", "detail-narrow", "overlap-narrow") else 140), 28
