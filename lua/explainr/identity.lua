@@ -2,21 +2,23 @@ local M = { FORMAT_VERSION = 1, PROMPT_VERSION = 2, PLANNER_VERSION = 2 }
 
 -- Typed keys avoid collisions between array coordinates and object fields.
 -- This is an identity encoding, not a wire JSON representation.
-function M.canonical(value)
+function M.canonical(value, pause)
   if type(value) ~= "table" then return vim.json.encode(value) end
+  if pause then pause() end
   local keys, parts = {}, {}
   for key in pairs(value) do keys[#keys + 1] = key end
   table.sort(keys, function(a, b)
     if type(a) ~= type(b) then return type(a) < type(b) end
     return a < b
   end)
-  for _, key in ipairs(keys) do
-    parts[#parts + 1] = M.canonical(key) .. ":" .. M.canonical(value[key])
+  for index, key in ipairs(keys) do
+    if pause and index % 32 == 0 then pause() end
+    parts[#parts + 1] = M.canonical(key, pause) .. ":" .. M.canonical(value[key], pause)
   end
   return "{" .. table.concat(parts, ",") .. "}"
 end
 
-function M.hash(value) return vim.fn.sha256(M.canonical(value)) end
+function M.hash(value, pause) return vim.fn.sha256(M.canonical(value, pause)) end
 
 function M.target(target)
   local copy = vim.deepcopy(target)
@@ -60,7 +62,7 @@ end
 
 -- Return only digests. In particular, raw argv (possibly containing secrets)
 -- and source content must never be copied into a persistent cache envelope.
-function M.key(snapshot, config)
+function M.key(snapshot, config, pause)
   config = config or {}
   local ai, cache = config.ai or {}, config.cache or {}
   local decoder = ai.output or "plain"
@@ -79,8 +81,8 @@ function M.key(snapshot, config)
     format = M.FORMAT_VERSION, prompt = M.PROMPT_VERSION, planner = M.PLANNER_VERSION,
     response = snapshot.target.scope == "review" and 3 or 1,
     source = source_hash, mode = snapshot.mode, scope = snapshot.target.scope,
-    target = M.hash(M.target(snapshot.target)),
-    context = M.hash({ files = supplied(snapshot.files), comparison = comparison, context = snapshot.context }),
+    target = M.hash(M.target(snapshot.target), pause),
+    context = M.hash({ files = supplied(snapshot.files), comparison = comparison, context = snapshot.context }, pause),
     generation = M.hash({ command = M.hash(ai.command or {}), decoder = decoder,
       ai = generation, context = config.context or {}, review = review, namespace = cache.namespace or "default" }),
   })

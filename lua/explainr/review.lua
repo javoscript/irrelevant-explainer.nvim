@@ -95,6 +95,7 @@ local function limits(job, unit_count)
 end
 
 local function request(job, phase, units, children, optional)
+  if job.pause then job.pause() end
   local ranges, ids, findings, manifest, wanted = {}, {}, {}, {}, {}
   for _, unit in ipairs(units or {}) do
     wanted[unit.file_id] = true
@@ -118,7 +119,7 @@ local function request(job, phase, units, children, optional)
     files = excerpts(job, ranges), manifest = manifest, coverage = "Only the supplied chunks are visible; job-wide coverage is distributed." }
   if phase == "annotate" then req.units = units
   else req.child_ids, req.inputs = ids, findings end
-  req.request_id = identity.hash(req)
+  req.request_id = identity.hash(req, job.pause)
   local text, err, size = prompt.review(req, job.input_cap)
   if phase ~= "annotate" then
     local minimum = { version = 3, phase = phase, snapshot_id = job.id, request_id = req.request_id, child_ids = ids }
@@ -250,6 +251,7 @@ end
 local function plan(job)
   job.units, job.annotations = {}, {}
   for _, target in ipairs(job.targets) do
+    if job.pause then job.pause() end
     assert(#target.anchors > 0, "empty annotation target")
     local whole = unit(job, target, target.anchors, true)
     local values = fits(job, whole) and { whole } or split(job, target)
@@ -286,7 +288,7 @@ local function plan(job)
   flush()
 end
 
-function M.create(snapshot, config, previous)
+function M.create(snapshot, config, previous, pause)
   return protect(function()
     assert(snapshot.mode == "diff" and snapshot.target.scope == "review", "review requires a full diff review snapshot")
     local captured = copy(config or {})
@@ -301,10 +303,10 @@ function M.create(snapshot, config, previous)
     if type(stable.ai.output) == "function" then
       stable.cache = stable.cache or {}; stable.cache.decoder_key = stable.cache.decoder_key or "memory-only"
     end
-    local _, id = identity.key(snapshot, stable)
+    local _, id = identity.key(snapshot, stable, pause)
     local job = { snapshot = copy(snapshot), config = captured, id = id,
       input_cap = math.min(captured.context.max_bytes, captured.review.request_max_bytes),
-      sources = {}, manifest = {}, targets = copy(snapshot.target.files), checkpoints = {} }
+      sources = {}, manifest = {}, targets = copy(snapshot.target.files), checkpoints = {}, pause = pause }
     for _, source in ipairs(job.snapshot.files) do
       if source.lines and #source.lines > 0 and not source.empty and not source.binary then
         local key = source_key(source.path, source.side)
@@ -541,19 +543,20 @@ function M.start(handle, callbacks)
   return operation
 end
 
--- Completed records contain only validated result/provenance data. Replay
--- reconstructs every request and original evidence, with no processes or async.
-function M.validate_record(record, snapshot, config)
+-- Replay reconstructs every request and original evidence without inference.
+-- The synchronous entry point remains useful for offline compatibility checks.
+function M.validate_record(record, snapshot, config, pause)
   return protect(function()
     assert(type(record) == "table" and record.version == 1 and type(record.outputs) == "table"
       and vim.islist(record.outputs), "invalid completed review record")
     for key in pairs(record) do assert(key == "version" or key == "snapshot_id" or key == "outputs", "unexpected record field") end
-    local handle, err = M.create(snapshot, config)
+    local handle, err = M.create(snapshot, config, nil, pause)
     assert(handle, err)
     local job = jobs[handle]
     assert(record.snapshot_id == job.id, "completed review fingerprint mismatch")
     local state = machine(job)
     for _, output in ipairs(record.outputs) do
+      if pause then pause() end
       local built = next_request(state)
       assert(built, "extra completed review output")
       accept(state, built, output)
@@ -561,6 +564,28 @@ function M.validate_record(record, snapshot, config)
     assert(state.final, "incomplete completed review record")
     return assemble(state)
   end)
+end
+
+function M.validate_record_async(record, snapshot, config, callback)
+  local stopped, deadline = false, 0
+  local operation = { cancel = function() stopped = true end }
+  local thread = coroutine.create(function()
+    return M.validate_record(record, snapshot, config, function()
+      if vim.uv.hrtime() >= deadline then coroutine.yield() end
+    end)
+  end)
+  local function step()
+    if stopped then return end
+    deadline = vim.uv.hrtime() + 5e6
+    local ok, value, err = coroutine.resume(thread)
+    if not ok or coroutine.status(thread) == "dead" then
+      stopped = true
+      if not ok then value, err = nil, tostring(value) end
+      callback(value, err)
+    else vim.defer_fn(step, 1) end
+  end
+  vim.schedule(step)
+  return operation
 end
 
 -- Read-only copies for session freshness checks and focused planner tests. The

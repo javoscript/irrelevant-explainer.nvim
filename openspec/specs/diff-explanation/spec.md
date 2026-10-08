@@ -217,6 +217,11 @@ Editor sessions SHALL collect and revalidate diffs using cancellable asynchronou
 - **WHEN** several source/view events arrive during a check
 - **THEN** checks coalesce with a trailing recheck when necessary, and pending snapshots are checked after retained accepted contexts before output is installed
 
+#### Scenario: Distributed results share one review capture
+- **WHEN** a freshness pass includes several retained file results derived from the same immutable whole-review capture
+- **THEN** the shared capture is revalidated once in that pass rather than recollecting the whole comparison separately for each file projection
+- **AND** every dependent file result remains subject to shared-evidence invalidation, and the pending request's capture is still checked after retained contexts before acceptance
+
 ### Requirement: Incremental and queued diff requests
 
 Accepted file/hunk targets SHALL accumulate per comparison/file; identical targets SHALL replace only their batch. Explicit file, hunk, and review requests in the same comparison SHALL queue without cancelling active work, deduplicating equivalent pending targets/configurations. Targets and configuration SHALL be captured at invocation. Explicit requests SHALL run in order with one invocation at a time per tab. Ordinary failures SHALL preserve accepted notes and continue queued work.

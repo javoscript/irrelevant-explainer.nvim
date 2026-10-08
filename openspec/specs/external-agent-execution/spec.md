@@ -168,6 +168,20 @@ Validated answers and serialized context SHALL be reusable only for matching con
 - **WHEN** a focused file or hunk request is pending after a whole review finishes
 - **THEN** review notes do not satisfy that request merely because they mention the same file; reuse requires matching target, effective coverage, content, and captured configuration
 
+### Requirement: Responsive completed-review restoration
+
+Completed-review restoration from memory or persistent cache SHALL validate identities, output, evidence and complete coverage without inference for a valid hit. Host-side planning, identity serialization and record replay SHALL yield between processing batches so the editor can service input and cancellation before completion. Freshness checks and atomic installation SHALL remain required.
+
+#### Scenario: Large completed review
+- **WHEN** an unchanged many-file review is restored from a matching completed record
+- **THEN** input events can be handled while the record is being validated, rather than waiting for the entire replay to finish
+- **AND** the validated narrative and file results are installed together without annotation or synthesis calls
+
+#### Scenario: Cancellation or supersession during replay
+- **WHEN** cancellation, refresh, closure or incompatible ownership replacement retires a request while its cached review is being validated
+- **THEN** owned replay work stops and late validation callbacks cannot install output or start replacement inference for the retired request
+- **AND** still-fresh accepted results remain available under the normal lifecycle rules, with busy feedback cleared unless other owned work remains
+
 ### Requirement: Structured review response
 
 Each review invocation SHALL return one version=3 JSON object identifying its phase, request, and snapshot. Annotation SHALL return assigned unit notes and cited findings; reduction SHALL return cited findings and acknowledge assigned child results; synthesis SHALL return the narrative and acknowledge its assigned inputs. The final narrative SHALL retain nonempty single-line title/headings, nonempty Markdown sections, intent_basis, evidence, and unique valid file_ids. Documented sections SHALL require supplied source evidence; narrative sections SHALL have no anchors.

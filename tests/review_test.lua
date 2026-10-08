@@ -236,6 +236,51 @@ T.test("successful empty acknowledgements atomically assemble and replay complet
   T.eq(done.result, assert(review.validate_record(disk, equivalent, config)))
 end)
 
+T.test("large cached review replay services events and cancellation without inference", function()
+  local s, config = fixture(76, 300, 80), {}
+  local done = run(assert(review.create(s, config)))
+  assert(done.result, done.error)
+  local agent, original = require("explainr.agent"), require("explainr.agent").run
+  agent.run = function() error("cached replay must not launch inference") end
+  local timer = vim.uv.new_timer()
+  local ok, err = xpcall(function()
+    local completion, serviced = nil, false
+    -- Install the heartbeat after replay starts, so merely deferring the
+    -- entire synchronous operation cannot satisfy the responsiveness check.
+    vim.schedule(function()
+      timer:start(1, 1, vim.schedule_wrap(function()
+        if not completion then serviced = true end
+      end))
+    end)
+    review.validate_record_async(done.record, s, config, function(value, failure)
+      completion = { value = value, error = failure }
+    end)
+    assert(vim.wait(10000, function() return completion ~= nil end, 1))
+    assert(serviced, "replay blocked the event loop until completion")
+    T.eq(done.result, completion.value); T.eq(nil, completion.error)
+    timer:stop()
+
+    local cancelled, delivered = false, false
+    local operation = review.validate_record_async(done.record, s, config, function() delivered = true end)
+    vim.defer_fn(function() operation.cancel(); cancelled = true end, 1)
+    assert(vim.wait(1000, function() return cancelled end, 1))
+    vim.wait(300, function() return delivered end, 1)
+    T.eq(false, delivered)
+
+    local corrupt = vim.deepcopy(done.record)
+    corrupt.outputs[#corrupt.outputs].child_ids = {}
+    completion = nil
+    review.validate_record_async(corrupt, s, config, function(value, failure)
+      completion = { value = value, error = failure }
+    end)
+    assert(vim.wait(10000, function() return completion ~= nil end, 1))
+    T.eq(nil, completion.value); assert(completion.error)
+  end, debug.traceback)
+  timer:stop(); timer:close()
+  agent.run = original
+  assert(ok, err)
+end)
+
 T.test("failed sibling invocation is discarded and resume reuses only validated checkpoints", function()
   local s, config = fixture(7), { review = { response_max_bytes = 8192 } }
   local job = assert(review.create(s, config))

@@ -196,15 +196,17 @@ local function check(session, callback, dirty)
   local snapshots = {}
   local pending_snapshot = session.pending and session.pending.snapshot
   local function add(snapshot)
+    -- Distributed file notes depend on one whole-review capture; validating
+    -- each projection separately would recollect that review once per file.
+    snapshot = snapshot.provenance or snapshot
+    if pending_snapshot and vim.deep_equal(snapshot, pending_snapshot) then return end
     for _, item in ipairs(snapshots) do if vim.deep_equal(item, snapshot) then return end end
     snapshots[#snapshots + 1] = snapshot
   end
   -- Old stale data only discards accepted batches, never a new collection.
   -- Check the pending snapshot LAST, so slow retained-evidence reads cannot
   -- justify accepting output against an earlier freshness observation.
-  for _, batch in ipairs(session.batches) do
-    if not pending_snapshot or not vim.deep_equal(batch.snapshot, pending_snapshot) then add(batch.snapshot) end
-  end
+  for _, batch in ipairs(session.batches) do add(batch.snapshot) end
   if pending_snapshot and pending_snapshot.target.scope == "review" then
     for _, saved in pairs(retained) do
       if saved.comparison == session.comparison_key then
@@ -213,8 +215,8 @@ local function check(session, callback, dirty)
     end
   end
   local narrative = narratives[session.comparison_key]
-  if narrative and not vim.deep_equal(narrative.snapshot, pending_snapshot) then add(narrative.snapshot) end
-  if pending_snapshot then add(pending_snapshot) end
+  if narrative then add(narrative.snapshot) end
+  if pending_snapshot then snapshots[#snapshots + 1] = pending_snapshot end
   local index, stale, stale_pending = 0, {}, false
   local advance
   local function invalid(snapshot)
@@ -502,7 +504,8 @@ local function install(session, snapshot, value, config, key)
     if session.restoration then session.restoration.cancel(); session.restoration = nil end
     session.restoring = nil
     session.batches, session.scope, session.stale = batches, snapshot.target.scope, false
-    local bound = vim.deepcopy(snapshot)
+    local bound = vim.tbl_extend("force", {}, snapshot)
+    bound.capture = snapshot.capture and vim.tbl_extend("force", {}, snapshot.capture)
     local state = session.mode == "diff" and require("explainr.diffview").current(session.pane.source)
     if state then
       bound.windows, bound.source = state.windows, state.source
@@ -578,11 +581,14 @@ launch = function(session, snapshot, options, config)
         local values = {}
         for _, file in ipairs(value.files) do values[file.file_id] = file.notes end
         for _, target in ipairs(snapshot.target.files) do
-          local file = vim.deepcopy(snapshot)
+          -- All file annotations share immutable review evidence. Copy only
+          -- the target/display binding, not the whole comparison per file.
+          local file = vim.tbl_extend("force", {}, snapshot)
           file.provenance, file.target = snapshot, vim.deepcopy(target)
-          local state = vim.deepcopy(snapshot.capture.state)
+          local state = vim.tbl_extend("force", {}, snapshot.capture.state)
+          state.selected = vim.deepcopy(state.selected)
           state.selected.path, state.selected.oldpath = target.path, target.oldpath
-          file.capture.state, file.capture.target = state, file.target
+          file.capture = vim.tbl_extend("force", snapshot.capture, { state = state, target = file.target })
           install(session, file, { version = 1, notes = values[target.file_id] }, config, review_key(state))
         end
         if retained[session.review_key] then session.file_status = status end
@@ -595,16 +601,25 @@ launch = function(session, snapshot, options, config)
       advance_queue(session, session.mode == "code" and status or nil)
     end)
   end
+  local generate
   local function reuse(answer)
     if not answer or not owned() or epoch ~= store.epoch() then return false end
-    local value
-    if is_review then value = require("explainr.review").validate_record(answer, snapshot, config)
-    else value = require("explainr.model").validate(answer, snapshot) end
+    if is_review then
+      progress(session, owned_request, "Pending · checking stored review")
+      session.invocation = require("explainr.review").validate_record_async(answer, snapshot, config, function(value)
+        if not owned() then return end
+        session.invocation = nil
+        if value and epoch == store.epoch() then accept(value, nil, true, answer)
+        else generate() end
+      end)
+      return true
+    end
+    local value = require("explainr.model").validate(answer, snapshot)
     if not value then return false end
-    accept(value, nil, true, is_review and answer or nil)
+    accept(value, nil, true)
     return true
   end
-  local function generate()
+  generate = function()
     if not owned() then return end
     if is_review then
       local review = require("explainr.review")

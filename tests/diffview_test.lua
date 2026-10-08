@@ -1199,6 +1199,39 @@ T.test("whole-review commands work from the Diffview file tree without moving fo
   end)
 end)
 
+T.test("cancelling cached review validation keeps saved output and rejects late completion", function()
+  whole_review_fixture(function(f, plugin)
+    local s = plugin.explain("review")
+    f:complete(1); f:settled(s)
+    local saved = vim.deepcopy(s.pane.review)
+    local replay, original = require("explainr.review"), require("explainr.review").validate_record_async
+    local deliver
+    replay.validate_record_async = function(record, snapshot, config, done)
+      return original(record, snapshot, config, function(value, err)
+        deliver = function() done(value, err) end
+      end)
+    end
+    local ok, err = xpcall(function()
+      plugin.explain("review")
+      assert(vim.wait(7000, function() return deliver ~= nil end), s.review_status)
+      vim.cmd("ExplainrCancel")
+      deliver()
+      f:settled(s)
+      T.eq(saved, s.pane.review)
+      assert(s.pane.review_status:match("^Cancelled"))
+      assert(not vim.wo[s.pane.win].winbar:find("Running review", 1, true))
+      T.eq(nil, s.pane.timer); T.eq(3, #f.jobs)
+      replay.validate_record_async = original
+      api.nvim_set_current_win(f.fixture.state.source)
+      plugin.explain("review"); f:settled(s)
+      T.eq("Ready · cached", s.pane.review_status); T.eq(saved, s.pane.review)
+      T.eq(3, #f.jobs)
+    end, debug.traceback)
+    replay.validate_record_async = original
+    assert(ok, err)
+  end)
+end)
+
 T.test("one review invocation survives collection navigation, distributes every file and supports display-only references", function()
   whole_review_fixture(function(f, plugin)
     plugin.setup({ cache = { enabled = false }, diff = { auto_explain = true }, context = { diff = "focused" } })
