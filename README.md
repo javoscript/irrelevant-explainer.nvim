@@ -73,6 +73,9 @@ pane opens in **Review** mode, with independently scrollable Markdown. Enter on
 a generated file-reference row selects that exact Diffview entry and shows its
 aligned **File** notes. Enter on ordinary prose does nothing. Esc returns to
 File overview; q closes the reader.
+In Review, **Ctrl-e/Ctrl-y** scroll by one visible row, including wrapped lines;
+counts use the same unit (for example, **3Ctrl-e** scrolls three visible rows).
+Source windows stay still, and returning to File restores its scrolling setting.
 You can generate or open Review from either source pane or the Diffview file
 tree (`DiffviewFiles`); tree focus and the selected comparison stay unchanged.
 

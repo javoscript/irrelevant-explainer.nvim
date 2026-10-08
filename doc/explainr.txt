@@ -201,6 +201,10 @@ across owners through the shared cache; unfinished checkpoints cannot.
 ExplainrReview (or require("explainr").review()) only opens the narrative, without
 inference. It requires a supported existing comparison and never opens Diffview.
 Review uses independently scrollable Markdown in the same pane.
+Ctrl-e/Ctrl-y in Review scroll by one visible row, including wrapped lines;
+counts use the same unit (3Ctrl-e scrolls three visible rows), within native
+buffer limits. Source windows stay still. Returning to File restores the pane's
+previous scrolling setting; source-linked File scrolling remains unchanged.
 Enter on a generated file-reference row selects that exact Diffview entry and
 shows File notes; prose Enter is inert. Esc returns to File overview; q closes.
 Reopening the same narrative preserves its reading position. Empty, pending,

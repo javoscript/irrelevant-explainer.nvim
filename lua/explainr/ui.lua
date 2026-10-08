@@ -1316,7 +1316,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     self:focus(true)
     clear_detail_marks()
     self.review_options = {}
-    for name in pairs(vim.tbl_extend("keep", options, { linebreak = false, showbreak = "", winhighlight = "", concealcursor = "" })) do
+    for name in pairs(vim.tbl_extend("keep", options, { linebreak = false, smoothscroll = false, showbreak = "", winhighlight = "", concealcursor = "" })) do
       self.review_options[name] = vim.wo[self.win][name]
     end
     self.review_mode = true
@@ -1325,6 +1325,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     for name, value in pairs(options) do vim.wo[self.win][0][name] = value end
     vim.wo[self.win][0].wrap = true
     vim.wo[self.win][0].linebreak = true
+    vim.wo[self.win][0].smoothscroll = true
     -- Native smoothscroll's <<< marker otherwise overwrites the first gutter.
     -- Keep the continuation prefix constant in idle and loading states.
     vim.wo[self.win][0].showbreak = " "

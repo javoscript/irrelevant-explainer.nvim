@@ -179,6 +179,29 @@ T.test("Review is independent, preserves reading position, and follows only host
   p:set_review(narrative, manifest, "Ready")
   T.eq(false, p.review_mode)
   local focus = api.nvim_get_current_win()
+  local width = api.nvim_win_get_width(p.win)
+  local global_scroll, source_scroll = vim.go.smoothscroll, vim.wo[source].smoothscroll
+  local source_before = api.nvim_win_call(source, vim.fn.winsaveview)
+  api.nvim_win_set_width(p.win, 45)
+  for _, initial in ipairs({ false, true }) do
+    vim.wo[p.win][0].smoothscroll = initial
+    p:show_review(); T.eq(focus, api.nvim_get_current_win())
+    motion(p.win, "6G0zt"); input(p.win, "<C-e>")
+    local clipped = api.nvim_win_call(p.win, vim.fn.winsaveview)
+    assert(clipped.skipcol > 0, "reading position must clip a wrapped first row")
+    p:show_file(); T.eq(initial, vim.wo[p.win].smoothscroll)
+    p:show_review(); vim.cmd("redraw!")
+    T.eq(clipped, api.nvim_win_call(p.win, vim.fn.winsaveview))
+    local row = vim.fn.screenpos(p.win, 8, 1).row
+    assert(row > 0, "following paragraph must remain visible")
+    input(p.win, "<C-e>"); T.eq(row - 1, vim.fn.screenpos(p.win, 8, 1).row)
+    input(p.win, "<C-y>"); T.eq(row, vim.fn.screenpos(p.win, 8, 1).row)
+    T.eq(source_before, api.nvim_win_call(source, vim.fn.winsaveview))
+    T.eq(global_scroll, vim.go.smoothscroll); T.eq(source_scroll, vim.wo[source].smoothscroll)
+    p:show_file(); T.eq(initial, vim.wo[p.win].smoothscroll)
+    api.nvim_set_current_win(focus)
+  end
+  api.nvim_win_set_width(p.win, width)
   p:show_review(); T.eq(focus, api.nvim_get_current_win())
   assert(state(p):find("Review · Auto", 1, true)); assert(not state(p):find("1 /", 1, true))
   T.eq("explainr", vim.bo[p.review_buf].filetype); T.eq(false, vim.bo[p.review_buf].modifiable)
@@ -213,6 +236,38 @@ T.test("Review is independent, preserves reading position, and follows only host
   assert(state(p):find("Stale", 1, true)); T.eq({}, p.review_references)
   local review_buf = p.review_buf
   p:close(); T.eq(false, api.nvim_buf_is_valid(review_buf))
+end)
+
+T.test("Review scrolls by screen rows within wraps and across paragraph boundaries", function()
+  local lines = {}; for row = 1, 100 do lines[row] = "source " .. row end
+  local source = setup(lines)
+  local p = ui.open(source, { windows = { new = source } }, { notes = {} })
+  vim.wo[p.win][0].smoothscroll = false
+  local narrative = { title = "Screen-row scrolling", sections = { { heading = "Uneven paragraphs", intent_basis = "unknown",
+    detail = string.rep("First paragraph wraps across rows. ", 6) .. "\n\n"
+      .. string.rep("Another paragraph has different words. ", 3) .. "\n\nMarker\n"
+      .. string.rep("More context.\n", 40), file_ids = {} } } }
+  p:set_review(narrative, {}, "Ready"); p:show_review()
+  api.nvim_win_set_width(p.win, 45)
+  motion(p.win, "6Gzt"); vim.cmd("redraw!")
+  local source_view = api.nvim_win_call(source, vim.fn.winsaveview)
+  local function marker_row()
+    local row = vim.fn.screenpos(p.win, 10, 1).row
+    assert(row > 0, "marker must remain visible")
+    return row
+  end
+  local first = marker_row()
+  input(p.win, "<C-e>"); T.eq(first - 1, marker_row())
+  input(p.win, "<C-y>"); T.eq(first, marker_row())
+  local height = api.nvim_win_text_height(p.win, { start_row = 5, end_row = 5 }).all
+  assert(height >= 4, "the first paragraph must span at least four rows")
+  input(p.win, (height - 2) .. "<C-e>")
+  local before = marker_row()
+  input(p.win, "3<C-e>"); T.eq(before - 3, marker_row())
+  T.eq(8, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
+  input(p.win, "3<C-y>"); T.eq(before, marker_row())
+  T.eq(source_view, api.nvim_win_call(source, vim.fn.winsaveview))
+  p:close()
 end)
 
 T.test("Review loading animates empty and retained narratives without rewriting or moving readers", function()
