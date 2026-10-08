@@ -726,9 +726,20 @@ function M.open(source, snapshot, result, on_close, keymaps)
       local status = self.review_status or "No review · :Explainr review"
       local spin = status:match("^Pending") and api.nvim_get_current_win() ~= self.win
         and spinner[(self.frame - 1) % #spinner + 1] .. " " or ""
+      local title = "Review" .. (self.auto_explain and " · Auto" or "")
+      local label = status .. (self.background and " · " .. self.background or "")
+      local percent = status:match("^Pending · Annotating (%d+)%%")
+      if percent then
+        local filled = math.floor(tonumber(percent) / 10)
+        local bar = "[" .. string.rep("█", filled) .. string.rep("░", 10 - filled) .. "]"
+        if vim.fn.strwidth(title .. " · " .. spin .. label .. " " .. bar) <= width then
+          label = label:gsub("(%d+%%)", "%1 " .. bar, 1)
+        elseif vim.fn.strwidth(title .. " · " .. spin .. label) > width then
+          label, spin = "Annotating " .. percent .. "%", ""
+        end
+      end
       self.updating_state = true
-      vim.wo[self.win].winbar = header({ { "Review" .. (self.auto_explain and " · Auto" or ""), "ExplainrTitle" },
-        { " · " .. spin .. status .. (self.background and " · " .. self.background or "") } }, width)
+      vim.wo[self.win].winbar = header({ { title, "ExplainrTitle" }, { " · " .. spin .. label } }, width)
       vim.b[self.review_buf].explainr_status = status
       self.updating_state = false
       return

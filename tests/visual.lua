@@ -90,14 +90,14 @@ if vim.g.capture_state:match("^review%-reader") then
   -- Keep an accepted narrative visible across each background job transition.
   if state:find("batch") then
     local count = (state:find("annotation") or not state:find("reduction") and not state:find("synthesis")) and "3/12" or "12/12"
-    status = state:find("annotation") and "Pending · Annotations 3/12"
+    status = state:find("annotation") and "Pending · Annotating 25% · 7 files"
       or state:find("reduction") and "Pending · reducing"
       or "Pending · synthesizing"
     if state:find("failed") then
       local phase = state:find("annotation") and "annotate" or state:find("reduction") and "reduce" or "synthesize"
       status = "Failed · " .. phase .. " · " .. count .. " units · :Explainr review to resume; Refresh regenerates"
     elseif state:find("resume") and not state:find("reduction") and not state:find("synthesis") then
-      status = "Pending · Annotations 3/12"
+      status = "Pending · Annotating 25% · 7 files"
     elseif state:find("cancel") then status = "Cancelled · " .. count .. " units · :Explainr review to resume"
     elseif state:find("cached") then status = "Ready · cached" end
   end
@@ -107,7 +107,7 @@ if vim.g.capture_state:match("^review%-reader") then
     api.nvim_set_current_win(p.win)
     api.nvim_win_set_cursor(p.win, { 7, 0 })
     local view = api.nvim_win_call(p.win, vim.fn.winsaveview)
-    p:set_review(narrative, manifest, "Pending · Annotations 3/12")
+    p:set_review(narrative, manifest, "Pending · Annotating 25% · 7 files")
     p:set_review(narrative, manifest, status)
     assert(vim.deep_equal(view, api.nvim_win_call(p.win, vim.fn.winsaveview)), "status moved Review reading position")
     assert(api.nvim_get_current_win() == p.win)
@@ -122,6 +122,7 @@ if vim.g.capture_state:match("^review%-reader") then
       assert(p.detail_buf == detail and api.nvim_get_current_win() == p.win)
     end
   end
+  if state:find("wide") then api.nvim_win_set_width(p.win, 80) end
   if state:find("narrow") then api.nvim_win_set_width(p.win, 32) end
   if state:find("background") then p.background = "Generating caller.lua"; p:header() end
   _G.capture_pane = p

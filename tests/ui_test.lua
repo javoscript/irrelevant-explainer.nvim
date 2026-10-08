@@ -149,6 +149,31 @@ T.test("Review loading animates empty and retained narratives without rewriting 
   p:close(); T.eq(nil, p.timer)
 end)
 
+T.test("Review percentage keeps a bar only when it fits and stays readable in narrow panes", function()
+  local source = setup({ "one", "two", "three" })
+  local p = ui.open(source, { windows = { new = source } }, { notes = {} })
+  p.auto_explain = true
+  local status = "Pending · Annotating 42% · 7 files"
+  p:set_review(nil, {}, status); p:show_review(); p:stop_spinner()
+  api.nvim_set_current_win(p.win)
+  local full = "Review · Auto · Pending · Annotating 42% [████░░░░░░] · 7 files"
+  local width = vim.fn.strwidth(full)
+  api.nvim_win_set_width(p.win, width); p:header()
+  T.eq(full, state(p)); T.eq(status, vim.b[p.review_buf].explainr_status)
+  api.nvim_win_set_width(p.win, width - 1); p:header()
+  T.eq("Review · Auto · " .. status, state(p))
+  api.nvim_win_set_width(p.win, 32); p:header()
+  T.eq("Review · Auto · Annotating 42%", state(p))
+  api.nvim_win_set_width(p.win, width + 1)
+  for _, entry in ipairs({ { 0, "[░░░░░░░░░░]" }, { 100, "[██████████]" } }) do
+    p:set_review(nil, {}, "Pending · Annotating " .. entry[1] .. "% · 7 files"); p:stop_spinner()
+    assert(state(p):find(entry[2], 1, true), state(p))
+  end
+  p:set_review(nil, {}, "Pending · synthesizing"); p:stop_spinner()
+  T.eq("Review · Auto · Pending · synthesizing", state(p))
+  p:close()
+end)
+
 T.test("File detail defers fresh replacements and status-only updates do not reset readers", function()
   local source = setup({ "one", "two", "three" })
   local original = { notes = { note(2, "Original", "new") } }

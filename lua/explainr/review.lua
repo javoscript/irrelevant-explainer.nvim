@@ -458,6 +458,9 @@ function M.start(handle, callbacks)
     stopped = true; job.operation = nil
     callbacks.complete(result, err, record)
   end
+  local function annotation_progress()
+    return "Annotating " .. math.floor(state.completed * 100 / #job.units) .. "%"
+  end
   local function fresh(continuation)
     if stopped then return end
     local called = false
@@ -484,7 +487,7 @@ function M.start(handle, callbacks)
       return
     end
     local phase = built.request.phase
-    callbacks.progress(phase == "annotate" and ("Annotations " .. state.completed .. "/" .. #job.units)
+    callbacks.progress(phase == "annotate" and annotation_progress()
       or phase == "reduce" and "reducing" or "synthesizing")
     if stopped then return end
     local checkpoint = job.checkpoints[built.request.request_id]
@@ -509,7 +512,7 @@ function M.start(handle, callbacks)
         local accepted, accept_error = protect(accept, state, built, validated)
         if not accepted then finish(nil, diagnostic(state, built, accept_error)); return end
         job.checkpoints[built.request.request_id] = copy(accepted)
-        if phase == "annotate" then callbacks.progress("Annotations " .. state.completed .. "/" .. #job.units) end
+        if phase == "annotate" then callbacks.progress(annotation_progress()) end
         schedule()
       end)
     end)

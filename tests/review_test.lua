@@ -163,7 +163,8 @@ T.test("successful empty acknowledgements atomically assemble and replay complet
   local job = assert(review.create(s, config))
   local done, calls, statuses = run(job)
   assert(done.result, done.error); T.eq(7, #done.result.files); T.eq(4, #calls)
-  assert(vim.tbl_contains(statuses, "Annotations 7/7") and vim.tbl_contains(statuses, "synthesizing"))
+  T.eq({ "Pending · planning", "Annotating 0%", "Annotating 42%", "Annotating 42%",
+    "Annotating 85%", "Annotating 85%", "Annotating 100%", "synthesizing" }, statuses)
   local disk = vim.json.decode(vim.json.encode(done.record))
   T.eq(done.result, assert(review.validate_record(disk, s, config)))
   local encoded = vim.json.encode(disk)
@@ -269,7 +270,7 @@ T.test("cancel between annotation and synthesis prevents dispatch", function()
     return { cancel = function() end }
   end
   local ok, err = xpcall(function()
-    operation = review.start(job, { progress = function(status) if status == "Annotations 1/1" then operation.cancel() end end,
+    operation = review.start(job, { progress = function(status) if status == "Annotating 100%" then operation.cancel() end end,
       fresh = function(done) done(true) end, complete = function() completed = true end })
     assert(vim.wait(1000, function() return vim.tbl_count(review.inspect(job).checkpoints) == 1 end))
     vim.wait(30, function() return false end); T.eq(1, calls); T.eq(false, completed)

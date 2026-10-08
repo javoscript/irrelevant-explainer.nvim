@@ -184,6 +184,10 @@ whole-file overview. Binary/both-empty entries retain metadata but receive no
 invented anchors. No eligible text targets means no inference. Distributed
 coverage proves neither semantic completeness nor explanation correctness.
 
+The Review header shows completed annotation units as a percentage, with a compact
+bar when space permits. This measures annotation coverage, not elapsed time or
+overall job completion; reduction/synthesis show separate phase labels afterward.
+
 Successful invocations become internal, memory-only checkpoints. Repeat
 :Explainr review in the owning comparison, file panel or associated reader to
 recollect/revalidate matching work and resume failed/unstarted invocations.

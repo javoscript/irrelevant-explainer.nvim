@@ -819,7 +819,7 @@ Background completion SHALL update retained results and request status without s
 
 ### Requirement: Review and background status
 
-The diff-pane header SHALL identify active Review/File mode and distinguish selected-target pending work from background and queued work. Review SHALL show its job phase and validated annotation-unit count instead of file-note ordinals, retaining Auto when enabled. Counts SHALL reflect completed validated units, not estimated tokens, elapsed-time percentages, or claimed semantic coverage. Synthesis SHALL remain pending until atomic installation. Status updates SHALL not alter the editor statusline or reset reading state.
+The diff-pane header SHALL identify Review/File mode and distinguish selected, background and queued work. During annotation, Review SHALL show a validated-unit percentage rather than unit counts or file-note ordinals, plus a compact bar when space permits. It SHALL retain Auto when enabled and show actual phase labels during reduction/synthesis, remaining pending until atomic installation. Status updates SHALL preserve the editor statusline and reading state.
 
 #### Scenario: Other file is still generating
 - **WHEN** B is selected while A runs and B is queued
@@ -827,8 +827,34 @@ The diff-pane header SHALL identify active Review/File mode and distinguish sele
 
 #### Scenario: Whole-review request pending
 - **WHEN** a review job is collecting, planning, annotating, reducing findings, or synthesizing its narrative
-- **THEN** Review identifies the actual phase and shows validated annotation progress once its unit total is known
+- **THEN** Review identifies the actual phase and shows an annotation percentage during annotation once its unit total is known
 - **AND** one split file's completed fragment is counted as a unit, not presented as a fully explained file
+
+#### Scenario: Annotation percentage accounting
+- **WHEN** the planned annotation-unit total is known and validated units are processed
+- **THEN** Review shows `Annotating N%`, where N is completed validated units multiplied by 100, divided by the planned total, and rounded down
+- **AND** the percentage measures annotation work, not file completion, elapsed time, overall job completion, or semantic correctness
+
+#### Scenario: Files split into multiple annotation units
+- **WHEN** seven eligible files produce twenty-five planned annotation units and seven units have validated
+- **THEN** the annotation status shows `Annotating 28%`, not `Annotations 7/25` or seven completed files
+- **AND** the file count, when displayed, remains separate from the percentage
+
+#### Scenario: Batched responses and percentage rounding
+- **WHEN** a review has seven planned units and validated responses acknowledge three units, then three more, then the final unit
+- **THEN** progress advances from `Annotating 0%` to `Annotating 42%`, `Annotating 85%`, and `Annotating 100%`
+- **AND** a validated unit with no returned notes still contributes to progress, while an unvalidated response contributes nothing
+
+#### Scenario: Progress bar fits the header
+- **WHEN** annotation progress is 42% and the complete displayed header, including any spinner and background status, has room for the percentage and ten-cell bar
+- **THEN** the header shows the percentage with four filled cells and six unfilled cells
+- **AND** each bar cell represents ten complete percentage points
+- **AND** the bar is empty at 0% and fully filled at 100%
+
+#### Scenario: Pane is too narrow for the progress bar
+- **WHEN** the percentage and other header text fit but adding the bar would exceed the pane width
+- **THEN** Review omits the bar without clipping the percentage
+- **AND** resizing wider restores the bar when the complete header fits again
 
 #### Scenario: Opening precedes generation
 - **WHEN** Explainr review from ordinary code is waiting for coherent Diffview sources
@@ -838,16 +864,17 @@ The diff-pane header SHALL identify active Review/File mode and distinguish sele
 #### Scenario: Narrow Review header
 - **WHEN** the Review pane cannot fit its full header
 - **THEN** it prioritizes active mode and request state, plus Auto when those fit, over hints and descriptions
+- **AND** during annotation it omits the bar and secondary text such as Pending, file count, and background descriptions to retain `Annotating N%` when the compact header fits
 - **AND** File retains its existing count/Auto priorities and neither mode inserts a header into buffer content
 
 #### Scenario: All annotations are complete
-- **WHEN** every annotation unit has validated but synthesis remains pending
-- **THEN** the header shows synthesis rather than Ready or 100% complete
+- **WHEN** every annotation unit has validated and the job enters reduction or synthesis
+- **THEN** the header replaces annotation percentage and bar with `reducing` or `synthesizing`, rather than Ready or an overall 100% complete indication
 - **AND** existing Review loading decorations remain active without rewriting accepted narrative text
 
 #### Scenario: Resume validated work
-- **WHEN** an explicit resumed review revalidates three checkpoints out of twelve annotation units
-- **THEN** status starts with three validated units and advances only when additional complete responses validate
+- **WHEN** an explicit resumed review revalidates checkpoints covering three of twelve annotation units
+- **THEN** annotation status reflects `Annotating 25%` after those checkpoints validate and advances only when additional complete responses validate
 - **AND** progress transitions preserve mode, focus, source positions, expanded detail, and narrative scroll
 
 ### Requirement: Completed cache-hit status
