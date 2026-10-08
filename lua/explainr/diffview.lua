@@ -3,6 +3,25 @@
 local M = {}
 local api = vim.api
 
+-- Classify windows, not buffers, without loading an optional dependency.
+-- An owned source stays a diff source even while its panes are incoherent.
+function M.origin(win)
+  local ok, kind = pcall(api.nvim_win_call, win, function()
+    local lib = package.loaded["diffview.lib"]
+    local current_view = lib and lib.get_current_view()
+    if current_view then
+      if current_view.panel and current_view.panel.winid == win then return "panel" end
+      for _, role in ipairs({ "a", "b", "c", "d" }) do
+        local pane = current_view.cur_layout and current_view.cur_layout[role]
+        if pane and pane.id == win then return "diff" end
+      end
+    end
+    if vim.bo[api.nvim_win_get_buf(win)].buftype == "" then return "code" end
+  end)
+  if ok then return kind, not kind and "Request must originate from a source window" or nil end
+  return nil, "Source window unavailable: " .. tostring(kind)
+end
+
 local function revision(rev)
   assert(type(rev) == "table", "missing Diffview revision metadata")
   if rev.type == 1 then return { type = "local" } end
@@ -127,6 +146,131 @@ function M.current(win)
   local ok, result = pcall(current, win)
   if ok then return result end
   return nil, "Diffview comparison unavailable: " .. tostring(result)
+end
+
+-- Opening is preflight only. The caller owns cancellation and submits a normal
+-- review after this returns coherent source windows, never a second AI path.
+function M.open_review(source, callback)
+  local name = api.nvim_buf_get_name(api.nvim_win_get_buf(source))
+  local cwd = name ~= "" and vim.fs.dirname(name) or api.nvim_win_call(source, vim.fn.getcwd)
+  local operation = { source = source, path = name, cwd = cwd }
+  local process, timer, group, listener
+  local started = vim.uv.now()
+  local root, head
+  local function cleanup()
+    if process then process:kill(15); process = nil end
+    if timer then timer:stop(); timer:close(); timer = nil end
+    if group then api.nvim_del_augroup_by_id(group); group = nil end
+    if listener and operation.view then
+      for _, event in ipairs({ "files_updated", "file_open_post", "view_closed" }) do
+        operation.view.emitter:off(listener, event)
+      end
+    end
+  end
+  local function finish(state, err)
+    if operation.done then return end
+    operation.done = true
+    cleanup()
+    vim.schedule(function() callback(state, err) end)
+  end
+  function operation.cancel()
+    if operation.done then return end
+    operation.done = true
+    cleanup()
+  end
+  local function validate(view)
+    assert(view.valid and not view.closing:check(), "Diffview was closed")
+    assert(vim.uv.fs_realpath(view.adapter.ctx.toplevel) == root
+      and view.left.type == 2 and view.left.commit == head and view.right.type == 1
+      and #view.path_args == 0,
+      "Expected repository-wide HEAD-to-working-tree comparison; check Diffview default_args")
+  end
+  local function check()
+    if operation.done then return end
+    local ok, err = pcall(function()
+      assert(api.nvim_win_is_valid(source), "Original source window was closed")
+      assert(vim.uv.now() - started < 10000, "Timed out opening the working-tree comparison")
+      local view = operation.view
+      if not view then return end
+      validate(view)
+      assert(view.tabpage and api.nvim_tabpage_is_valid(view.tabpage), "Diffview tab was closed")
+      if not view.initialized then return end
+      assert(#view.files.conflicting == 0, "Conflict comparisons are unsupported")
+      assert(#view.files.working > 0, "No eligible working-tree changes to review")
+      if not view.cur_entry or view.cur_entry.kind ~= "working" then
+        if not operation.selecting then
+          operation.selecting = true
+          view:set_file(view.files.working[1])
+        end
+        return
+      end
+      local win = view.cur_layout and view.cur_layout.b and view.cur_layout.b.id
+      if not win or not api.nvim_win_is_valid(win) then return end
+      local state = M.current(win)
+      if not state then return end -- Both buffers, not merely the layout, must be ready.
+      assert(state.pair.old.type == "commit" and state.pair.old.commit == head
+        and state.pair.new.type == "local", "Displayed comparison changed while opening")
+      finish(state)
+    end)
+    if not ok then finish(nil, tostring(err)) end
+  end
+  local function git(cwd, args, next_step)
+    local argv = { "git", "-C", cwd }
+    vim.list_extend(argv, args)
+    local ok, job = pcall(vim.system, argv, { text = true }, function(result)
+      vim.schedule(function()
+        if operation.done then return end
+        process = nil
+        if result.code ~= 0 then
+          finish(nil, "Cannot resolve repository/HEAD: " .. vim.trim(result.stderr or "Git failed"))
+          return
+        end
+        local success, err = pcall(next_step, vim.trim(result.stdout))
+        if not success then finish(nil, tostring(err)) end
+      end)
+    end)
+    if ok then process = job else finish(nil, tostring(job)) end
+  end
+  -- Defer initialization so the caller can register ownership before failures
+  -- or dependency events are delivered.
+  vim.schedule(function()
+    if operation.done then return end
+    local ok, err = pcall(function()
+      assert(api.nvim_win_is_valid(source), "Original source window was closed")
+      local dependency, message = pcall(require, "diffview")
+      assert(dependency, "Diffview is unavailable: " .. tostring(message))
+      group = api.nvim_create_augroup("ExplainrOpen" .. source, { clear = true })
+      api.nvim_create_autocmd({ "WinClosed", "TabClosed", "TabEnter" }, { group = group,
+        callback = function() vim.schedule(check) end })
+      timer = vim.uv.new_timer()
+      timer:start(50, 50, vim.schedule_wrap(check))
+      git(cwd, { "rev-parse", "--show-toplevel" }, function(value)
+        root = assert(vim.uv.fs_realpath(value), "Repository is unavailable")
+        git(root, { "rev-parse", "--verify", "HEAD^{commit}" }, function(value_head)
+          head = value_head
+          assert(api.nvim_win_is_valid(source), "Original source window was closed")
+          local lib = require("diffview.lib")
+          local view = assert(lib.diffview_open({ "-C" .. root, "HEAD" }), "Could not open Diffview")
+          operation.view = view
+          local valid, reason = pcall(validate, view)
+          if not valid then
+            lib.dispose_view(view)
+            error(reason)
+          end
+          listener = function() vim.schedule(check) end
+          for _, event in ipairs({ "files_updated", "file_open_post", "view_closed" }) do
+            view.emitter:on(event, listener)
+          end
+          -- Only this explicitly requested opening transfers focus. Later
+          -- readiness callbacks operate in the owned windows without jumping tabs.
+          view:open()
+          check()
+        end)
+      end)
+    end)
+    if not ok then finish(nil, tostring(err)) end
+  end)
+  return operation
 end
 
 -- Selection is available before replacement panes finish loading. Navigation

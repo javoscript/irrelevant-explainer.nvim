@@ -34,27 +34,32 @@ the configured tool.
 ## Usage
 
 ```vim
-:ExplainrCode file
-:'<,'>ExplainrCode selection
-:ExplainrDiff file
-:ExplainrDiff hunk
-:ExplainrDiff review
+:Explainr [file|selection|hunk|review]
+:'<,'>Explainr selection
+:Explainr hunk
+:Explainr review
 :ExplainrReview
 :ExplainrRefresh
 :ExplainrCancel
 :ExplainrClose
 ```
 
-The five explanation scopes are **visual selection, code file, diff file, diff
-hunk, and whole review**. Code and diff commands default to `file`.
+`Explainr` defaults to `file`; Lua uses `require("explainr").explain(scope, selection)`.
+File scope explains current code in an ordinary source window, or changes in a
+Diffview source window. Ownership is by **window**, even when both show the same
+buffer; Git changes or native vimdiff alone do not imply diff mode. Notes/detail
+use their followed source, not Markdown. Selection always explains exact selected
+source text; hunk requires a coherent Diffview source. File/hunk cannot target
+the file tree, and loading/unsupported views fail rather than fall back to code.
 
-**Migration:** `ExplainrCode function` / `class` and their Lua equivalents are
-removed. Select the desired function or class yourself, then use
-`:'<,'>ExplainrCode selection`, or use `file` for the whole buffer. Update old
-mappings accordingly; retired scopes report an error and never broaden the target.
+**Migration:** replace `ExplainrCode` / `ExplainrDiff` with `Explainr`, and public
+`code()` / `diff()` calls with `explain()`; no compatibility aliases remain.
+Function/class scopes are also removed: select the desired region yourself,
+then use `:'<,'>Explainr selection`, or `file` for the whole buffer. Retired scopes
+report an error and never broaden the target. Restart Neovim after migrating.
 See `:help explainr-commands` for a Visual mapping that captures exact endpoints.
 
-**`:ExplainrDiff review` generates the whole change in one request:** a narrative
+**`:Explainr review` generates the whole change in one request:** a narrative
 connecting the files, plus notes for every eligible text file. The right-hand
 pane opens in **Review** mode, with independently scrollable Markdown. Enter on
 a generated file-reference row selects that exact Diffview entry and shows its
@@ -63,13 +68,31 @@ File overview; q closes the reader.
 You can generate or open Review from either source pane or the Diffview file
 tree (`DiffviewFiles`); tree focus and the selected comparison stay unchanged.
 
+Outside Diffview, `Explainr review` opens a new repository-wide **HEAD-to-working
+tree** comparison for the named source's repository/worktree (an unnamed source
+uses its window's effective cwd). This is the net staged-plus-unstaged change:
+an unstaged undo can cancel a staged edit. Existing comparisons keep their exact
+revisions, selected staged/working set and path filters. New reviews respect
+Diffview's untracked-file policy; excluded untracked/ignored files are not added.
+The tested Diffview version excludes untracked files from HEAD comparisons;
+staged additions are tracked and remain included.
+Unsaved buffers overlay working-side files already in the comparison manifest,
+not unsaved-only files absent from it. Nothing is autosaved or staged.
+
+Opening is asynchronous and cancellable with `ExplainrCancel`/`ExplainrClose`
+from the origin or new view. Inference waits for coherent sources; repeated
+opening requests coalesce. Cancellation/failure leaves an opened Diffview tab
+intact. Missing dependencies, repository/HEAD, eligible text, or incompatible
+Diffview defaults report an error rather than substitute another comparison.
+
 **`:ExplainrReview` only opens the narrative** (Lua: `require("explainr").review()`),
 without an AI request. It restores your reading position or shows an explicit
-empty/pending/failed/stale state. The pane-local `<Plug>(ExplainrReview)` action
+empty/pending/failed/stale state. It requires an existing supported comparison
+and never opens Diffview. The pane-local `<Plug>(ExplainrReview)` action
 is available for user mappings; the plugin adds no global shortcut. For example:
 
 ```lua
-vim.keymap.set("n", "<leader>av", "<cmd>ExplainrDiff review<cr>", { desc = "Explain whole diff" })
+vim.keymap.set("n", "<leader>av", "<cmd>Explainr review<cr>", { desc = "Explain whole diff" })
 vim.keymap.set("n", "<leader>aV", "<cmd>ExplainrReview<cr>", { desc = "Read change narrative" })
 ```
 

@@ -8,9 +8,15 @@ Markdown for the entire comparison, with visible markers and native wrapping.
 It has no anchor rails, source dimming, source-linked cursor or scrolling.
 Optional Markdown parsers improve highlighting but are not required.
 
-:ExplainrDiff review generates the whole review and its per-file explanations.
+:Explainr review generates the whole review and its per-file explanations in
+one invocation. From an ordinary source it first opens a HEAD-to-working-tree
+Diffview comparison; opening is asynchronous and Cancel/Close can stop it before
+inference. From an existing comparison it preserves its revisions and filters.
+See |explainr-review| for repository selection and working-buffer limitations.
 :ExplainrReview and require("explainr").review() only display a retained review
-or its empty/pending/failed/stale state; they never generate one. A buffer-local
+or its empty/pending/failed/stale state; they never generate one or open Diffview.
+Without a supported comparison they report an error. Empty Review directs you
+to :Explainr review for generation. A buffer-local
 <Plug>(ExplainrReview) is available in File, detail, and Review for user mappings.
 No global shortcut is installed. Example display-only shortcut: >
   vim.keymap.set("n", "<leader>aV", "<cmd>ExplainrReview<cr>")

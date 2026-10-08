@@ -209,7 +209,7 @@ T.test("real Diffview navigation and explorer keymaps work in pending notes and 
   end
   local function prepare()
     plugin.close(); fixture:switch("policy.lua")
-    local session = plugin.diff("file")
+    local session = plugin.explain("file")
     T.eq(nil, session.pane.pending.snapshot)
     return session
   end
@@ -276,7 +276,7 @@ T.test("real Diffview navigation and explorer keymaps work in pending notes and 
     press(pane, "]f"); assert(vim.wait(5000, function() return fixture.view.cur_entry.path ~= "policy.lua" end))
     press(pane, "[f"); assert(vim.wait(5000, function() return fixture.view.cur_entry.path == "policy.lua" end))
     plugin.close(); fixture:switch("policy.lua")
-    local code = plugin.code("file"); ready(code)
+    local code = require("explainr.session").start("code", "file"); ready(code)
     T.eq({}, mapping(code.pane, "<Tab>")); T.eq({}, mapping(code.pane, "<leader>e"))
     T.eq("", vim.v.errmsg)
   end, debug.traceback)
@@ -307,17 +307,17 @@ T.test("real Diffview closure cancels expanded session work immediately in foreg
       vim.cmd("runtime plugin/diffview.lua")
       vim.v.errmsg = ""
       local before = #jobs
-      local s = plugin.diff("file")
+      local s = plugin.explain("file")
       assert(vim.wait(5000, function() return #jobs == before + 1 end))
       answer(jobs[#jobs])
       assert(vim.wait(5000, function() return s.pane.status:match("^Ready") end), s.pane.status)
       local accepted = vim.deepcopy(s.pane.result)
       api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
-      plugin.diff("hunk")
+      plugin.explain("hunk")
       assert(vim.wait(5000, function() return #jobs == before + 2 end))
       local active = jobs[#jobs]
       api.nvim_win_set_cursor(fixture.state.source, { 8, 0 })
-      plugin.diff("hunk")
+      plugin.explain("hunk")
       local queued = s.queue[1].collection
       assert(queued)
       api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
@@ -326,7 +326,7 @@ T.test("real Diffview closure cancels expanded session work immediately in foreg
       if background then
         vim.cmd("tabnew")
         api.nvim_buf_set_lines(0, 0, -1, false, { "unrelated tab" })
-        other = plugin.code("file")
+        other = plugin.explain("file")
       end
       local current = api.nvim_get_current_tabpage()
       local other_job = background and jobs[#jobs]
@@ -392,11 +392,11 @@ local function replacement_reader(geometry_first)
   local fixture = dofile("tests/review.lua").open(true)
   local ok, err = xpcall(function()
     plugin.setup()
-    local s = plugin.diff("file")
+    local s = plugin.explain("file")
     assert(vim.wait(5000, function() return #jobs == 1 end))
     answer(jobs[1])
     assert(vim.wait(5000, function() return s.pane.status:match("^Ready") end), s.pane.status)
-    api.nvim_win_set_cursor(fixture.state.source, { 4, 0 }); plugin.diff("hunk")
+    api.nvim_win_set_cursor(fixture.state.source, { 4, 0 }); plugin.explain("hunk")
     assert(vim.wait(5000, function() return #jobs == 2 end))
     local active = jobs[2]
     api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
@@ -436,7 +436,7 @@ local function replacement_reader(geometry_first)
     -- An explicit request must also beat the deferred follow safely. Invoke
     -- from notes so it resolves the retained source, not a Markdown cursor.
     api.nvim_set_current_win(s.pane.win)
-    local replacement = plugin.diff("file")
+    local replacement = plugin.explain("file")
     T.eq(s, replacement); T.eq(nil, s.closed); T.eq(nil, active.cancelled)
     T.eq(nil, s.pane.detail_buf)
     T.eq(1, replacement.queue[1].row); T.eq(nil, replacement.pane.result)
@@ -487,10 +487,10 @@ T.test("Diffview restores per-file explanations without inference and rejects ch
       plugin.setup({ ai = { command = { "python3", fixture.cwd .. "/tests/fixtures/agent.py", "explain" } },
         context = { diff = case[2], radius = 2 } })
       api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
-      local session = plugin.diff(case[3]); ready(session)
+      local session = plugin.explain(case[3]); ready(session)
       if case[3] == "hunk" then
         api.nvim_set_current_win(fixture.state.windows.old); api.nvim_win_set_cursor(fixture.state.windows.old, { 9, 0 })
-        T.eq(session, plugin.diff("hunk")); ready(session); T.eq(2, #session.batches)
+        T.eq(session, plugin.explain("hunk")); ready(session); T.eq(2, #session.batches)
       end
       local accepted, snapshots = vim.deepcopy(session.pane.result), vim.deepcopy(session.batches)
       local original_batches = session.batches
@@ -504,7 +504,7 @@ T.test("Diffview restores per-file explanations without inference and rejects ch
         api.nvim_buf_set_lines(buf, 0, -1, false, api.nvim_buf_get_lines(buf, 0, -1, false))
         vim.bo[buf].modified = false
       end
-      local document = plugin.diff("file"); ready(document)
+      local document = plugin.explain("file"); ready(document)
       local document_result = vim.deepcopy(document.pane.result)
       T.eq(count + 1, calls)
       fixture:switch("policy.lua"); ready(document, "policy.lua")
@@ -597,7 +597,7 @@ T.test("opt-in Diffview navigation requests files once while open and reuses or 
     T.eq(0, #jobs); T.eq(nil, require("explainr.session").current())
     fixture:switch("policy.lua")
     api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
-    local session = plugin.diff("hunk"); answer(job(1)); ready(session, "policy.lua")
+    local session = plugin.explain("hunk"); answer(job(1)); ready(session, "policy.lua")
     local pane_win, accepted = session.pane.win, vim.deepcopy(session.pane.result)
     fixture:switch("openspec/spec.md")
     local automatic = job(2)
@@ -688,7 +688,7 @@ T.test("notes navigation preserves source window defaults for unopened Diffview 
       fixture:switch("docs/adr.md")
       for name, value in pairs(expected) do T.eq(value, vim.wo[fixture.state.source][name]) end
       fixture:switch("policy.lua")
-      local s = plugin.diff("file"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+      local s = plugin.explain("file"); f.answer(f.job(1)); f.ready(s, "policy.lua")
       local p = s.pane
       api.nvim_set_current_win(p.win)
       if expanded then p:detail(1) end
@@ -733,7 +733,7 @@ for _, auto in ipairs({ false, true }) do
         for win in pairs(gutters) do native_gutters[win] = vim.wo[win].statuscolumn end
         select("policy.lua")
         api.nvim_set_current_win(fixture.state.source)
-        local s = plugin.diff("file"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+        local s = plugin.explain("file"); f.answer(f.job(1)); f.ready(s, "policy.lua")
         local p, accepted = s.pane, vim.deepcopy(s.pane.result)
         vim.wo[p.win].statuscolumn = "O "
         local observed, errors = {}, {}
@@ -800,7 +800,7 @@ T.test("runtime toggle affects subsequent Diffview navigation, not current notes
     T.eq(0, #f.jobs); T.eq(nil, require("explainr.session").current())
     T.eq(false, plugin.toggle_auto_explain()); fixture:switch("policy.lua")
     api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
-    local s = plugin.diff("hunk"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+    local s = plugin.explain("hunk"); f.answer(f.job(1)); f.ready(s, "policy.lua")
     local accepted = vim.deepcopy(s.pane.result)
     fixture:switch("openspec/spec.md")
     assert(vim.wait(5000, function() return s.pane.status:match("^No explanations") end))
@@ -824,7 +824,7 @@ T.test("runtime toggle never revives earlier loading, stale restoration or backg
     toggle_fixture(function(f, fixture, plugin)
       plugin.setup({ diff = { auto_explain = initial } })
       api.nvim_win_set_cursor(fixture.state.source, { 4, 0 })
-      local s = plugin.diff("hunk"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+      local s = plugin.explain("hunk"); f.answer(f.job(1)); f.ready(s, "policy.lua")
       local current = adapter.current
       adapter.current = function() return nil, "held loading buffers" end
       for _, entry in fixture.view.files:iter() do
@@ -837,7 +837,7 @@ T.test("runtime toggle never revives earlier loading, stale restoration or backg
       fixture:switch("openspec/spec.md"); f.events(); T.eq(1, #f.jobs)
       -- Capture saved notes, then hold a real failed restoration across a toggle.
       T.eq(false, plugin.toggle_auto_explain())
-      local doc = plugin.diff("file"); f.answer(f.job(2)); f.ready(doc, "openspec/spec.md")
+      local doc = plugin.explain("file"); f.answer(f.job(2)); f.ready(doc, "openspec/spec.md")
       fixture:switch("policy.lua"); f.ready(doc, "policy.lua")
       fixture:write("docs/adr.md", "Changed evidence before returning to saved notes.\n")
       local restore, delayed = diff.restore_async, nil
@@ -904,7 +904,7 @@ T.test("real Diffview whole-review fake-agent flow evidence deletion geometry an
     else T.eq(nil, session.pane.result) end
   end
   local ok, err = xpcall(function()
-    config("review"); vim.cmd("ExplainrDiff file")
+    config("review"); vim.cmd("Explainr file")
     local s = require("explainr.session").current(); ready(s)
     T.eq(1, calls); T.eq(4, #s.snapshot.comparison.manifest)
     T.eq("Editors still bypass owner-only cancellation.", s.pane.result.notes[1].summary)
@@ -935,7 +935,7 @@ T.test("real Diffview whole-review fake-agent flow evidence deletion geometry an
     T.eq(1, calls)
     T.eq(s.pane.win, s.pane.detail_win)
     s.pane:back()
-    api.nvim_set_current_win(s.pane.win); vim.cmd("ExplainrDiff file")
+    api.nvim_set_current_win(s.pane.win); vim.cmd("Explainr file")
     s = require("explainr.session").current(); ready(s); T.eq(1, calls); T.eq("Ready · cached", s.pane.status)
     s.pane:scroll(api.nvim_replace_termcodes("<C-f>", true, false, true))
     T.eq(api.nvim_win_call(s.snapshot.windows.old, vim.fn.winsaveview).topline - 3,
@@ -959,7 +959,7 @@ T.test("real Diffview whole-review fake-agent flow evidence deletion geometry an
       return not late.pending
     end), late.pane.status)
     T.eq(nil, late.pane.result); T.eq(nil, late.invocation)
-    config("explain"); local next_file = plugin.diff("file"); ready(next_file)
+    config("explain"); local next_file = plugin.explain("file"); ready(next_file)
     vim.wait(500); T.eq("openspec/spec.md", next_file.snapshot.target.path)
     T.eq("Ready", next_file.pane.status)
     config("explain-slow"); local layout_pending = plugin.refresh()
@@ -971,10 +971,10 @@ T.test("real Diffview whole-review fake-agent flow evidence deletion geometry an
     end, 20))
     stale(layout_pending); T.eq(nil, layout_pending.invocation)
     api.nvim_set_current_win(fixture.state.source)
-    config("explain"); local rebuilt = plugin.diff("file"); ready(rebuilt)
+    config("explain"); local rebuilt = plugin.explain("file"); ready(rebuilt)
     T.eq(fixture.state.windows, rebuilt.snapshot.windows)
     fixture:switch("policy.lua")
-    config("nonzero"); local bad = plugin.diff("file")
+    config("nonzero"); local bad = plugin.explain("file")
     assert(vim.wait(5000, function() return bad.pane.status:find("Failed", 1, true) ~= nil end))
     assert(bad.pane.result); assert(errors[#errors]:find("authentication", 1, true))
     local preserved = vim.deepcopy(bad.pane.result)
@@ -987,7 +987,7 @@ T.test("real Diffview whole-review fake-agent flow evidence deletion geometry an
     fixture:write("src/unrelated.lua", string.rep("unrelated\n", 20000))
     api.nvim_set_current_win(fixture.state.source); api.nvim_win_set_cursor(0, { 4, 0 })
     config("explain", 12000, "auto", 2)
-    local focused = plugin.diff("hunk")
+    local focused = plugin.explain("hunk")
     T.eq(nil, focused.pane.pending.snapshot); assert(focused.pane.status:find("Pending")); assert(focused.pane.timer)
     ready(focused); T.eq(count + 1, calls); T.eq(nil, focused.pane.timer)
     T.eq("focused", focused.snapshot.context.strategy); T.eq(2, focused.snapshot.context.requested_radius)
@@ -1032,7 +1032,7 @@ T.test("real Diffview old-triggered pane stays far right and queues pending hunk
     local command = { "python3", fixture.cwd .. "/tests/fixtures/agent.py", "explain-slow" }
     plugin.setup({ ai = { command = command }, context = { diff = "focused", radius = 2 } })
     api.nvim_set_current_win(old); api.nvim_win_set_cursor(old, { 4, 0 })
-    local s = plugin.diff("hunk")
+    local s = plugin.explain("hunk")
     T.eq(fixture.state.windows, s.pane.pending.windows)
     T.eq(nil, s.pane.pending.snapshot)
     assert(vim.wait(5000, function() return calls == 1 end), s.pane.status)
@@ -1043,7 +1043,7 @@ T.test("real Diffview old-triggered pane stays far right and queues pending hunk
     end
     api.nvim_set_current_win(old); api.nvim_win_set_cursor(old, { 8, 0 })
     local active = s.pending
-    T.eq(s, plugin.diff("hunk")); T.eq(active, s.pending); T.eq(1, #s.queue)
+    T.eq(s, plugin.explain("hunk")); T.eq(active, s.pending); T.eq(1, #s.queue)
     api.nvim_set_current_win(new); api.nvim_win_set_cursor(new, { 30, 0 })
     ready(s)
     T.eq(2, #s.batches); T.eq(4, #s.pane.result.notes)
@@ -1056,7 +1056,7 @@ T.test("real Diffview old-triggered pane stays far right and queues pending hunk
       T.eq(motion[1], s.pane.source); T.eq(motion[2], api.nvim_win_get_cursor(pane_win)[1])
     end
     api.nvim_set_current_win(new); api.nvim_win_set_cursor(new, { 4, 0 })
-    T.eq(s, plugin.diff("hunk")); ready(s)
+    T.eq(s, plugin.explain("hunk")); ready(s)
     T.eq(2, #s.batches); T.eq(4, #s.pane.result.notes); T.eq(2, calls)
     api.nvim_set_current_win(pane_win); api.nvim_win_set_cursor(pane_win, { 20, 0 })
     api.nvim_exec_autocmds("CursorMoved", { buffer = pane_buf })
@@ -1150,13 +1150,13 @@ T.test("whole-review commands work from the Diffview file tree without moving fo
     local s = require("explainr.session").current()
     T.eq(true, s.pane.review_mode); T.eq(0, #f.jobs)
     T.eq(f.fixture.state.source, s.pane.source)
-    vim.cmd("ExplainrDiff review")
+    vim.cmd("Explainr review")
     T.eq("review", f:job(1).target.scope)
     f:answer(1); f:settled(s)
     T.eq(panel.winid, api.nvim_get_current_win()); T.eq(selected, f.fixture.view.cur_entry)
     T.eq(tree_view, api.nvim_win_call(panel.winid, vim.fn.winsaveview))
     T.eq("Owner-only cancellation", s.pane.review.title)
-    plugin.diff("review"); f:settled(s); T.eq(1, #f.jobs)
+    plugin.explain("review"); f:settled(s); T.eq(1, #f.jobs)
     vim.cmd("ExplainrRefresh"); T.eq("review", f:job(2).target.scope)
     f:answer(2, "Refreshed from tree"); f:settled(s)
     T.eq(panel.winid, api.nvim_get_current_win()); T.eq({}, f.errors)
@@ -1170,14 +1170,14 @@ T.test("one review invocation survives collection navigation, distributes every 
     local s = require("explainr.session").current()
     T.eq(true, s.pane.review_mode); T.eq(0, #f.jobs)
     assert(s.pane.review_status:find("No review", 1, true))
-    vim.cmd("ExplainrDiff review")
+    vim.cmd("Explainr review")
     local collection = s.collection
     f:select("openspec/spec.md", s) -- Before collection has delivered.
     T.eq(false, collection.cancelled)
     local job = f:job(1)
     T.eq("review", job.target.scope); T.eq(4, #job.target.files)
     T.eq("review", job.context.context.strategy)
-    plugin.diff("review") -- Same target even though a different file is displayed.
+    plugin.explain("review") -- Same target even though a different file is displayed.
     f:select("docs/adr.md", s)
     T.eq(nil, job.cancelled); T.eq(false, s.pane.review_mode)
     local focus = api.nvim_get_current_win()
@@ -1205,7 +1205,7 @@ T.test("one review invocation survives collection navigation, distributes every 
     plugin.review(); plugin.refresh(); T.eq("review", f:job(3).target.scope)
     f:answer(3, "Fresh narrative"); f:settled(s)
     T.eq("Fresh narrative", s.pane.review.title)
-    plugin.diff("review"); f:settled(s); T.eq(3, #f.jobs)
+    plugin.explain("review"); f:settled(s); T.eq(3, #f.jobs)
     f.fixture:write("docs/adr.md", "Changed shared rationale.\n")
     api.nvim_exec_autocmds("TextChanged", {})
     assert(vim.wait(7000, function() return s.pane.review_status:match("^Stale") end))
@@ -1220,9 +1220,9 @@ end)
 T.test("hidden file success and failure preserve another file's expanded reading state", function()
   whole_review_fixture(function(f, plugin)
     f.fixture:switch("openspec/spec.md")
-    local s = plugin.diff("file"); f:job(1); f:answer(1); f:settled(s)
+    local s = plugin.explain("file"); f:job(1); f:answer(1); f:settled(s)
     f:select("policy.lua", s)
-    plugin.diff("file"); local running = f:job(2)
+    plugin.explain("file"); local running = f:job(2)
     f:select("openspec/spec.md", s)
     api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
     api.nvim_win_set_cursor(s.pane.win, { 10, 0 })
@@ -1247,9 +1247,9 @@ end)
 T.test("review failure suppresses Auto fallback but continues explicit file work and budget overflow invokes nothing", function()
   whole_review_fixture(function(f, plugin)
     plugin.setup({ diff = { auto_explain = true } })
-    local s = plugin.diff("review"); f:job(1)
+    local s = plugin.explain("review"); f:job(1)
     f:select("openspec/spec.md", s)
-    plugin.diff("file")
+    plugin.explain("file")
     f:select("tests/policy.txt", s)
     vim.wait(200); T.eq(1, #f.jobs); T.eq(1, #s.queue); T.eq(nil, s.automatic)
     f.jobs[1].callback('{"version":2,"review":')
@@ -1260,21 +1260,21 @@ T.test("review failure suppresses Auto fallback but continues explicit file work
     plugin.setup({ context = { max_bytes = 100, diff = "focused" } })
     plugin.refresh(); f:settled(s); T.eq(2, #f.jobs)
     assert(f.errors[#f.errors]:find("Complete prompt", 1, true))
-    T.eq({ "file", "hunk", "review" }, vim.fn.getcompletion("ExplainrDiff ", "cmdline"))
+    T.eq({ "file", "selection", "hunk", "review" }, vim.fn.getcompletion("Explainr ", "cmdline"))
   end)
 end)
 
 T.test("Auto coalesces navigation while explicit promotion survives later navigation and disabling", function()
   whole_review_fixture(function(f, plugin)
     plugin.setup({ diff = { auto_explain = true } })
-    local s = plugin.diff("file"); f:job(1)
+    local s = plugin.explain("file"); f:job(1)
     f:select("openspec/spec.md", s)
     assert(vim.wait(7000, function() return s.automatic and s.automatic.collected end))
     local discarded = s.automatic
     f:select("docs/adr.md", s)
     assert(vim.wait(7000, function() return s.automatic and s.automatic.collected end))
     T.eq(true, discarded.cancelled); T.eq("docs/adr.md", s.automatic.path)
-    plugin.diff("file")
+    plugin.explain("file")
     assert(vim.wait(7000, function() return not s.automatic and #s.queue == 1 and s.queue[1].collected end))
     T.eq("docs/adr.md", s.queue[1].path)
     f:select("tests/policy.txt", s)
@@ -1293,11 +1293,11 @@ end)
 
 T.test("review replaces full-file batches but preserves hunks and only reuses matching complete requests", function()
   whole_review_fixture(function(f, plugin)
-    local s = plugin.diff("file"); f:job(1); f:answer(1, "Original"); f:settled(s)
+    local s = plugin.explain("file"); f:job(1); f:answer(1, "Original"); f:settled(s)
     api.nvim_win_set_cursor(s.pane.source, { 4, 0 })
-    plugin.diff("hunk"); f:job(2); f:answer(2, "Hunk"); f:settled(s)
+    plugin.explain("hunk"); f:job(2); f:answer(2, "Hunk"); f:settled(s)
     T.eq(2, #s.batches)
-    plugin.diff("review"); f:job(3)
+    plugin.explain("review"); f:job(3)
     s.pane:show_file(); s.pane:detail(1)
     local detail, view = s.pane.detail_buf, api.nvim_win_call(s.pane.win, vim.fn.winsaveview)
     f:answer(3, "Replacement"); f:settled(s)
@@ -1307,11 +1307,11 @@ T.test("review replaces full-file batches but preserves hunks and only reuses ma
     s.pane:back()
     T.eq({ "Replacement policy.lua", "Hunk policy.lua" }, vim.tbl_map(function(n) return n.summary end, s.pane.result.notes))
     f:select("openspec/spec.md", s); f:settled(s)
-    plugin.diff("file"); f:settled(s); T.eq(3, #f.jobs)
+    plugin.explain("file"); f:settled(s); T.eq(3, #f.jobs)
     plugin.setup({ context = { diff = "focused" } })
-    plugin.diff("file"); f:job(4); f:answer(4); f:settled(s)
+    plugin.explain("file"); f:job(4); f:answer(4); f:settled(s)
     plugin.setup({ ai = { output = function(text) return text end } })
-    plugin.diff("file"); f:job(5); f:answer(5); f:settled(s)
+    plugin.explain("file"); f:job(5); f:answer(5); f:settled(s)
     T.eq({}, f.errors)
   end)
 end)
@@ -1319,7 +1319,7 @@ end)
 T.test("Review references navigate exact renamed deleted and binary entries without inference", function()
   whole_review_fixture(function(f, plugin)
     plugin.setup({ diff = { auto_explain = true } })
-    local s = plugin.diff("review"); f:job(1); f:answer(1); f:settled(s)
+    local s = plugin.explain("review"); f:job(1); f:answer(1); f:settled(s)
     for _, path in ipairs({ "renamed.txt", "deleted.txt", "badge.bin" }) do
       plugin.review(); f:settled(s)
       local row, reference

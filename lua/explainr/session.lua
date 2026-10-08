@@ -1,6 +1,29 @@
-local M = { sessions = {} }
+local M = { sessions = {}, openings = {} }
 local api = vim.api
 local contexts, results, retained, narratives = {}, {}, {}, {}
+
+local function opening()
+  local tab = api.nvim_get_current_tabpage()
+  for origin, operation in pairs(M.openings) do
+    if origin == tab or operation.view and operation.view.tabpage == tab then return operation, origin end
+  end
+end
+
+local function cancel_opening()
+  local operation, origin = opening()
+  if operation then
+    M.openings[origin] = nil
+    operation.cancel()
+    vim.notify("Cancelled opening review", vim.log.levels.INFO, { title = "Explainr" })
+  end
+end
+
+local function source_window(win)
+  if not win or win == 0 then win = api.nvim_get_current_win() end
+  local session = M.sessions[api.nvim_win_get_tabpage(win)]
+  if session and (win == session.pane.win or win == session.pane.detail_win) then return session.pane.source end
+  return win
+end
 
 local function comparison_key(state)
   if not state then return end
@@ -116,6 +139,7 @@ local function discard_pending(session)
 end
 
 function M.close(session)
+  if not session then cancel_opening() end
   session = session or M.current()
   if not session or session.closed then return end
   remember(session)
@@ -128,6 +152,7 @@ function M.close(session)
 end
 
 function M.cancel()
+  cancel_opening()
   local session = M.current()
   if session and not session.closed then
     session.review_status = "Cancelled · refresh explicitly"
@@ -583,12 +608,59 @@ advance_queue = function(session, status)
   else progress(session, request, "Pending · collecting comparison") end
 end
 
+function M.explain(scope, selection)
+  local function reject(message) notify(message); return nil, message end
+  if not vim.tbl_contains({ "file", "selection", "hunk", "review" }, scope) then
+    if scope == "function" or scope == "class" then
+      return reject("unsupported code scope: " .. scope .. "; function/class scopes were removed; use file or selection")
+    end
+    return reject("Unsupported explanation scope: " .. tostring(scope) .. "; use file, selection, hunk or review")
+  end
+  local source = source_window(api.nvim_get_current_win())
+  local pending = opening()
+  if pending then
+    local owned_view = pending.view and pending.view.tabpage == api.nvim_get_current_tabpage()
+    local same_source = source == pending.source and api.nvim_buf_get_name(api.nvim_win_get_buf(source)) == pending.path
+      and (pending.path ~= "" or api.nvim_win_call(source, vim.fn.getcwd) == pending.cwd)
+    if scope == "review" and (owned_view or same_source) then return pending end
+    cancel_opening()
+  end
+  local adapter = require("explainr.diffview")
+  local kind, message = adapter.origin(source)
+  if not kind then return reject(message) end
+  if scope == "selection" then return M.start("code", scope, { win = source, selection = selection }) end
+  if scope == "file" and kind == "code" then return M.start("code", scope, { win = source }) end
+  if scope == "review" and kind == "code" then
+    local tab, config = api.nvim_get_current_tabpage(), vim.deepcopy(require("explainr").config)
+    local operation
+    operation = adapter.open_review(source, function(state, err)
+      if M.openings[tab] ~= operation then return end
+      M.openings[tab] = nil
+      if not state then notify("Opening review failed: " .. tostring(err)); return end
+      local ok, result = pcall(function()
+        assert(api.nvim_win_is_valid(source) and api.nvim_win_is_valid(state.source), "Review source was closed")
+        assert(comparison_key(adapter.selection(state.source)) == comparison_key(state), "Review comparison changed while opening")
+        return api.nvim_win_call(state.source, function()
+          return M.start("diff", "review", { win = state.source, config = config }) ~= nil
+        end)
+      end)
+      if not ok then notify("Opening review failed: " .. tostring(result))
+      elseif result then vim.notify("Opened HEAD-to-working-tree comparison", vim.log.levels.INFO, { title = "Explainr" }) end
+    end)
+    M.openings[tab] = operation
+    vim.notify("Pending · opening HEAD-to-working-tree review", vim.log.levels.INFO, { title = "Explainr" })
+    return operation
+  end
+  if scope == "hunk" and kind ~= "diff" or scope == "file" and kind == "panel" then
+    return reject("Request must follow a coherent Diffview source pane")
+  end
+  return M.start("diff", scope, { win = source })
+end
+
 function M.start(mode, scope, options)
   options = options or {}
   local previous = M.current()
-  local source = options.win or api.nvim_get_current_win()
-  if source == 0 then source = api.nvim_get_current_win() end
-  if previous and (source == previous.pane.win or source == previous.pane.detail_win) then source = previous.pane.source end
+  local source = source_window(options.win or api.nvim_get_current_win())
   if mode == "diff" and scope == "review" then
     local message
     source, message = require("explainr.diffview").review_source(source)
@@ -620,7 +692,7 @@ function M.start(mode, scope, options)
     follow(previous, true)
     if previous.closed then previous = nil end
   end
-  local config = vim.deepcopy(require("explainr").config)
+  local config = vim.deepcopy(options.config or require("explainr").config)
   local snapshot, err, collection, session, generation
   local request = { source = source, scope = scope, row = api.nvim_win_get_cursor(source)[1],
     options = vim.deepcopy(options), config = config }
@@ -755,8 +827,9 @@ function M.start(mode, scope, options)
 end
 
 function M.refresh()
+  cancel_opening()
   local session = M.current()
-  if not session then local err = "No explanation to refresh; use ExplainrCode or ExplainrDiff"; notify(err); return nil, err end
+  if not session then local err = "No explanation to refresh; use Explainr"; notify(err); return nil, err end
   -- Diff targets are recaptured from the followed source: retained anchors may
   -- have changed after edits. Only freshness reads retain immutable targets.
   return M.start(session.mode, session.pane.review_mode and "review" or session.scope or "file",

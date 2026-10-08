@@ -169,7 +169,7 @@ T.test("File detail defers fresh replacements and status-only updates do not res
   p.on_review = function() p:show_review() end
   key(p.detail_buf, "<Plug>(ExplainrReview)")
   T.eq(true, p.review_mode); T.eq(nil, p.detail_buf)
-  assert(table.concat(api.nvim_buf_get_lines(p.review_buf, 0, -1, false), "\n"):find(":ExplainrDiff review", 1, true))
+  assert(table.concat(api.nvim_buf_get_lines(p.review_buf, 0, -1, false), "\n"):find(":Explainr review", 1, true))
   p:close()
 end)
 

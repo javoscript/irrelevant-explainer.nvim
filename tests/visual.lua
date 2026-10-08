@@ -17,6 +17,26 @@ vim.cmd("colorscheme default")
 vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
   and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
 vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state == "diff-review-open" then
+  local api = vim.api
+  local fixture = dofile("tests/review.lua").open(true)
+  require("diffview").close()
+  vim.cmd.edit(vim.fn.fnameescape(fixture.root .. "/policy.lua"))
+  local plugin = require("explainr")
+  plugin.setup({ ai = { command = { "python3", fixture.cwd .. "/tests/fixtures/agent.py", "whole-review" } } })
+  local operation = plugin.explain("review")
+  local session
+  assert(vim.wait(10000, function()
+    session = operation.view and require("explainr.session").sessions[operation.view.tabpage]
+    return session and session.pane.review and not session.pending
+  end, 20), "outside review did not finish")
+  fixture.view = operation.view
+  _G.capture_review, _G.capture_pane = fixture, session.pane
+  assert(session.pane.review_mode)
+  api.nvim_set_current_win(session.pane.win)
+  vim.cmd("redraw!")
+  return
+end
 if vim.g.capture_state:match("^review%-reader") then
   local api = vim.api
   local source = api.nvim_get_current_win()
@@ -41,7 +61,7 @@ if vim.g.capture_state:match("^review%-reader") then
   local status = state:find("pending") and "Pending · comparison · 2 files"
     or state:find("stale") and "Stale · regenerate review"
     or state:find("failed") and "Failed · see :messages"
-    or state:find("empty") and "No review · :ExplainrDiff review" or "Ready"
+    or state:find("empty") and "No review · :Explainr review" or "Ready"
   p:set_review(not state:find("empty") and not state:find("stale") and narrative or nil, manifest, status)
   p:show_review()
   if state:find("narrow") then api.nvim_win_set_width(p.win, 32) end
@@ -756,7 +776,7 @@ if vim.g.capture_state:match("^diff") then
   if vim.g.capture_state == "diff-old" or vim.g.capture_state == "diff-incremental" then
     vim.api.nvim_set_current_win(capture_review.state.windows.old)
   end
-  local session = plugin.diff(focused and "hunk" or "file")
+  local session = plugin.explain(focused and "hunk" or "file")
   assert(vim.wait(5000, function() return session.pane.result ~= nil end), session.pane.status)
   _G.capture_pane = session.pane
   if vim.g.capture_state:match("^diff%-numbers") then
@@ -768,7 +788,7 @@ if vim.g.capture_state:match("^diff") then
       assert(vim.wo[win].number and vim.wo[win].relativenumber)
     end
     plugin.config.ai.command = { "python3", script, "explain" }
-    session = plugin.diff("file"); _G.capture_pane = session.pane
+    session = plugin.explain("file"); _G.capture_pane = session.pane
     assert(vim.wait(5000, function() return capture_pane.result ~= nil end))
     vim.api.nvim_set_current_win(capture_pane.win)
     if expanded then capture_pane:detail(1) end
@@ -830,7 +850,7 @@ if vim.g.capture_state:match("^diff") then
   elseif vim.g.capture_state == "diff-incremental" then
     vim.api.nvim_win_set_cursor(capture_review.state.windows.old, { 8, 0 })
     plugin.setup({ ai = { command = { "python3", script, "explain-slow" } } })
-    plugin.diff("hunk")
+    plugin.explain("hunk")
     assert(vim.wait(5000, function() return capture_pane.pending and capture_pane.pending.snapshot ~= nil end),
       capture_pane.status)
   elseif vim.g.capture_state == "diff-detail" or vim.g.capture_state == "diff-detail-back"
@@ -868,7 +888,7 @@ if vim.g.capture_state:match("^diff") then
   elseif vim.g.capture_state == "diff-switch" then
     capture_review:switch("openspec/spec.md")
     plugin.setup({ ai = { command = { "python3", script, "explain" } } })
-    session = plugin.diff("file"); _G.capture_pane = session.pane
+    session = plugin.explain("file"); _G.capture_pane = session.pane
     assert(vim.wait(5000, function() return capture_pane.result ~= nil end))
   end
   return

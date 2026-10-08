@@ -1,0 +1,308 @@
+local api = vim.api
+local plugin, sessions = require("explainr"), require("explainr.session")
+local adapter = require("explainr.diffview")
+
+T.test("ordinary routing needs no Diffview and rejects utility and hunk origins", function()
+  plugin.close(); plugin.setup()
+  local notify, messages = vim.notify, {}
+  vim.notify = function(message) messages[#messages + 1] = message end
+  local previous, buf = api.nvim_get_current_buf(), api.nvim_create_buf(false, false)
+  api.nvim_set_current_buf(buf)
+  local ok, err = xpcall(function()
+    T.eq("code", adapter.origin(api.nvim_get_current_win()))
+    vim.wo.diff = true
+    T.eq("code", adapter.origin(api.nvim_get_current_win()))
+    T.eq(nil, plugin.explain("hunk")); assert(messages[#messages]:find("source pane"))
+    T.eq(nil, package.loaded["diffview.lib"])
+    vim.bo[buf].buftype = "nofile"
+    T.eq(nil, plugin.explain("file")); assert(messages[#messages]:find("source window"))
+    T.eq(nil, next(sessions.openings))
+  end, debug.traceback)
+  vim.wo.diff = false
+  api.nvim_set_current_buf(previous); api.nvim_buf_delete(buf, { force = true }); vim.notify = notify
+  assert(ok, err)
+end)
+
+T.test("missing Diffview and immediate cancellation cannot start opening or inference", function()
+  local loader, notify, messages = package.preload["diffview"], vim.notify, {}
+  local agent = require("explainr.agent")
+  local run, calls = agent.run, 0
+  agent.run = function() calls = calls + 1; error("unexpected inference") end
+  vim.notify = function(message) messages[#messages + 1] = message end
+  package.preload["diffview"] = function() error("missing optional dependency") end
+  local ok, err = xpcall(function()
+    local cancelled = plugin.explain("review"); plugin.cancel()
+    vim.wait(50); T.eq(true, cancelled.done); T.eq(nil, next(sessions.openings))
+    local missing = plugin.explain("review")
+    assert(vim.wait(1000, function() return missing.done and not next(sessions.openings) end))
+    assert(messages[#messages]:find("Diffview is unavailable", 1, true))
+    T.eq(0, calls)
+  end, debug.traceback)
+  package.preload["diffview"], package.loaded["diffview"] = loader, nil
+  vim.notify, agent.run = notify, run
+  assert(ok, err)
+end)
+
+local runtime = vim.env.EXPLAINR_DIFFVIEW_PATH or vim.fn.stdpath("data") .. "/lazy/diffview.nvim"
+if vim.fn.isdirectory(runtime .. "/lua/diffview") ~= 1 then
+  print("SKIP command integration: missing Diffview at " .. runtime)
+  return
+end
+if vim.env.EXPLAINR_COMMAND_CHILD ~= "1" then
+  T.test("unified commands with real Diffview in isolated Neovim", function()
+    local result = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n",
+      "-c", "luafile tests/run.lua" }, { cwd = vim.fn.getcwd(), env = {
+        EXPLAINR_TEST = "tests/commands_test.lua", EXPLAINR_COMMAND_CHILD = "1",
+        EXPLAINR_DIFFVIEW_PATH = runtime } }):wait(120000)
+    print((result.stdout or "") .. (result.stderr or ""))
+    assert(result.code == 0 and result.signal == 0, "command integration failed")
+  end)
+  return
+end
+vim.opt.runtimepath:append(runtime)
+vim.opt.runtimepath:append(vim.env.EXPLAINR_PLENARY_PATH or vim.fn.stdpath("data") .. "/lazy/plenary.nvim")
+local dv, lib, agent = require("diffview"), require("diffview.lib"), require("explainr.agent")
+
+local function fixture(run)
+  plugin.close()
+  local root = vim.fn.tempname() .. " working tree;'"
+  vim.fn.mkdir(root, "p"); root = vim.uv.fs_realpath(root)
+  local f = { root = root, cwd = vim.fn.getcwd(), tab = api.nvim_get_current_tabpage(), jobs = {}, errors = {} }
+  local notify, execute, columns = vim.notify, agent.run, vim.o.columns
+  vim.o.columns = 220
+  function f.git(...)
+    local result = vim.system(vim.list_extend({ "git", "-C", root }, { ... })):wait()
+    assert(result.code == 0, result.stderr); return vim.trim(result.stdout)
+  end
+  function f.write(path, text)
+    local fd = assert(vim.uv.fs_open(root .. "/" .. path, "w", 420))
+    assert(vim.uv.fs_write(fd, text)); vim.uv.fs_close(fd)
+  end
+  f.git("init", "-q"); f.git("config", "user.name", "Offline commands")
+  f.git("config", "user.email", "offline@example.invalid")
+  for _, name in ipairs({ "mixed.lua", "staged.lua", "working.lua", "undone.lua" }) do f.write(name, "base\n") end
+  f.git("add", "."); f.git("commit", "-qm", "base"); f.head = f.git("rev-parse", "HEAD")
+  for _, name in ipairs({ "mixed.lua", "staged.lua", "undone.lua", "added.lua" }) do f.write(name, "staged\n") end
+  f.git("add", ".")
+  f.write("mixed.lua", "final\n"); f.write("working.lua", "working\n"); f.write("undone.lua", "base\n")
+  f.write("untracked.lua", "not in HEAD comparison\n")
+  f.index = f.git("write-tree")
+  vim.cmd("tabnew"); f.origin_tab, f.origin = api.nvim_get_current_tabpage(), api.nvim_get_current_win()
+  vim.cmd.edit(vim.fn.fnameescape(root .. "/mixed.lua"))
+  dv.setup({ watch_index = false, use_icons = false })
+  plugin.setup({ ai = { command = { "fixture-only" } }, diff = { auto_explain = true } })
+  vim.notify = function(message, level)
+    if level == vim.log.levels.ERROR then f.errors[#f.errors + 1] = message end
+  end
+  agent.run = function(prompt, config, _, callback)
+    local job = { target = vim.json.decode(prompt:match("FOCUSED TARGET JSON:\n(.*)")), config = config, callback = callback }
+    job.cancel = function() job.cancelled = true end
+    f.jobs[#f.jobs + 1] = job
+    return job
+  end
+  function f.wait(predicate)
+    assert(vim.wait(7000, predicate, 20), vim.inspect(f.errors))
+  end
+  function f.open()
+    local operation = plugin.explain("review")
+    f.wait(function() return operation.done end)
+    assert(#f.errors == 0, vim.inspect(f.errors))
+    return operation
+  end
+  local ok, err = xpcall(function() run(f) end, debug.traceback)
+  for _, operation in pairs(sessions.openings) do operation.cancel() end
+  sessions.openings = {}
+  for _, session in pairs(sessions.sessions) do sessions.close(session) end
+  for _, view in ipairs(vim.list_extend({}, lib.views)) do
+    if view.adapter and view.adapter.ctx.toplevel:find(root, 1, true) then
+      if view.tabpage and api.nvim_tabpage_is_valid(view.tabpage) then api.nvim_set_current_tabpage(view.tabpage); dv.close()
+      else lib.dispose_view(view) end
+    end
+  end
+  if api.nvim_tabpage_is_valid(f.origin_tab) then api.nvim_set_current_tabpage(f.origin_tab); vim.cmd("tabclose!") end
+  api.nvim_set_current_tabpage(f.tab); api.nvim_set_current_dir(f.cwd)
+  for _, buf in ipairs(api.nvim_list_bufs()) do
+    if api.nvim_buf_is_valid(buf) and api.nvim_buf_get_name(buf):find(root, 1, true) then api.nvim_buf_delete(buf, { force = true }) end
+  end
+  vim.notify, agent.run, vim.o.columns = notify, execute, columns
+  vim.fn.delete(root, "rf")
+  assert(ok, err)
+end
+
+T.test("outside review captures net HEAD-to-working changes and window-owned file routing", function()
+  fixture(function(f)
+    dv.open({ "-C" .. f.root, "--cached" })
+    local unrelated = lib.get_current_view()
+    f.wait(function() return unrelated.initialized and adapter.current(unrelated.cur_layout.b.id) end)
+    api.nvim_set_current_win(f.origin)
+    local op = plugin.explain("review")
+    T.eq(op, plugin.explain("review"))
+    f.wait(function() return #f.jobs == 1 end)
+    assert(unrelated ~= op.view); T.eq(3, unrelated.right.type)
+    local s, state = sessions.current(), adapter.current(op.view.cur_layout.b.id)
+    T.eq(f.root, state.cwd); T.eq(f.head, state.pair.old.commit); T.eq("local", state.pair.new.type)
+    T.eq({}, state.path_args); T.eq(false, state.show_untracked)
+    local versions, paths = {}, {}
+    for _, file in ipairs(s.pending.snapshot.files) do
+      if file.side == "new" then versions[file.path] = table.concat(file.lines, "\n") end
+    end
+    for _, file in ipairs(f.jobs[1].target.files) do paths[#paths + 1] = file.path end
+    table.sort(paths)
+    T.eq({ "added.lua", "mixed.lua", "staged.lua", "working.lua" }, paths)
+    T.eq("final", versions["mixed.lua"]); T.eq("staged", versions["staged.lua"])
+    T.eq("working", versions["working.lua"]); T.eq("staged", versions["added.lua"])
+    T.eq(f.index, f.git("write-tree")); T.eq("final", vim.fn.readfile(f.root .. "/mixed.lua")[1])
+    T.eq(nil, next(sessions.openings))
+    T.eq("diff", adapter.origin(state.source)); T.eq("panel", adapter.origin(op.view.panel.winid))
+    api.nvim_set_current_win(op.view.panel.winid)
+    T.eq(nil, plugin.explain("file")); T.eq(nil, plugin.explain("hunk"))
+    local selected, panel = op.view.cur_entry, api.nvim_get_current_win()
+    T.eq(s, plugin.explain("review")); T.eq(panel, api.nvim_get_current_win()); T.eq(selected, op.view.cur_entry)
+    api.nvim_set_current_win(s.pane.win); T.eq(s, plugin.explain("file")); T.eq("file", s.queue[#s.queue].scope)
+    api.nvim_set_current_win(f.origin)
+    T.eq(api.nvim_win_get_buf(state.source), api.nvim_get_current_buf())
+    T.eq("code", adapter.origin(f.origin))
+    local code = plugin.explain("file"); T.eq("code", code.mode)
+    api.nvim_set_current_win(state.source); plugin.cancel()
+    local rev = op.view.cur_entry.revs.a
+    op.view.cur_entry.revs.a = { type = 3, stage = 2 }
+    T.eq("diff", adapter.origin(state.source))
+    local before = #f.jobs
+    plugin.explain("file"); vim.wait(100); T.eq(before, #f.jobs)
+    op.view.cur_entry.revs.a = rev
+  end)
+end)
+
+T.test("opening waits for buffers, deduplicates in the new view and preserves configuration", function()
+  fixture(function(f)
+    local current, held = adapter.current, true
+    adapter.current = function(...) if held then return nil, "loading" end; return current(...) end
+    local ok, err = xpcall(function()
+      local op = plugin.explain("review")
+      plugin.setup({ ai = { command = { "changed-after-invocation" } } })
+      f.wait(function() return op.view and op.view.initialized end)
+      T.eq(0, #f.jobs); T.eq(nil, sessions.current()); T.eq(op, plugin.explain("review"))
+      op.view.emitter:emit("file_open_post", op.view.cur_entry); op.view.emitter:emit("files_updated", op.view.files)
+      vim.wait(100); T.eq(0, #f.jobs)
+      held = false
+      f.wait(function() return #f.jobs == 1 end)
+      T.eq({ "fixture-only" }, f.jobs[1].config.command)
+      T.eq(true, sessions.current().pane.auto_explain)
+      op.view.emitter:emit("file_open_post", op.view.cur_entry); vim.wait(100); T.eq(1, #f.jobs)
+    end, debug.traceback)
+    adapter.current = current
+    assert(ok, err)
+  end)
+end)
+
+T.test("cancel close replacement and source/view loss retire opening callbacks", function()
+  for _, action in ipairs({ "cancel", "close", "replace", "source", "view", "comparison", "timeout" }) do
+    fixture(function(f)
+      local current, clock = adapter.current, vim.uv.now
+      adapter.current = function() return nil, "held" end
+      local ok, err = xpcall(function()
+        local op = plugin.explain("review")
+        f.wait(function() return op.view and op.view.initialized and current(op.view.cur_layout.b.id) end)
+        if action == "cancel" then plugin.cancel()
+        elseif action == "close" then plugin.close()
+        elseif action == "replace" then api.nvim_set_current_win(f.origin); plugin.explain("file")
+        elseif action == "source" then api.nvim_win_close(f.origin, true)
+        elseif action == "view" then dv.close()
+        elseif action == "comparison" then op.view.left.commit = string.rep("a", 40)
+        else vim.uv.now = function() return clock() + 20000 end end
+        f.wait(function() return op.done end)
+        vim.uv.now = clock
+        adapter.current = current
+        op.view.emitter:emit("file_open_post", op.view.cur_entry); vim.wait(120)
+        for _, job in ipairs(f.jobs) do assert(job.target.scope ~= "review", action) end
+        if action == "cancel" or action == "close" then assert(api.nvim_tabpage_is_valid(op.view.tabpage)) end
+        T.eq(nil, next(sessions.openings))
+      end, debug.traceback)
+      adapter.current, vim.uv.now = current, clock
+      assert(ok, err)
+    end)
+  end
+end)
+
+T.test("outside review rejects defaults clean trees absent HEAD and metadata-only targets", function()
+  for _, case in ipairs({ "defaults", "filters", "clean", "head", "binary", "not-repository" }) do
+    fixture(function(f)
+      if case == "defaults" then dv.setup({ watch_index = false, default_args = { DiffviewOpen = { "--cached" } } })
+      elseif case == "filters" then dv.setup({ watch_index = false, default_args = { DiffviewOpen = { "HEAD", "--", "mixed.lua" } } })
+      elseif case == "clean" or case == "binary" then
+        f.git("reset", "--hard", "HEAD") -- Disposable fixture only.
+        vim.cmd("edit!")
+        if case == "binary" then f.write("mixed.lua", "\0binary\n"); vim.cmd("edit!") end
+      elseif case == "head" then f.git("symbolic-ref", "HEAD", "refs/heads/unborn")
+      else api.nvim_buf_set_name(0, vim.fn.tempname() .. "/outside.lua") end
+      local op = plugin.explain("review")
+      f.wait(function() return op.done end)
+      f.wait(function() return #f.errors > 0 end)
+      T.eq(0, #f.jobs)
+      if case == "defaults" or case == "filters" then assert(f.errors[#f.errors]:find("default_args")) end
+    end)
+  end
+end)
+
+T.test("unnamed origin and linked worktree resolve their own repository", function()
+  for _, kind in ipairs({ "unnamed", "worktree" }) do
+    fixture(function(f)
+      local expected, buf = f.root, api.nvim_create_buf(false, false)
+      if kind == "worktree" then
+        expected = f.root .. "/linked"
+        f.git("worktree", "add", "--detach", expected, "HEAD")
+        f.write("linked/mixed.lua", "linked only\n")
+        api.nvim_buf_set_name(buf, expected .. "/mixed.lua")
+        api.nvim_set_current_buf(buf); vim.cmd("edit!")
+      else
+        api.nvim_set_current_buf(buf)
+        api.nvim_win_call(f.origin, function() vim.cmd.lcd(vim.fn.fnameescape(f.root)) end)
+      end
+      local op = f.open()
+      f.wait(function() return #f.jobs == 1 end)
+      T.eq(expected, adapter.current(op.view.cur_layout.b.id).cwd)
+      if kind == "worktree" then T.eq(1, #f.jobs[1].target.files); T.eq("mixed.lua", f.jobs[1].target.files[1].path) end
+    end)
+  end
+end)
+
+T.test("background opening preserves focus and unsaved text then reuses and refreshes the review", function()
+  fixture(function(f)
+    local current, held = adapter.current, true
+    adapter.current = function(...) if held then return nil, "loading" end; return current(...) end
+    local ok, err = xpcall(function()
+      api.nvim_buf_set_lines(0, 0, -1, false, { "unsaved overlay" })
+      local op = plugin.explain("review")
+      f.wait(function() return op.view and op.view.initialized and current(op.view.cur_layout.b.id) end)
+      local entry = op.view.files.working[#op.view.files.working]
+      op.view:set_file(entry)
+      f.wait(function()
+        local state = current(op.view.cur_layout.b.id)
+        return state and state.selected.path == entry.path
+      end)
+      api.nvim_set_current_win(f.origin)
+      local focus = api.nvim_get_current_win()
+      held = false
+      f.wait(function() return #f.jobs == 1 end)
+      T.eq(focus, api.nvim_get_current_win())
+      local s = sessions.sessions[op.view.tabpage]
+      local snapshot = s.pending.snapshot
+      for _, file in ipairs(snapshot.files) do
+        if file.path == "mixed.lua" and file.side == "new" then T.eq({ "unsaved overlay" }, file.lines) end
+      end
+      local job = f.jobs[1]
+      job.callback({ version = 2, review = { title = "Net change", sections = {
+        { heading = "Working tree", detail = "The supplied changes update the files.", intent_basis = "unknown",
+          evidence = {}, file_ids = { job.target.files[1].file_id } },
+      } }, files = vim.tbl_map(function(file) return { file_id = file.file_id, notes = {} } end, job.target.files) })
+      f.wait(function() return not s.pending end)
+      T.eq(focus, api.nvim_get_current_win()); T.eq("Net change", s.pane.review.title)
+      T.eq(f.index, f.git("write-tree")); T.eq("final", vim.fn.readfile(f.root .. "/mixed.lua")[1])
+      api.nvim_set_current_win(s.pane.win)
+      plugin.explain("review"); f.wait(function() return not s.pending end); T.eq(1, #f.jobs)
+      plugin.refresh(); f.wait(function() return #f.jobs == 2 end); T.eq("review", f.jobs[2].target.scope)
+    end, debug.traceback)
+    adapter.current = current
+    assert(ok, err)
+  end)
+end)

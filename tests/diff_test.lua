@@ -317,7 +317,7 @@ T.test("async Git startup and polling yield; cancellation and late checks never 
     end
     local ok, err = xpcall(function()
       api.nvim_win_set_cursor(state.source, { 1, 0 })
-      local pending = plugin.diff("hunk")
+      local pending = sessions.start("diff", "hunk")
       T.eq(pending, sessions.current()); T.eq(nil, pending.snapshot)
       assert(api.nvim_win_is_valid(pending.pane.win)); assert(pending.pane.status:find("Pending"))
       gate()
@@ -350,7 +350,7 @@ T.test("async Git startup and polling yield; cancellation and late checks never 
       api.nvim_win_set_cursor(state.source, { 1, 0 }); held = true
       local old = plugin.refresh(); gate()
       local old_job, generation = old.collection, old.generation
-      local replacement = plugin.diff("file")
+      local replacement = sessions.start("diff", "file")
       T.eq(old, replacement); T.eq(generation, replacement.generation)
       T.eq(old_job, replacement.collection); T.eq(1, #replacement.queue)
       plugin.refresh(); assert(replacement.generation > generation)

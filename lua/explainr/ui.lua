@@ -723,7 +723,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if self.closed or not api.nvim_win_is_valid(self.win) or not api.nvim_win_is_valid(self.source) then return end
     local width = api.nvim_win_get_width(self.win)
     if self.review_mode then
-      local status = self.review_status or "No review · :ExplainrDiff review"
+      local status = self.review_status or "No review · :Explainr review"
       local spin = status:match("^Pending") and api.nvim_get_current_win() ~= self.win
         and spinner[(self.frame - 1) % #spinner + 1] .. " " or ""
       self.updating_state = true
@@ -1211,7 +1211,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
     if self.closed then return end
     local changed = not vim.deep_equal(narrative, self.review)
     self.review, self.manifest = narrative, manifest or {}
-    self.review_status = status or (narrative and "Ready" or "No review · :ExplainrDiff review")
+    self.review_status = status or (narrative and "Ready" or "No review · :Explainr review")
     if not self.review_buf then
       self.review_buf = api.nvim_create_buf(false, true)
       vim.bo[self.review_buf].bufhidden = "hide"
@@ -1258,7 +1258,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
           end
           lines[#lines + 1] = ""
         end
-      else lines = { "No review narrative available.", "", "Generate one with :ExplainrDiff review." } end
+      else lines = { "No review narrative available.", "", "Generate one with :Explainr review." } end
       vim.bo[self.review_buf].modifiable = true
       api.nvim_buf_set_lines(self.review_buf, 0, -1, false, lines)
       vim.bo[self.review_buf].modifiable = false
@@ -1273,7 +1273,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:show_review()
     if self.closed or self.review_mode then return end
-    if not self.review_buf then self:set_review(nil, {}, "No review · :ExplainrDiff review") end
+    if not self.review_buf then self:set_review(nil, {}, "No review · :Explainr review") end
     self:back()
     self:focus(true)
     clear_detail_marks()

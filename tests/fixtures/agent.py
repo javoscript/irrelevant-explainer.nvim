@@ -79,6 +79,19 @@ elif mode == "slow":
     sys.stdout.flush()
 elif mode == "eof":
     sys.stdout.buffer.write(prompt)
+elif mode == "whole-review":
+    target = json.loads(prompt.decode().split("FOCUSED TARGET JSON:\n", 1)[1])
+    assert target["scope"] == "review"
+    sys.stdout.write(json.dumps({
+        "version": 2,
+        "review": {"title": "Working-tree review", "sections": [{
+            "heading": "Net changes since HEAD",
+            "detail": "The comparison connects the authorization policy with its requirement, decision record and tests.\n\nThis offline fixture exercises opening Diffview and displaying a complete review; it is not an AI correctness claim.",
+            "intent_basis": "unknown", "evidence": [],
+            "file_ids": [file["file_id"] for file in target["files"]],
+        }]},
+        "files": [{"file_id": file["file_id"], "notes": []} for file in target["files"]],
+    }))
 elif mode in ("review", "review-overview"):
     context = json.loads(prompt.decode().split("UNTRUSTED SNAPSHOT JSON:\n", 1)[1].split("\nFOCUSED TARGET JSON:\n", 1)[0])
     files = {(f["path"], f["side"]): f["lines"] for f in context["files"]}

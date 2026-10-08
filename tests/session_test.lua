@@ -34,7 +34,7 @@ T.test("public code commands produce aligned notes and cached detail without inf
   fixture_buffer(function(buf, win, calls)
     config(); vim.cmd("normal! 2GV2j" .. string.char(27))
     api.nvim_win_set_cursor(win, { 3, 2 })
-    vim.cmd("'<,'>ExplainrCode selection")
+    vim.cmd("'<,'>Explainr selection")
     local s = sessions.current(); ready(s)
     local rows = api.nvim_buf_get_lines(s.pane.buf, 0, 4, false)
     T.eq("", rows[1]); T.eq("", rows[3])
@@ -51,10 +51,10 @@ T.test("public code commands produce aligned notes and cached detail without inf
     assert(table.concat(lines, "\n"):find("Full fixture explanation", 1, true))
     vim.cmd("ExplainrClose"); T.eq(nil, sessions.current())
     T.eq(false, api.nvim_win_is_valid(s.pane.win))
-    api.nvim_set_current_win(win); vim.cmd("ExplainrCode")
+    api.nvim_set_current_win(win); vim.cmd("Explainr")
     local file = sessions.current(); ready(file); T.eq(2, calls())
     T.eq("file", file.snapshot.target.scope)
-    vim.cmd("ExplainrCode file"); local cached = sessions.current(); ready(cached)
+    vim.cmd("Explainr file"); local cached = sessions.current(); ready(cached)
     T.eq(file, cached); T.eq(file.pane.win, cached.pane.win); T.eq(1, #cached.batches)
     T.eq("Ready · cached", cached.pane.status); T.eq(2, calls())
     vim.cmd("ExplainrRefresh"); ready(sessions.current()); T.eq(3, calls())
@@ -64,7 +64,7 @@ end)
 
 T.test("code edits before and after completion invalidate notes without auto inference", function()
   fixture_buffer(function(buf, _, calls)
-    config("explain-slow"); local s = plugin.code("file")
+    config("explain-slow"); local s = plugin.explain("file")
     api.nvim_buf_set_lines(buf, 0, 1, false, { "edited while waiting" }); stale(s)
     vim.wait(500); T.eq(1, calls()); T.eq(nil, s.pane.result)
     config(); s = plugin.refresh(); ready(s)
@@ -76,10 +76,10 @@ end)
 
 T.test("supersession cancellation closure and failed refresh preserve accepted results", function()
   fixture_buffer(function(_, win, calls, errors)
-    config("explain-slow"); local old = plugin.code("file")
+    config("explain-slow"); local old = plugin.explain("file")
     plugin.cancel(); T.eq(nil, old.invocation); assert(old.pane.status:find("Cancelled"))
     local pending = plugin.refresh()
-    config(); local newer = plugin.code("file"); ready(newer)
+    config(); local newer = plugin.explain("file"); ready(newer)
     vim.wait(500); T.eq(pending, newer); T.eq(3, calls()); T.eq("Ready", newer.pane.status)
     local accepted = vim.deepcopy(newer.pane.result)
     config("explain-invalid"); local bad = plugin.refresh()
@@ -99,12 +99,12 @@ end)
 
 T.test("budget and selection errors launch no commands; visual refresh keeps exact retained region", function()
   fixture_buffer(function(buf, _, calls, errors)
-    config(nil, 80); local s = plugin.code("file")
+    config(nil, 80); local s = plugin.explain("file")
     T.eq(0, calls()); T.eq(nil, s.invocation); assert(errors[1]:find("Complete prompt", 1, true))
     api.nvim_buf_set_lines(buf, 4, 5, false, { "" })
-    config(); local missing = plugin.code("selection", { type = "v", pos1 = { 0, 5, 1, 0 }, pos2 = { 0, 5, 1, 0 }, exclusive = true })
+    config(); local missing = plugin.explain("selection", { type = "v", pos1 = { 0, 5, 1, 0 }, pos2 = { 0, 5, 1, 0 }, exclusive = true })
     T.eq(nil, missing); T.eq(0, calls())
-    local selected = plugin.code("selection", { type = "v", pos1 = { buf, 1, 7, 0 }, pos2 = { buf, 1, 14, 0 }, exclusive = false })
+    local selected = plugin.explain("selection", { type = "v", pos1 = { buf, 1, 7, 0 }, pos2 = { buf, 1, 14, 0 }, exclusive = false })
     ready(selected); T.eq("outside ", selected.snapshot.target.text)
     api.nvim_buf_set_mark(buf, "<", 3, 0, {}); api.nvim_buf_set_mark(buf, ">", 4, 0, {})
     local refreshed = plugin.refresh(); ready(refreshed)
@@ -116,13 +116,13 @@ T.test("explicit selections and Ex visual commands preserve their selected scope
   fixture_buffer(function(buf, win, calls)
     api.nvim_buf_set_lines(buf, 0, -1, false, { "class Account:", "    def cancel(self):", "        permitted = True", "        return permitted", "", "outside = 1" })
     vim.bo[buf].filetype = "python"; config()
-    local s = plugin.code("selection", { type = "V", pos1 = { buf, 1, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
+    local s = plugin.explain("selection", { type = "V", pos1 = { buf, 1, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
     T.eq(1, s.snapshot.target.anchors[1].start_line); T.eq(4, s.snapshot.target.anchors[1].end_line)
-    s = plugin.code("selection", { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
+    s = plugin.explain("selection", { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
     T.eq(2, s.snapshot.target.anchors[1].start_line); T.eq(4, s.snapshot.target.anchors[1].end_line)
     plugin.close(); api.nvim_set_current_win(win)
     vim.cmd("normal! 2GVj" .. string.char(27))
-    vim.cmd("'<,'>ExplainrCode selection"); s = sessions.current(); ready(s)
+    vim.cmd("'<,'>Explainr selection"); s = sessions.current(); ready(s)
     T.eq(2, s.snapshot.target.anchors[1].start_line); T.eq(3, s.snapshot.target.anchors[1].end_line)
     T.eq("    def cancel(self):\n        permitted = True", s.snapshot.target.text)
     T.eq(3, calls())
@@ -132,9 +132,10 @@ end)
 T.test("retired code scopes reject command and Lua calls before reuse without dropping accepted notes", function()
   fixture_buffer(function(_, _, calls, errors)
     config()
-    T.eq({ "file", "selection" }, vim.fn.getcompletion("ExplainrCode ", "cmdline"))
-    T.eq({ "file", "hunk", "review" }, vim.fn.getcompletion("ExplainrDiff ", "cmdline"))
-    local s = plugin.code(); ready(s)
+    T.eq({ "file", "selection", "hunk", "review" }, vim.fn.getcompletion("Explainr ", "cmdline"))
+    T.eq(0, vim.fn.exists(":ExplainrCode")); T.eq(0, vim.fn.exists(":ExplainrDiff"))
+    T.eq(nil, plugin.code); T.eq(nil, plugin.diff)
+    local s = plugin.explain(); ready(s)
     T.eq("file", s.snapshot.target.scope)
     local accepted = vim.deepcopy(s.pane.result)
     local prompt, builds = require("explainr.prompt"), 0
@@ -144,8 +145,8 @@ T.test("retired code scopes reject command and Lua calls before reuse without dr
       for _, scope in ipairs({ "function", "class" }) do
         for _, command in ipairs({ false, true }) do
           api.nvim_set_current_win(s.pane.win)
-          if command then vim.cmd("ExplainrCode " .. scope)
-          else T.eq(nil, plugin.code(scope)) end
+          if command then vim.cmd("Explainr " .. scope)
+          else T.eq(nil, plugin.explain(scope)) end
           assert(errors[#errors]:find("unsupported code scope: " .. scope, 1, true))
           assert(errors[#errors]:find("scopes were removed; use file or selection", 1, true))
           T.eq(s, sessions.current()); T.eq(accepted, s.pane.result); T.eq(1, #s.batches)
@@ -164,10 +165,10 @@ T.test("changing custom decoder identity invalidates results even with the same 
   fixture_buffer(function(_, _, calls, errors)
     local command = { "python3", fixture, "explain" }
     plugin.setup({ ai = { command = command, output = function(stdout) return stdout end } })
-    local first = plugin.code("file"); ready(first); T.eq(1, calls())
+    local first = plugin.explain("file"); ready(first); T.eq(1, calls())
     local accepted = vim.deepcopy(first.pane.result)
     plugin.setup({ ai = { command = command, output = function() return nil, "different decoder contract" end } })
-    local changed = plugin.code("file")
+    local changed = plugin.explain("file")
     assert(vim.wait(3000, function() return changed.pane.status:find("Failed", 1, true) ~= nil end))
     T.eq(2, calls()); T.eq(accepted, changed.pane.result); T.eq(first, changed)
     T.eq("different decoder contract", errors[#errors])
@@ -207,7 +208,7 @@ T.test("diff results and cache wait for coalesced freshness; stale and cancelled
     end
     local answer = '{"version":1,"notes":[]}'
     local ok, err = xpcall(function()
-      local first = plugin.diff("file"); collect(); T.eq(1, #launches)
+      local first = sessions.start("diff", "file"); collect(); T.eq(1, #launches)
       -- A burst of events starts one check. A result arriving later requires
       -- a trailing pass, rather than trusting the already-running pass.
       for _ = 1, 5 do api.nvim_exec_autocmds("TextChanged", {}) end
@@ -216,13 +217,13 @@ T.test("diff results and cache wait for coalesced freshness; stale and cancelled
       checks[1](true); T.eq(2, #checks); T.eq(nil, first.pane.result)
       checks[2](false); assert(first.pane.status:find("Stale")); T.eq(nil, first.pane.result)
 
-      local second = plugin.diff("file"); collect()
+      local second = sessions.start("diff", "file"); collect()
       T.eq(2, #launches) -- The stale result must not have populated the cache.
       launches[2](answer); T.eq(nil, second.pane.result)
       checks[3](true); T.eq("Ready · no notes", second.pane.status)
       local accepted = vim.deepcopy(second.pane.result)
 
-      local cached = plugin.diff("file"); collect()
+      local cached = sessions.start("diff", "file"); collect()
       T.eq(second, cached); T.eq(2, #launches); T.eq(accepted, cached.pane.result)
       assert(cached.pane.status:find("Pending"))
       plugin.cancel(); local count = cancelled
@@ -230,7 +231,7 @@ T.test("diff results and cache wait for coalesced freshness; stale and cancelled
       assert(cached.pane.status:find("Cancelled")); T.eq(accepted, cached.pane.result)
 
       local pending = plugin.refresh(); collect(); launches[3](answer)
-      local replacement = plugin.diff("file"); collect()
+      local replacement = sessions.start("diff", "file"); collect()
       T.eq(pending, replacement); checks[5](true)
       T.eq(accepted, replacement.pane.result)
       T.eq("Ready · no notes", replacement.pane.status); T.eq(3, #launches)
@@ -250,17 +251,17 @@ T.test("code scopes accumulate in one pane; cached repeats and refresh replace o
   fixture_buffer(function(buf, win, calls)
     config(); api.nvim_win_set_cursor(win, { 3, 0 })
     local region = { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }
-    local s = plugin.code("selection", region); ready(s)
+    local s = plugin.explain("selection", region); ready(s)
     local first = vim.deepcopy(s.batches[1])
     local pane_win = s.pane.win
-    T.eq(s, plugin.code("file")); ready(s)
+    T.eq(s, plugin.explain("file")); ready(s)
     T.eq(pane_win, s.pane.win); T.eq(2, #s.batches); T.eq(4, #s.pane.result.notes)
     T.eq(first, s.batches[1])
     local selection = { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 3, 1, 0 } }
-    T.eq(s, plugin.code("selection", selection)); ready(s)
+    T.eq(s, plugin.explain("selection", selection)); ready(s)
     T.eq(3, #s.batches); T.eq(6, #s.pane.result.notes); T.eq(3, calls())
     local selected = vim.deepcopy(s.batches[3])
-    T.eq(s, plugin.code("selection", region)); ready(s)
+    T.eq(s, plugin.explain("selection", region)); ready(s)
     T.eq("Ready · cached", s.pane.status); T.eq(3, calls()); T.eq(6, #s.pane.result.notes)
     api.nvim_win_set_cursor(win, { 5, 0 })
     T.eq(s, plugin.refresh()); ready(s)
@@ -273,7 +274,7 @@ T.test("code scopes accumulate in one pane; cached repeats and refresh replace o
     s.pane:detail()
     api.nvim_win_set_cursor(s.pane.win, { api.nvim_buf_line_count(s.pane.detail_buf), 0 })
     local target = assert(s.pane:detail_target())
-    T.eq(s, plugin.code("file")); ready(s)
+    T.eq(s, plugin.explain("file")); ready(s)
     T.eq(target.line, api.nvim_win_get_cursor(target.win)[1]); T.eq(nil, s.pane.detail_buf)
     T.eq(win, s.source); T.eq(3, #s.batches); T.eq(4, calls())
     T.eq(nil, s.pane.pending)
@@ -282,18 +283,18 @@ end)
 
 T.test("failed collection and budget preserve accepted code, but fresh edits discard old batches without retry", function()
   fixture_buffer(function(buf, win, calls, errors)
-    config(); local s = plugin.code("file"); ready(s)
+    config(); local s = plugin.explain("file"); ready(s)
     local accepted = vim.deepcopy(s.pane.result)
     api.nvim_win_set_cursor(win, { 5, 0 })
-    T.eq(nil, plugin.code("selection", { type = "V", pos1 = { buf, 5, 1, 0 }, pos2 = { buf, 6, 1, 0 } }))
+    T.eq(nil, plugin.explain("selection", { type = "V", pos1 = { buf, 5, 1, 0 }, pos2 = { buf, 6, 1, 0 } }))
     T.eq(accepted, s.pane.result)
     T.eq(1, calls()); assert(errors[#errors]:find("selection position is unset or outside the buffer", 1, true))
-    config(nil, 80); T.eq(s, plugin.code("file"))
+    config(nil, 80); T.eq(s, plugin.explain("file"))
     T.eq(accepted, s.pane.result); T.eq(nil, s.pane.pending); T.eq(1, calls())
     api.nvim_buf_set_lines(buf, 0, 1, false, { "local changed = 2" })
     -- No TextChanged dispatch between edit and request: the newest capture is
     -- fresh, even though all retained captures have the previous changedtick.
-    config(); T.eq(s, plugin.code("file")); ready(s)
+    config(); T.eq(s, plugin.explain("file")); ready(s)
     T.eq(2, calls()); T.eq(1, #s.batches)
     T.eq("local changed = 2", s.batches[1].snapshot.files[1].lines[1])
     plugin.cancel(); T.eq(2, #s.pane.result.notes)
@@ -304,7 +305,7 @@ end)
 
 T.test("switching source buffers creates a new session without annotations from the previous buffer", function()
   fixture_buffer(function(_, win, calls)
-    config(); local first = plugin.code("file"); ready(first)
+    config(); local first = plugin.explain("file"); ready(first)
     api.nvim_set_current_win(first.pane.win)
     first.pane:detail(1)
     api.nvim_win_set_cursor(first.pane.win, { api.nvim_buf_line_count(first.pane.detail_buf), 0 })
@@ -312,7 +313,7 @@ T.test("switching source buffers creates a new session without annotations from 
     api.nvim_buf_set_lines(other, 0, -1, false, { "other file", "second", "third", "fourth", "fifth" })
     api.nvim_win_set_buf(win, other)
     api.nvim_win_set_cursor(win, { 3, 2 })
-    local second = plugin.code("file"); ready(second)
+    local second = plugin.explain("file"); ready(second)
     T.eq({ 3, 2 }, api.nvim_win_get_cursor(win))
     T.eq(true, first.closed); assert(first ~= second); T.eq(1, #second.batches)
     T.eq(other, second.snapshot.source_buf); T.eq(2, calls())
@@ -336,23 +337,23 @@ T.test("new pending code requests cancel prior jobs and ignore their deliberatel
         anchors = { target.anchors[1] }, intent_basis = "unknown", evidence = {} } } })
     end
     local ok, err = xpcall(function()
-      local s = plugin.code("file"); answer(launches[1], "accepted")
+      local s = plugin.explain("file"); answer(launches[1], "accepted")
       local accepted = vim.deepcopy(s.pane.result)
       local function selection(line)
         return { type = "V", pos1 = { buf, line, 1, 0 }, pos2 = { buf, line, 1, 0 } }
       end
-      T.eq(s, plugin.code("selection", selection(2)))
+      T.eq(s, plugin.explain("selection", selection(2)))
       T.eq(accepted, s.pane.result); T.eq("selection", s.pane.pending.scope)
       T.eq(s.snapshot, s.pane.pending.snapshot)
-      T.eq(s, plugin.code("selection", selection(4)))
+      T.eq(s, plugin.explain("selection", selection(4)))
       T.eq(true, launches[2].cancelled); answer(launches[2], "late superseded")
       T.eq(accepted, s.pane.result); T.eq(4, s.pane.pending.snapshot.target.anchors[1].start_line)
       plugin.cancel(); T.eq(true, launches[3].cancelled); T.eq(nil, s.pane.pending)
       answer(launches[3], "late cancelled"); T.eq(accepted, s.pane.result)
-      T.eq(s, plugin.code("selection", selection(5)))
+      T.eq(s, plugin.explain("selection", selection(5)))
       launches[4].callback(nil, "provider failed")
       T.eq(accepted, s.pane.result); T.eq(nil, s.pane.pending); T.eq("provider failed", errors[#errors])
-      T.eq(s, plugin.code("selection", selection(3))); answer(launches[5], "new accepted")
+      T.eq(s, plugin.explain("selection", selection(3))); answer(launches[5], "new accepted")
       T.eq(2, #s.batches); T.eq(2, #s.pane.result.notes)
       T.eq("new accepted", s.pane.result.notes[2].summary)
     end, debug.traceback)
@@ -448,7 +449,7 @@ end
 
 T.test("automatic mode updates owned headers across tabs without disturbing detail or queued manual work", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk")
+    local s = sessions.start("diff", "hunk")
     local function header(p)
       return api.nvim_eval_statusline(vim.wo[p.win].winbar, { winid = p.win, use_winbar = true }).str
     end
@@ -462,13 +463,13 @@ T.test("automatic mode updates owned headers across tabs without disturbing deta
     local views = { api.nvim_win_call(s.pane.win, vim.fn.winsaveview), api.nvim_win_call(f.win, vim.fn.winsaveview) }
     -- A second diff session is still collecting, with a snapshot-free header.
     vim.cmd("tabnew")
-    local other = plugin.diff("hunk")
+    local other = sessions.start("diff", "hunk")
     T.eq(nil, other.pane.snapshot); assert(header(other.pane):find("Auto", 1, true))
     local collection, status = other.collection, other.pane.status
     -- A third tab contains ordinary code; the setting must not advertise code automation.
     vim.cmd("tabnew")
     api.nvim_buf_set_lines(0, 0, -1, false, { "ordinary manual code" })
-    local code = plugin.code("file")
+    local code = plugin.explain("file")
     local code_job = f.launches[#f.launches]
     local tab, win = api.nvim_get_current_tabpage(), api.nvim_get_current_win()
     for _, enabled in ipairs({ false, true, false }) do
@@ -503,9 +504,9 @@ T.test("automatic mode updates owned headers across tabs without disturbing deta
     plugin.close(); vim.cmd("tabclose!")
     plugin.close(); vim.cmd("tabclose!"); api.nvim_set_current_tabpage(s.tab)
     api.nvim_set_current_win(f.win)
-    plugin.diff("hunk"); f.collect(f.snapshot(4))
+    sessions.start("diff", "hunk"); f.collect(f.snapshot(4))
     local active = f.launches[#f.launches]
-    plugin.diff("hunk"); local queued = s.queue[1]
+    sessions.start("diff", "hunk"); local queued = s.queue[1]
     T.eq(false, plugin.toggle_auto_explain())
     T.eq(nil, active.cancelled); T.eq(nil, queued.collection.cancelled)
     f.collect(f.snapshot(5)); f.answer("first manual"); f.drain(); f.answer("queued manual"); f.drain()
@@ -517,13 +518,13 @@ end)
 
 T.test("paired diff sides accumulate with per-batch coverage and cached results follow the merge path", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk")
+    local s = sessions.start("diff", "hunk")
     T.eq(f.state.windows, s.pane.pending.windows); T.eq(nil, s.pane.pending.snapshot)
     local focused = { strategy = "focused", radius = 2, omitted_files = 7 }
     f.collect(f.snapshot(2, nil, focused)); f.answer("focused batch"); f.drain()
     T.eq(1, #s.batches); T.eq(focused, s.batches[1].snapshot.context)
     api.nvim_set_current_win(f.old_win); api.nvim_win_set_cursor(f.old_win, { 4, 0 })
-    T.eq(s, plugin.diff("hunk")); T.eq(f.old_win, s.pane.pending.source); T.eq(4, s.pane.pending.row)
+    T.eq(s, sessions.start("diff", "hunk")); T.eq(f.old_win, s.pane.pending.source); T.eq(4, s.pane.pending.row)
     f.collect(f.snapshot(4)); f.answer("review batch"); f.drain()
     T.eq(2, #s.batches); T.eq(2, #s.pane.result.notes)
     T.eq(focused, s.batches[1].snapshot.context); T.eq("review", s.batches[2].snapshot.context.strategy)
@@ -531,7 +532,7 @@ T.test("paired diff sides accumulate with per-batch coverage and cached results 
     -- UI may follow a different side without mutating accepted snapshots.
     -- An invocation from overview resolves the followed source.
     s.pane.source = f.win; api.nvim_set_current_win(s.pane.win)
-    T.eq(s, plugin.diff("hunk")); T.eq(f.win, s.pane.pending.source)
+    T.eq(s, sessions.start("diff", "hunk")); T.eq(f.win, s.pane.pending.source)
     f.collect(f.snapshot(2, nil, focused)); T.eq(2, #f.launches)
     T.eq(2, #s.pane.result.notes); assert(s.pane.pending)
     local before = #f.checks; f.drain(); assert(#f.checks >= before + 1)
@@ -547,15 +548,15 @@ end)
 
 T.test("fresh diff additions discard stale retained evidence without rejecting the new capture", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk"); f.collect(f.snapshot(2, "old-evidence")); f.answer("old evidence"); f.drain()
-    T.eq(s, plugin.diff("hunk")); f.collect(f.snapshot(4, "new-evidence")); f.answer("fresh evidence")
+    local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(2, "old-evidence")); f.answer("old evidence"); f.drain()
+    T.eq(s, sessions.start("diff", "hunk")); f.collect(f.snapshot(4, "new-evidence")); f.answer("fresh evidence")
     local start = #f.checks
     f.drain(function(snapshot) return snapshot.capture.epoch == "new-evidence" end)
     assert(#f.checks > start) -- Old evidence, not merely latest evidence, was validated.
     T.eq("Ready", s.pane.status); T.eq(1, #s.batches)
     T.eq("fresh evidence", s.pane.result.notes[1].summary); T.eq(nil, s.pane.pending)
     -- Retained evidence must also be checked before installing a cached batch.
-    T.eq(s, plugin.diff("hunk")); f.collect(f.snapshot(2, "old-evidence"))
+    T.eq(s, sessions.start("diff", "hunk")); f.collect(f.snapshot(2, "old-evidence"))
     T.eq(2, #f.launches); f.drain(function(snapshot) return snapshot.capture.epoch == "old-evidence" end)
     T.eq("Ready · cached", s.pane.status); T.eq(1, #s.batches)
     T.eq("old evidence", s.pane.result.notes[1].summary)
@@ -564,8 +565,8 @@ end)
 
 T.test("stale accepted evidence during collection does not cancel a request with no new snapshot yet", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk"); f.collect(f.snapshot(2, "old")); f.answer("accepted"); f.drain()
-    T.eq(s, plugin.diff("hunk")); local collection = f.collections[#f.collections]
+    local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(2, "old")); f.answer("accepted"); f.drain()
+    T.eq(s, sessions.start("diff", "hunk")); local collection = f.collections[#f.collections]
     api.nvim_exec_autocmds("TextChanged", {})
     assert(vim.wait(1000, function() return s.checking ~= nil end))
     f.drain(function() return false end)
@@ -583,9 +584,9 @@ end)
 
 T.test("all retained diff captures are watched and pending data is checked after slow older evidence", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk"); f.collect(f.snapshot(1, "first")); f.answer("first"); f.drain()
-    plugin.diff("hunk"); f.collect(f.snapshot(2, "second")); f.answer("second"); f.drain()
-    plugin.diff("hunk"); f.collect(f.snapshot(3, "latest")); f.answer("latest"); f.drain()
+    local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(1, "first")); f.answer("first"); f.drain()
+    sessions.start("diff", "hunk"); f.collect(f.snapshot(2, "second")); f.answer("second"); f.drain()
+    sessions.start("diff", "hunk"); f.collect(f.snapshot(3, "latest")); f.answer("latest"); f.drain()
     T.eq(3, #s.batches)
     api.nvim_exec_autocmds("TextChanged", {})
     assert(vim.wait(1000, function() return s.checking ~= nil end))
@@ -598,8 +599,8 @@ T.test("all retained diff captures are watched and pending data is checked after
     T.eq({ "first", "latest" }, vim.tbl_map(function(n) return n.summary end, s.pane.result.notes))
     assert(s.pane.status:find("Stale"))
 
-    plugin.diff("hunk"); f.collect(f.snapshot(1, "fresh")); f.answer("fresh"); f.drain()
-    plugin.diff("hunk"); f.collect(f.snapshot(4, "pending")); f.answer("pending")
+    sessions.start("diff", "hunk"); f.collect(f.snapshot(1, "fresh")); f.answer("fresh"); f.drain()
+    sessions.start("diff", "hunk"); f.collect(f.snapshot(4, "pending")); f.answer("pending")
     local old_check = f.checks[#f.checks]
     T.eq("fresh", old_check.snapshot.capture.epoch)
     -- Simulate new data becoming stale during that outstanding older read.
@@ -611,15 +612,15 @@ end)
 
 T.test("diff collection failure retains batches and cancelled collections cannot launch late results", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk"); f.collect(f.snapshot(2)); f.answer("accepted"); f.drain()
+    local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(2)); f.answer("accepted"); f.drain()
     local accepted = vim.deepcopy(s.pane.result)
-    T.eq(s, plugin.diff("hunk")); local superseded = f.collections[#f.collections]
+    T.eq(s, sessions.start("diff", "hunk")); local superseded = f.collections[#f.collections]
     T.eq(s, plugin.refresh()); T.eq(true, superseded.cancelled)
     superseded.callback(f.snapshot(4)); T.eq(1, #f.launches)
     f.collections[#f.collections].callback(nil, "ordinary collection failure")
     T.eq(accepted, s.pane.result); T.eq(nil, s.pane.pending); f.drain()
     T.eq(f.state.selected.path .. ": ordinary collection failure", f.errors[#f.errors])
-    T.eq(s, plugin.diff("hunk")); local cancelled = f.collections[#f.collections]
+    T.eq(s, sessions.start("diff", "hunk")); local cancelled = f.collections[#f.collections]
     plugin.cancel(); cancelled.callback(f.snapshot(4))
     T.eq(1, #f.launches); T.eq(accepted, s.pane.result); T.eq(nil, s.pane.pending)
     -- Refreshing an uncollected newer request must not reuse the previous
@@ -632,18 +633,18 @@ end)
 T.test("pending hunks append in request order across collection and inference, preserving captured configuration", function()
   diff_fixture(function(f)
     api.nvim_win_set_cursor(f.win, { 2, 0 })
-    local s = plugin.diff("hunk")
+    local s = sessions.start("diff", "hunk")
     local first = s.pending
     config("explain-slow")
     api.nvim_set_current_win(f.old_win); api.nvim_win_set_cursor(f.old_win, { 4, 0 })
-    T.eq(s, plugin.diff("hunk"))
+    T.eq(s, sessions.start("diff", "hunk"))
     T.eq(first, s.pending); T.eq(nil, f.collections[1].cancelled)
     T.eq(4, s.queue[1].row); T.eq(f.old_win, s.queue[1].source)
     T.eq(0, #f.launches)
     f.collect(f.snapshot(2, nil, nil, 1), 1)
     T.eq(1, #f.launches)
     api.nvim_set_current_win(f.win); api.nvim_win_set_cursor(f.win, { 5, 0 })
-    T.eq(s, plugin.diff("hunk")); T.eq(nil, f.launches[1].cancelled)
+    T.eq(s, sessions.start("diff", "hunk")); T.eq(nil, f.launches[1].cancelled)
     T.eq(2, #s.queue)
     -- Later collection finishes first; inference still respects request order.
     f.collect(f.snapshot(5, nil, nil, 3), 3)
@@ -669,12 +670,12 @@ end)
 
 T.test("promoting automatic work keeps explicit FIFO order despite out-of-order collection", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk"); f.collect(f.snapshot(1))
+    local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(1))
     sessions.start("diff", "file", { automatic = true })
     local automatic = s.automatic
     f.collect(f.snapshot(2, nil, nil, 2), 2)
-    plugin.diff("file") -- Explicitly request the automatic candidate.
-    plugin.diff("hunk") -- A later explicit request collects first.
+    sessions.start("diff", "file") -- Explicitly request the automatic candidate.
+    sessions.start("diff", "hunk") -- A later explicit request collects first.
     f.collect(f.snapshot(3, nil, nil, 4), 4)
     f.collect(f.snapshot(2, nil, nil, 3), 3)
     T.eq(nil, s.automatic); T.eq(automatic, s.queue[1]); T.eq(2, #s.queue)
@@ -689,11 +690,11 @@ end)
 
 T.test("hunk queue skips collection and agent failures, then merges cached targets without duplicate notes", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk"); f.collect(f.snapshot(2)); f.answer("accepted"); f.drain()
-    plugin.diff("hunk"); f.collect(f.snapshot(3))
-    plugin.diff("hunk"); f.collections[3].callback(nil, "queued collection failed")
-    plugin.diff("hunk"); f.collect(f.snapshot(2)) -- Cached target queued after failure.
-    plugin.diff("hunk"); f.collect(f.snapshot(4))
+    local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(2)); f.answer("accepted"); f.drain()
+    sessions.start("diff", "hunk"); f.collect(f.snapshot(3))
+    sessions.start("diff", "hunk"); f.collections[3].callback(nil, "queued collection failed")
+    sessions.start("diff", "hunk"); f.collect(f.snapshot(2)) -- Cached target queued after failure.
+    sessions.start("diff", "hunk"); f.collect(f.snapshot(4))
     f.launches[2].callback(nil, "agent failed"); f.drain()
     T.eq({ f.state.selected.path .. ": agent failed", f.state.selected.path .. ": queued collection failed" }, f.errors)
     T.eq(1, #s.batches); T.eq("accepted", s.pane.result.notes[1].summary)
@@ -707,10 +708,10 @@ end)
 T.test("cancel refresh close and stale comparison discard active and queued hunks, silencing late callbacks", function()
   diff_fixture(function(f)
     for _, action in ipairs({ "cancel", "refresh", "close", "stale" }) do
-      local s = plugin.diff("hunk"); f.collect(f.snapshot(2, action))
+      local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(2, action))
       local active = f.launches[#f.launches]
-      plugin.diff("hunk"); f.collect(f.snapshot(4, action))
-      plugin.diff("hunk"); local collecting = f.collections[#f.collections]
+      sessions.start("diff", "hunk"); f.collect(f.snapshot(4, action))
+      sessions.start("diff", "hunk"); local collecting = f.collections[#f.collections]
       local queued_snapshot = f.snapshot(5, action)
       local calls = #f.launches
       if action == "stale" then
@@ -733,14 +734,14 @@ T.test("Diffview closure owns its background session, cancels immediately, and l
     local lib, original = {}, package.loaded["diffview.lib"]
     local closing = false
     local view = { closing = { check = function() return closing end } }
-    local s = plugin.diff("hunk"); f.collect(f.snapshot(2, "closure")); f.answer("accepted"); f.drain()
+    local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(2, "closure")); f.answer("accepted"); f.drain()
     lib.tabpage_to_view = function(tab) if tab == s.tab then return view end end
     lib.get_current_view = function() return nil end
     package.loaded["diffview.lib"] = lib
     local ok, err = xpcall(function()
-      plugin.diff("hunk"); f.collect(f.snapshot(4, "closure"))
+      sessions.start("diff", "hunk"); f.collect(f.snapshot(4, "closure"))
       local active = f.launches[#f.launches]
-      plugin.diff("hunk"); local queued = f.collections[#f.collections]
+      sessions.start("diff", "hunk"); local queued = f.collections[#f.collections]
       api.nvim_set_current_win(s.pane.win); s.pane:detail(1)
       local detail, summary = s.pane.detail_buf, s.pane.buf
       api.nvim_exec_autocmds("TextChanged", {})
@@ -752,7 +753,7 @@ T.test("Diffview closure owns its background session, cancels immediately, and l
       api.nvim_exec_autocmds("WinResized", {})
       vim.cmd("tabnew")
       local other_tab = api.nvim_get_current_tabpage()
-      local other = plugin.code("file")
+      local other = plugin.explain("file")
       local other_job = f.launches[#f.launches]
       -- The event contains no tab/view payload. The current tab is not proof
       -- of ownership, nor should a different view's closure kill this session.
@@ -783,21 +784,21 @@ end)
 
 T.test("diff revision and mode changes cancel ownership while recreated display bindings do not", function()
   diff_fixture(function(f)
-    local s = plugin.diff("hunk"); f.collect(f.snapshot(2)); f.answer("initial"); f.drain()
-    plugin.diff("hunk"); local active = f.collections[#f.collections]
-    plugin.diff("hunk"); local queued = f.collections[#f.collections]
+    local s = sessions.start("diff", "hunk"); f.collect(f.snapshot(2)); f.answer("initial"); f.drain()
+    sessions.start("diff", "hunk"); local active = f.collections[#f.collections]
+    sessions.start("diff", "hunk"); local queued = f.collections[#f.collections]
     f.state.pair.old.commit = "def"
-    local revised = plugin.diff("hunk"); T.eq(true, s.closed); T.eq(nil, revised.pane.result)
+    local revised = sessions.start("diff", "hunk"); T.eq(true, s.closed); T.eq(nil, revised.pane.result)
     T.eq(true, active.cancelled); T.eq(true, queued.cancelled); T.eq(0, #s.queue)
     active.callback(f.snapshot(4)); queued.callback(f.snapshot(5)); T.eq(1, #f.launches)
     f.collect(f.snapshot(2, "revision")); f.answer("revised"); f.drain(); T.eq(1, #revised.batches)
     f.state.windows.old, f.state.windows.new = f.state.windows.new, f.state.windows.old
-    local layout = plugin.diff("hunk"); T.eq(revised, layout); T.eq(nil, revised.closed)
+    local layout = sessions.start("diff", "hunk"); T.eq(revised, layout); T.eq(nil, revised.closed)
     f.collect(f.snapshot(2, "layout")); f.answer("layout"); f.drain()
     f.state.panes.old.buf = f.state.panes.new.buf
-    local buffers = plugin.diff("hunk"); T.eq(layout, buffers); T.eq(nil, layout.closed)
+    local buffers = sessions.start("diff", "hunk"); T.eq(layout, buffers); T.eq(nil, layout.closed)
     f.collect(f.snapshot(2, "buffers")); f.answer("buffers"); f.drain()
-    local code = plugin.code("file"); T.eq(true, buffers.closed); T.eq(nil, code.pane.result)
+    local code = sessions.start("code", "file"); T.eq(true, buffers.closed); T.eq(nil, code.pane.result)
     f.answer("code"); T.eq(1, #code.batches); T.eq("code", code.batches[1].snapshot.mode)
   end)
 end)
@@ -805,16 +806,16 @@ end)
 T.test("captured config and context preferences key caching without dropping unrelated accepted batches", function()
   fixture_buffer(function(buf, win, calls)
     config(); api.nvim_win_set_cursor(win, { 3, 0 })
-    local s = plugin.code("selection", { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
+    local s = plugin.explain("selection", { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
     local selection_batch = vim.deepcopy(s.batches[1])
-    config("explain-slow"); T.eq(s, plugin.code("file"))
+    config("explain-slow"); T.eq(s, plugin.explain("file"))
     plugin.setup({ ai = { command = { "python3", fixture, "explain-invalid" } }, context = { radius = 1 } })
     ready(s); T.eq(2, #s.batches); T.eq(selection_batch, s.batches[1]); T.eq(2, calls())
     -- Returning to the config captured by the pending request hits its cache.
-    config("explain-slow"); T.eq(s, plugin.code("file")); ready(s)
+    config("explain-slow"); T.eq(s, plugin.explain("file")); ready(s)
     T.eq("Ready · cached", s.pane.status); T.eq(2, calls())
     plugin.setup({ ai = { command = { "python3", fixture, "explain-slow" } }, context = { radius = 1 } })
-    T.eq(s, plugin.code("file")); ready(s); T.eq(3, calls()); T.eq(2, #s.batches)
+    T.eq(s, plugin.explain("file")); ready(s); T.eq(3, calls()); T.eq(2, #s.batches)
     T.eq(selection_batch, s.batches[1])
   end)
 end)

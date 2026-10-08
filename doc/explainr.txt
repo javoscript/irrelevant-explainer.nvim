@@ -43,8 +43,7 @@ retry automatically. External-agent usage may increase. See |explainr-ui.txt|.
 
 COMMANDS                                                *explainr-commands*
 >
-  :ExplainrCode [file|selection]
-  :ExplainrDiff [file|hunk|review]
+  :Explainr [file|selection|hunk|review]
   :ExplainrReview
   :ExplainrRefresh
   :ExplainrCancel
@@ -65,9 +64,19 @@ detail winbars, not the editor's statusline. No global keymap is installed: >
     desc = "Toggle Explainr automatic explanations",
   })
 <
-Code and diff commands default to file scope. One agent invocation runs per
-tab. Requests for the same buffer or loaded old/new comparison accumulate in
-the existing pane; repeating an identical target replaces only its batch.
+Explainr defaults to file scope. File explains current code in an ordinary
+source window, or changes in a Diffview source window. Routing uses window
+ownership, not filetype, Git status, buffer identity or the 'diff' option: the
+same buffer in an ordinary split and Diffview can route differently. Native
+vimdiff remains code mode. Notes/detail resolve their followed source first.
+Loading/unsupported Diffview sources fail explicitly, never fall back to code.
+File/hunk require a source pane, not a file panel or unrelated utility buffer.
+Selection always explains exact source text, not a guessed diff hunk; hunk
+requires a coherent Diffview source and never opens a comparison.
+
+One agent invocation runs per tab. Requests for the same buffer or loaded
+old/new comparison accumulate in the existing pane; repeating an identical
+target replaces only its batch.
 Distinct overlapping scopes can coexist. Explicit diff file/hunk/review requests
 append while a diff request is pending, rather than cancelling it. Targets/configuration
 are captured at invocation; agent calls run in request order. Pending ranges
@@ -76,7 +85,7 @@ ordinary failures skip that request and continue the queue. Equivalent pending
 requests are deduplicated. Code requests replace pending code work. Different buffers, modes
 or comparison ownership start a new session. Commands invoked from notes/detail
 use the currently followed source window, not the explanation text.
-ExplainrDiff review and ExplainrReview also work from the DiffviewFiles tree,
+Explainr review and ExplainrReview also work from the DiffviewFiles tree,
 using the currently displayed comparison without changing tree focus/selection.
 File/hunk generation still requires a source pane or its explanation reader.
 Refresh clears active/queued requests, collects a new snapshot and explicitly
@@ -88,15 +97,17 @@ Cancel stops active/queued collection/check/inference jobs and preserves
 accepted notes.
 Ordinary failures also preserve accepted notes; freshness checks remain active.
 Close removes the pane, detail, timer and event handlers; it never alters source
-text/options. Diff requests return a live Pending pane immediately; their
-snapshot becomes available after asynchronous collection succeeds.
+text/options. Requests in a coherent diff return a live Pending pane immediately;
+their snapshot becomes available after asynchronous collection succeeds. An
+outside review first reports pending opening, without placeholder aligned notes.
 
 Code scope uses unsaved contents and the whole current file as context. File
 and visual scopes need no parser. The five explanation scopes are visual
 selection, code file, diff file, diff hunk and whole review.
-Function/class targeting is removed: replace ExplainrCode function/class or
-require("explainr").code("function"/"class") mappings with an explicit Visual
-selection and ExplainrCode selection, or file scope for the whole buffer.
+Migration: replace ExplainrCode/ExplainrDiff with Explainr and public code()/diff()
+calls with explain(); no compatibility aliases remain. Restart Neovim after
+updating mappings. Function/class targeting is removed: use an explicit Visual
+selection and Explainr selection, or file scope for the whole buffer.
 Retired scopes report an error without inference or a broader fallback.
 See |explainr-code.txt| for selection descriptors and collection details.
 
@@ -106,7 +117,7 @@ in supplied context. Overviews display at the file start and reference all
 whole-file target anchors, so focusing them emphasizes the complete content.
 Other scopes do not request an overview. No text means no invented overview.
 
-For a last Visual selection, execute :'<,'>ExplainrCode selection. The Ex range
+For a last Visual selection, execute :'<,'>Explainr selection. The Ex range
 is not an arbitrary line-range scope: the retained Visual type/marks determine
 characterwise, linewise or blockwise boundaries. Prefer this Visual mapping to
 capture live endpoints, virtual offsets, and the current selection option:
@@ -118,25 +129,53 @@ capture live endpoints, virtual offsets, and the current selection option:
       pos2 = vim.fn.getpos("."),
       exclusive = vim.o.selection == "exclusive",
     }
-    require("explainr").code("selection", selection)
+    require("explainr").explain("selection", selection)
   end)
 <
-Lua equivalents are code(scope?, selection?), diff(scope?), review(), refresh(), cancel()
-and close() on require("explainr"). The default scopes are "file".
+Lua equivalents are explain(scope?, selection?), review(), refresh(), cancel()
+and close() on require("explainr"). explain() defaults to "file".
 
 DIFF SCOPE                                               *explainr-review*
 
-Invoke ExplainrDiff from a loaded old/new two-way Diffview source, not its file
-panel. The selected entry's coherent revision set and explicit path filters
-define the whole comparison. Staged and working sets are never silently mixed.
-ExplainrDiff review explicitly requests one whole-change narrative and all
+Inside Diffview, Explainr uses the loaded old/new two-way comparison. The
+selected entry's coherent revision set and explicit path filters define the
+whole comparison; existing staged and working sets are never silently mixed.
+Review also works from its file panel without changing selection or tree focus.
+
+Outside Diffview, Explainr review opens a new repository-wide HEAD-to-working
+tree comparison. The originating named source determines the repository and
+linked worktree; only an unnamed source falls back to its window's effective
+cwd. A named file outside a repository fails rather than using cwd. Another
+open Diffview tab cannot redirect the request. The comparison is the net staged
+plus unstaged change, not concatenated patches: an unstaged undo can completely
+cancel a staged edit relative to HEAD. No buffers are saved and nothing is staged.
+Diffview's effective untracked policy determines inclusion; ignored/untracked
+files excluded by it are not added. The tested Diffview version excludes
+untracked files from HEAD comparisons, but includes tracked staged additions.
+Unsaved working-buffer text overlays only
+files already in the comparison manifest. Unsaved-only files absent from that
+manifest and unnamed text are not discovered as repository changes.
+
+Opening is nonblocking pending work, cancellable with ExplainrCancel or
+ExplainrClose from the origin or new view. Equivalent requests coalesce while
+opening. Inference waits for coherent source panes and the intended comparison;
+opening has a 10-second deadline separate from the agent timeout. Cancellation,
+closure or incompatible replacement retires callbacks. Cancellation/failure
+leaves an already-opened Diffview tab intact and preserves unrelated notes.
+Configuration is captured at invocation, contents after opening; later callbacks
+do not steal focus. Missing Git/Diffview, repository/HEAD, or eligible text and
+incompatible Diffview defaults fail visibly without a substitute comparison or
+changes to global defaults.
+
+Explainr review explicitly requests one whole-change narrative and all
 eligible files' notes in a single invocation. It always requires complete
 coverage, regardless of context.diff, and never silently falls back or splits
 into multiple requests. Binary/both-empty entries retain metadata but receive
 no invented anchors. No eligible text targets means no inference.
 
 ExplainrReview (or require("explainr").review()) only opens the narrative, without
-inference. Review uses independently scrollable Markdown in the same pane.
+inference. It requires a supported existing comparison and never opens Diffview.
+Review uses independently scrollable Markdown in the same pane.
 Enter on a generated file-reference row selects that exact Diffview entry and
 shows File notes; prose Enter is inert. Esc returns to File overview; q closes.
 Reopening the same narrative preserves its reading position. Empty, pending,
