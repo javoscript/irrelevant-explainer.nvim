@@ -233,48 +233,6 @@ Byte budgets aren't token limits. A target that cannot fit fails instead of bein
 Full commands, Visual mappings, settings, and limitations: `:help irrelevant-explainer`
 or [the help files](doc/irrelevant-explainer.txt).
 
-## Development: verifying the futility
-
-Requires Neovim, Python 3, and Git. No provider credentials or paid inference.
-
-```sh
-bash tests/ci.sh base
-
-IRRELEVANT_EXPLAINER_DIFFVIEW_PATH=/path/to/diffview.nvim \
-IRRELEVANT_EXPLAINER_PLENARY_PATH=/path/to/plenary.nvim \
-bash tests/ci.sh integration
-
-IRRELEVANT_EXPLAINER_GITLEAKS=/path/to/gitleaks bash tests/ci.sh secrets
-```
-
-Local checks: Neovim **0.11.5 / 0.12.5**. [Pinned CI tools and dependency revisions](.github/workflows/ci.yml):
-Python **3.12.12**, Gitleaks **8.30.1**. Use those Diffview/Plenary pins for integration.
-Integration fails on missing runtimes; base doesn't cover optional parser styling.
-Hosted GitHub CI has not run yet.
-
-Secret checks cover candidate files and full all-ref history. Review metadata and
-every media frame manually too; a clean scanner isn't a privacy guarantee.
-
-### Reproduce the demos
-
-Requires Python `pynvim`/`Pillow` and a monospace font. Default mode ignores user config:
-
-```sh
-python3 tests/render.py --font /path/to/monospace-font.ttf
-```
-
-The author's config-specific styling mode is **local-only**, not CI:
-
-```sh
-python3 tests/render.py --personal-config "$HOME/.config/nvim" \
-  --font /path/to/monospace-nerd-font.ttf --demo \
-  --output .amp/in/artifacts/publication-media
-```
-
-Both modes use disposable fixtures and isolated storage. Personal mode loads reviewed
-styling without changing dotfiles/sessions. Keep raw captures excluded under `/.amp/in/`;
-inspect all final frames and metadata before copying assets to `doc/media/`.
-
 ## License
 
 [MIT](LICENSE). [Third-party notices](THIRD_PARTY_NOTICES.md).
