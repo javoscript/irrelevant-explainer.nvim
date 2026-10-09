@@ -9,11 +9,11 @@ vim.o.swapfile = false
 vim.o.shadafile = "NONE"
 -- Persistence tests and child editors must never read/write the user's cache.
 local cache_root
-if not vim.env.EXPLAINR_TEST_CACHE_ROOT then
+if not vim.env.IRRELEVANT_EXPLAINER_TEST_CACHE_ROOT then
   cache_root = vim.fn.tempname()
   vim.fn.mkdir(cache_root, "p")
   cache_root = assert(vim.uv.fs_realpath(cache_root))
-  vim.env.EXPLAINR_TEST_CACHE_ROOT = cache_root
+  vim.env.IRRELEVANT_EXPLAINER_TEST_CACHE_ROOT = cache_root
   vim.env.XDG_CACHE_HOME = cache_root
 end
 local failures, passed = {}, 0
@@ -26,14 +26,14 @@ function T.test(name, run)
   if ok then passed = passed + 1; print("PASS " .. name)
   else failures[#failures + 1] = name .. "\n" .. err; print("FAIL " .. name) end
 end
-local pattern = vim.env.EXPLAINR_TEST or "tests/*_test.lua"
+local pattern = vim.env.IRRELEVANT_EXPLAINER_TEST or "tests/*_test.lua"
 for _, file in ipairs(vim.fn.glob(pattern, false, true)) do
   local ok, err = xpcall(function() dofile(file) end, debug.traceback)
   if not ok then failures[#failures + 1] = file .. "\n" .. err end
 end
 print(string.format("%d passed, %d failed", passed, #failures))
 if cache_root then
-  if package.loaded["explainr.session"] then require("explainr").close() end
+  if package.loaded["irrelevant_explainer.session"] then require("irrelevant_explainer").close() end
   vim.wait(200)
   vim.fn.delete(cache_root, "rf")
 end

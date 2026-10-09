@@ -1,12 +1,12 @@
 -- Always run filesystem tests in a fresh editor with an isolated cache home.
-if vim.env.EXPLAINR_CACHE_CHILD ~= "1" then
+if vim.env.IRRELEVANT_EXPLAINER_CACHE_CHILD ~= "1" then
   T.test("persistent cache isolated child suite", function()
     local temp = vim.fn.tempname()
     vim.fn.mkdir(temp, "p", 448)
     temp = assert(vim.uv.fs_realpath(temp))
     local result = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n",
       "-c", "luafile tests/run.lua" }, { text = true, env = {
-      XDG_CACHE_HOME = temp, EXPLAINR_CACHE_CHILD = "1", EXPLAINR_TEST = "tests/cache_test.lua",
+      XDG_CACHE_HOME = temp, IRRELEVANT_EXPLAINER_CACHE_CHILD = "1", IRRELEVANT_EXPLAINER_TEST = "tests/cache_test.lua",
     } }):wait(30000)
     vim.fn.delete(temp, "rf")
     assert(result.code == 0, (result.stdout or "") .. (result.stderr or ""))
@@ -15,7 +15,7 @@ if vim.env.EXPLAINR_CACHE_CHILD ~= "1" then
   return
 end
 
-local cache, uv = require("explainr.cache"), vim.uv
+local cache, uv = require("irrelevant_explainer.cache"), vim.uv
 local source, key, key2, key3 = string.rep("a", 64), string.rep("b", 64), string.rep("c", 64), string.rep("d", 64)
 local root = vim.fn.stdpath("cache") .. "/explainr/results/v1"
 local dir = root .. "/" .. source
@@ -279,7 +279,7 @@ T.test("cache concurrent processes replace and clear only complete JSON records"
   local function process(value, clearing)
     local code = string.format([[
       vim.opt.rtp:prepend(vim.fn.getcwd())
-      local c = require('explainr.cache')
+      local c = require('irrelevant_explainer.cache')
       local s, k = string.rep('a',64), string.rep('b',64)
       local done = false
       local cb = function() done = true end

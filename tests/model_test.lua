@@ -1,4 +1,4 @@
-local model = require("explainr.model")
+local model = require("irrelevant_explainer.model")
 local function anchor(path, side, first, last)
   return { path = path, side = side, start_line = first, end_line = last or first }
 end
@@ -14,8 +14,9 @@ local note = { summary = "Owner-only cancellation", detail = "Implements the req
   anchors = { anchor("old.lua", "old", 2), anchor("new.lua", "new", 4) },
   intent_basis = "documented", evidence = { anchor("spec.md", "new", 1, 2) } }
 T.test("setup loads without agent or Diffview and validates argv", function()
-  local plugin = require("explainr").setup()
-  T.eq({}, plugin.config.ai.command)
+  local plugin = require("irrelevant_explainer").setup()
+  T.eq({ "opencode", "run", "--agent", "explain", "--format", "json" }, plugin.config.ai.command)
+  T.eq("opencode", plugin.config.ai.output); T.eq(300000, plugin.config.ai.timeout_ms)
   T.eq(false, plugin.config.diff.auto_explain)
   T.eq(false, pcall(plugin.setup, { ai = { command = "echo prompt" } }))
   T.eq(false, pcall(plugin.setup, { context = { max_bytes = 0 } }))
@@ -32,29 +33,60 @@ T.test("setup loads without agent or Diffview and validates argv", function()
   T.eq(nil, package.loaded["diffview"])
 end)
 
+T.test("setup replaces complete argv, keeps explicit decoders, resets and isolates caller options without spawning", function()
+  local plugin = require("irrelevant_explainer")
+  local system, calls = vim.system, 0
+  vim.system = function() calls = calls + 1; error("setup must not spawn") end
+  local ok, err = xpcall(function()
+    plugin.setup(); local defaults = vim.deepcopy(plugin.config)
+    for _, command in ipairs({ { "my-wrapper" }, {}, { "/path with spaces/wrapper", "two words", "$(echo unsafe);" } }) do
+      local options = { ai = { command = command }, context = { radius = 3 } }
+      local before = vim.deepcopy(options)
+      plugin.setup(options)
+      T.eq(command, plugin.config.ai.command); T.eq("opencode", plugin.config.ai.output)
+      T.eq(before, options)
+      command[#command + 1] = "caller-only mutation"
+      T.eq(before.ai.command, plugin.config.ai.command)
+      plugin.config.ai.command[1] = "config-only mutation"
+      T.eq("caller-only mutation", command[#command])
+      plugin.setup(); T.eq(defaults, plugin.config)
+    end
+    local custom = function(stdout) return stdout end
+    for _, output in ipairs({ "plain", "codex", custom }) do
+      local options = { ai = { command = { "my-wrapper" }, output = output } }
+      plugin.setup(options); T.eq(options.ai, { command = plugin.config.ai.command, output = plugin.config.ai.output })
+      T.eq(300000, plugin.config.ai.timeout_ms)
+      plugin.setup(); T.eq(defaults, plugin.config)
+    end
+    T.eq(0, calls)
+  end, debug.traceback)
+  vim.system = system; plugin.setup()
+  assert(ok, err)
+end)
+
 T.test("runtime automatic toggle preserves configuration and remains lazy without a pane", function()
-  local plugin = require("explainr").setup({
+  local plugin = require("irrelevant_explainer").setup({
     ai = { command = { "custom-agent", "--model", "custom/model" }, output = "codex", timeout_ms = 12345 },
     context = { diff = "focused", radius = 3, max_bytes = 54321 },
   })
   local config, expected = plugin.config, vim.deepcopy(plugin.config)
   local loaded = {}
-  for _, name in ipairs({ "explainr.session", "explainr.ui", "diffview", "diffview.lib" }) do loaded[name] = package.loaded[name] end
+  for _, name in ipairs({ "irrelevant_explainer.session", "irrelevant_explainer.ui", "diffview", "diffview.lib" }) do loaded[name] = package.loaded[name] end
   local old_notify, notices = vim.notify, {}
   vim.notify = function(message, level, options) notices[#notices + 1] = { message, level, options.title } end
   local ok, err = xpcall(function()
     T.eq(true, plugin.toggle_auto_explain()); expected.diff.auto_explain = true
     T.eq(config, plugin.config); T.eq(expected, plugin.config)
-    vim.cmd("ExplainrToggleAutoExplain"); expected.diff.auto_explain = false
+    vim.cmd("IrrelevantExplainerToggleAutoExplain"); expected.diff.auto_explain = false
     T.eq(expected, plugin.config)
     T.eq(false, plugin.config.diff.auto_explain)
-    T.eq({ { "Automatic explanations enabled", vim.log.levels.INFO, "Explainr" },
-      { "Automatic explanations disabled", vim.log.levels.INFO, "Explainr" } }, notices)
+    T.eq({ { "Automatic explanations enabled", vim.log.levels.INFO, "Irrelevant Explainer" },
+      { "Automatic explanations disabled", vim.log.levels.INFO, "Irrelevant Explainer" } }, notices)
     plugin.setup({ diff = { auto_explain = true } })
     T.eq(false, plugin.toggle_auto_explain())
     plugin.setup({ diff = { auto_explain = true } }); T.eq(true, plugin.config.diff.auto_explain)
     plugin.setup(); T.eq(false, plugin.config.diff.auto_explain)
-    for _, name in ipairs({ "explainr.session", "explainr.ui", "diffview", "diffview.lib" }) do T.eq(loaded[name], package.loaded[name]) end
+    for _, name in ipairs({ "irrelevant_explainer.session", "irrelevant_explainer.ui", "diffview", "diffview.lib" }) do T.eq(loaded[name], package.loaded[name]) end
   end, debug.traceback)
   vim.notify = old_notify; plugin.setup()
   assert(ok, err)
@@ -263,6 +295,68 @@ T.test("version2 assembled review remains internal and cannot satisfy a version3
   assert(model.validate(result, snapshot))
   local req = phase_fixture()
   T.eq(nil, model.validate_review(vim.json.encode(result), req))
+end)
+
+T.test("review identity errors disclose exact expected and received values without changing input", function()
+  for _, key in ipairs({ "phase", "request_id", "snapshot_id" }) do
+    for _, case in ipairs({
+      { value = "echo request_id", display = '"echo request_id"' },
+      { display = "<missing>" },
+      { value = vim.NIL, display = "<null>" },
+      { value = 42, display = "<number>" },
+      { value = { secret = "DO NOT LOG OBJECTS" }, display = "<table>" },
+    }) do
+      local req, response = phase_fixture()
+      if key ~= "phase" then
+        req[key], response[key] = string.rep(key == "request_id" and "a" or "b", 64), nil
+      end
+      response[key] = case.value
+      local before = vim.deepcopy(response)
+      local accepted, err = model.validate_review(vim.json.encode(response), req)
+      T.eq(nil, accepted)
+      assert(err:find("wrong review " .. key .. ": expected " .. vim.json.encode(req[key])
+        .. "; received " .. case.display, 1, true), err)
+      assert(not err:find("DO NOT LOG OBJECTS", 1, true), err)
+      T.eq(before, response)
+    end
+  end
+end)
+
+T.test("review identifier diagnostics escape control characters and bound multibyte values", function()
+  local req, response = phase_fixture()
+  response.request_id = 'bad\n"\tID'
+  local accepted, err = model.validate_review(response, req)
+  T.eq(nil, accepted)
+  assert(err:find("received " .. vim.json.encode(response.request_id), 1, true), err)
+  assert(not err:find("\n", 1, true), err)
+  response.request_id = string.rep("中", 1000) .. "HIDDEN TAIL"
+  accepted, err = model.validate_review(response, req)
+  T.eq(nil, accepted)
+  assert(err:find("received " .. vim.json.encode(string.rep("中", 128)) .. "... (3011 bytes)", 1, true), err)
+  assert(#err < 2048 and not err:find("HIDDEN TAIL", 1, true), err)
+end)
+
+T.test("review reference errors identify offending file unit and child IDs", function()
+  local req, response = phase_fixture()
+  response.units[1].findings[1].file_ids[2] = "adr.md"
+  local accepted, err = model.validate_review(response, req)
+  T.eq(nil, accepted)
+  assert(err:find('unknown section file_id at file_ids[2]: received "adr.md"; not in supplied manifest', 1, true), err)
+  response.units[1].findings[1].file_ids[2] = { secret = "DO NOT LOG OBJECTS" }
+  accepted, err = model.validate_review(response, req)
+  T.eq(nil, accepted)
+  assert(err:find("received <table>", 1, true) and not err:find("DO NOT LOG OBJECTS", 1, true), err)
+  req, response = phase_fixture()
+  response.units[1].unit_id = "wrong-unit"
+  accepted, err = model.validate_review(response, req)
+  T.eq(nil, accepted)
+  assert(err:find('unknown unit_id: received "wrong-unit"', 1, true), err)
+  req.phase, req.child_ids = "reduce", { "child-1" }
+  response = { version = 3, phase = "reduce", request_id = req.request_id, snapshot_id = req.snapshot_id,
+    child_ids = { "wrong-child" }, findings = {} }
+  accepted, err = model.validate_review(response, req)
+  T.eq(nil, accepted)
+  assert(err:find('unknown child_ids: received "wrong-child"', 1, true), err)
 end)
 
 T.test("v3 annotation validates independent coordinates evidence and exact unit acknowledgements", function()

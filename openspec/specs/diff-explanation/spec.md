@@ -123,7 +123,7 @@ Diff notes SHALL identify old-side, new-side, or paired old/new line ranges. Add
 
 ### Requirement: Hunk and file explanation focus
 
-Explainr SHALL support file (default), hunk, and review scope in Diffview sources. Hunk scope SHALL select exact changed spans at the invocation cursor, including zero-line insertion/deletion boundaries, and reject ambiguous/unchanged positions. File prompts and review annotation units SHALL prioritize their supplied changed hunks, permitting unchanged target sections when their connection to changes is explained. Regular diff summaries SHALL prefer the first changed line within their anchor.
+Irrelevant Explainer SHALL support file (default), hunk, and review scope in Diffview sources. Hunk scope SHALL select exact changed spans at the invocation cursor, including zero-line insertion/deletion boundaries, and reject ambiguous/unchanged positions. File prompts and review annotation units SHALL prioritize their supplied changed hunks, permitting unchanged target sections when their connection to changes is explained. Regular diff summaries SHALL prefer the first changed line within their anchor.
 
 #### Scenario: Whole-file multi-hunk explanation
 - **WHEN** a file-scoped request or a review file target contains several separated hunks
@@ -281,7 +281,7 @@ diff.auto_explain SHALL default to false. When true, eligible navigation to a co
 - **THEN** exactly one automatic file request starts or becomes the coalesced candidate, and repeated layout events do not issue duplicates
 
 #### Scenario: Close or fail
-- **WHEN** the user closes Explainr, or the automatically requested file fails/is cancelled without another navigation
+- **WHEN** the user closes Irrelevant Explainer, or the automatically requested file fails/is cancelled without another navigation
 - **THEN** no automatic retry is issued solely from focus/layout/edit events
 
 ### Requirement: Diffview reading keymaps
@@ -294,7 +294,7 @@ File overview, expanded detail, and Review SHALL inherit Diffview file-navigatio
 
 #### Scenario: Customized explorer mapping
 - **WHEN** the user remaps or disables a Diffview explorer action
-- **THEN** Explainr honors that mapping configuration rather than hard-coding the original key or overriding its action
+- **THEN** Irrelevant Explainer honors that mapping configuration rather than hard-coding the original key or overriding its action
 
 #### Scenario: Navigate from Review
 - **WHEN** a Diffview action or explorer selection changes the file while Review is displayed
@@ -302,7 +302,7 @@ File overview, expanded detail, and Review SHALL inherit Diffview file-navigatio
 
 ### Requirement: Runtime automatic-explanation toggle
 
-Explainr SHALL expose `:ExplainrToggleAutoExplain` and `require("explainr").toggle_auto_explain()` to invert `diff.auto_explain` for the current Neovim process. The Lua API SHALL return the new boolean, and either entrypoint SHALL notify whether automation is enabled or disabled. Setup SHALL initialize the setting, defaulting to false, without installing global mappings or persisting toggle state across restarts.
+Irrelevant Explainer SHALL expose `:IrrelevantExplainerToggleAutoExplain` and `require("irrelevant_explainer").toggle_auto_explain()` to invert `diff.auto_explain` for the current Neovim process. The Lua API SHALL return the new boolean, and either entrypoint SHALL notify whether automation is enabled or disabled. Setup SHALL initialize the setting, defaulting to false, without installing global mappings or persisting toggle state across restarts.
 
 #### Scenario: Toggle without reinitializing
 - **WHEN** the user invokes the Lua toggle after setup with automatic explanations disabled and a custom agent/context configuration
@@ -310,7 +310,7 @@ Explainr SHALL expose `:ExplainrToggleAutoExplain` and `require("explainr").togg
 - **AND** a second invocation returns false and reports that automation is disabled
 
 #### Scenario: Keybind-friendly command
-- **WHEN** the user invokes `:ExplainrToggleAutoExplain` directly or through a user-defined keymap
+- **WHEN** the user invokes `:IrrelevantExplainerToggleAutoExplain` directly or through a user-defined keymap
 - **THEN** it performs the same toggle and notification as the Lua API, regardless of whether an explanation pane is open
 - **AND** toggling alone does not open a pane or load Diffview to start inference
 
@@ -354,20 +354,20 @@ Enabling automation SHALL apply only to navigation after the toggle, not immedia
 
 ### Requirement: Whole-comparison explanation scope
 
-Explainr SHALL support explicit review scope through the command and explain() Lua API. One uncached review action SHALL own a bounded sequence of external invocations obtaining a whole-change narrative and file explanations for every eligible text entry in the exact comparison. An outside-review action SHALL enter the same job/cache pipeline after the existing owned comparison opening reaches readiness, preserving invocation-time configuration and capture-time content. File SHALL remain the default scope. Review generation SHALL not start automatically on navigation, and reading completed file details SHALL require no further inference. ExplainrReview SHALL remain display-only and SHALL NOT open a comparison or launch a job.
+Irrelevant Explainer SHALL support explicit review scope through the command and explain() Lua API. One uncached review action SHALL own a bounded sequence of external invocations obtaining a whole-change narrative and file explanations for every eligible text entry in the exact comparison. An outside-review action SHALL enter the same job/cache pipeline after the existing owned comparison opening reaches readiness, preserving invocation-time configuration and capture-time content. File SHALL remain the default scope. Review generation SHALL not start automatically on navigation, and reading completed file details SHALL require no further inference. IrrelevantExplainerReview SHALL remain display-only and SHALL NOT open a comparison or launch a job.
 
 #### Scenario: Explain the selected comparison once
-- **WHEN** the user runs `:Explainr review` or `require("explainr").explain("review")` in a supported comparison with three eligible files and no matching completed answer
+- **WHEN** the user runs `:IrrelevantExplainer review` or `require("irrelevant_explainer").explain("review")` in a supported comparison with three eligible files and no matching completed answer
 - **THEN** one job captures all three targets and obtains their notes plus a cross-file narrative through bounded requests
 - **AND** reading any of those returned files or expanding its detail requires no additional inference
 
 #### Scenario: Trigger Review from the file tree
-- **WHEN** the user invokes Explainr review or display-only ExplainrReview from the live DiffviewFiles panel
+- **WHEN** the user invokes IrrelevantExplainer review or display-only IrrelevantExplainerReview from the live DiffviewFiles panel
 - **THEN** the action uses the currently displayed comparison's source panes without requiring a source cursor or changing tree focus/selection
 - **AND** file/hunk requests retain their source-pane requirement
 
 #### Scenario: Outside review hands off to batching
-- **WHEN** Explainr review from ordinary code opens its intended HEAD-to-working-tree comparison and no completed cache entry matches the freshly captured inputs
+- **WHEN** IrrelevantExplainer review from ordinary code opens its intended HEAD-to-working-tree comparison and no completed cache entry matches the freshly captured inputs
 - **THEN** exactly one job enters the normal pipeline using invocation-time AI/context/review/cache configuration, even if readiness events or equivalent opening requests repeat
 - **AND** it captures the net staged-plus-unstaged contents at readiness, preserving the resolved worktree, effective untracked policy and manifest-only unsaved overlays without saving or staging
 - **AND** Auto remains suppressed through handoff and between job phases
@@ -435,7 +435,7 @@ While another request runs, navigation automation SHALL retain at most one unsta
 
 ### Requirement: Mode-aware explicit refresh
 
-ExplainrRefresh SHALL clear active and queued work for the owning comparison and bypass answer reuse for the visible reader target. Review mode SHALL regenerate the narrative and all file results. File mode SHALL refresh its file or hunk target; a file result obtained from a review SHALL refresh as file scope. Still-fresh accepted results SHALL remain available while waiting.
+IrrelevantExplainerRefresh SHALL clear active and queued work for the owning comparison and bypass answer reuse for the visible reader target. Review mode SHALL regenerate the narrative and all file results. File mode SHALL refresh its file or hunk target; a file result obtained from a review SHALL refresh as file scope. Still-fresh accepted results SHALL remain available while waiting.
 
 #### Scenario: Refresh the narrative
 - **WHEN** the user invokes Refresh while reading Review
@@ -492,9 +492,9 @@ Opening a review comparison SHALL be a nonblocking, cancellable pending operatio
 - **THEN** the action establishes and validates the intended repository-wide HEAD-to-working-tree comparison or fails explicitly before inference
 
 #### Scenario: Cancel or close while opening
-- **WHEN** ExplainrCancel, ExplainrClose, or source/view closure occurs before readiness
+- **WHEN** IrrelevantExplainerCancel, IrrelevantExplainerClose, or source/view closure occurs before readiness
 - **THEN** pending opening work is retired and late callbacks cannot start inference or reopen an explanation pane
-- **AND** cancelling Explainr leaves an already-open Diffview view available for ordinary use
+- **AND** cancelling Irrelevant Explainer leaves an already-open Diffview view available for ordinary use
 
 #### Scenario: Repeated review request
 - **WHEN** the same review is requested again while its view is opening, including from the newly opened view
@@ -557,6 +557,8 @@ Explicit reviews SHALL assign every available old/new text line of each eligible
 
 Synthesis SHALL obey the same per-invocation limits as annotation. Oversized finding sets SHALL use bounded reduction with preserved child coverage and original cited source excerpts. Each reduction SHALL reduce the serialized findings/evidence input required by the next level. Unsplittable packets, nonreducing output, or exhausted call limits SHALL fail explicitly without unbounded recursion or oversized final requests.
 
+An oversized child result containing multiple findings SHALL be partitioned by finding before it is classified as indivisible. Every finding and its complete cited original source SHALL remain represented, with deterministic partition identities supporting explicit resume and completed-record validation.
+
 #### Scenario: Findings exceed the synthesis budget
 - **WHEN** all validated annotation findings and their evidence cannot fit one synthesis prompt
 - **THEN** bounded reduction processes all child results before final narrative synthesis, preserving exact source citation provenance through every level
@@ -570,12 +572,22 @@ Synthesis SHALL obey the same per-invocation limits as annotation. Oversized fin
 - **WHEN** a reduction or synthesis response cites valid local snapshot lines that were not supplied in that invocation
 - **THEN** the response is rejected despite those lines having appeared in an earlier annotation request
 
+#### Scenario: One annotation bundle exceeds the reduction budget
+- **WHEN** one validated annotation child contains several findings whose combined packet cannot fit, but each finding and its complete evidence can fit individually
+- **THEN** bounded reduction groups partitioned findings into affordable requests without dropping findings or truncating their evidence
+- **AND** each request acknowledges its assigned deterministic child identities
+
+#### Scenario: Resume and replay partitioned reduction
+- **WHEN** partitioned reduction succeeds for one group and fails for a later group, then the user explicitly resumes unchanged content and configuration
+- **THEN** successful annotation and reduction checkpoints are reused without repeating their external calls
+- **AND** a completed record reconstructs the same partitions, request identities, and original evidence without inference
+
 ### Requirement: Explicit review resume and bounded ownership
 
 Explicit review in its owning comparison or reader SHALL resume matching validated in-memory checkpoints after freshness checks; Review Refresh SHALL bypass them. Checkpoints SHALL remain owner-local. One job SHALL own one queue slot with sequential invocations. Failure SHALL advance queued explicit work without repair. Cancel SHALL stop scheduling but retain validated checkpoints; closure or stale/replaced comparison SHALL discard them.
 
 #### Scenario: Resume after an annotation failure
-- **WHEN** two annotation requests validate and a third fails, then the user repeats Explainr review in that comparison or its reader for unchanged content and configuration
+- **WHEN** two annotation requests validate and a third fails, then the user repeats IrrelevantExplainer review in that comparison or its reader for unchanged content and configuration
 - **THEN** the successful requests are reused and only failed or unstarted work is invoked before synthesis
 - **AND** the failed invocation's partial items are not salvaged as checkpoints
 
@@ -589,7 +601,7 @@ Explicit review in its owning comparison or reader SHALL resume matching validat
 - **THEN** matching annotation and successful reduction checkpoints are reused without regenerating their file details
 
 #### Scenario: Refresh versus resume
-- **WHEN** the user invokes ExplainrRefresh in Review
+- **WHEN** the user invokes IrrelevantExplainerRefresh in Review
 - **THEN** all phases regenerate without reusing unfinished-job checkpoints or the previous completed review
 - **AND** a File-mode refresh retains its existing file/hunk scope
 

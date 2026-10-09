@@ -1,32 +1,71 @@
-vim.opt.runtimepath:prepend(vim.fn.getcwd())
+vim.opt.runtimepath:prepend(vim.g.capture_checkout or vim.fn.getcwd())
 for _, path in ipairs(vim.g.capture_runtime or {}) do vim.opt.runtimepath:append(path) end
 -- Exercise the installed optional plugin normally, without loading user config.
 if #(vim.g.capture_runtime or {}) > 0 then vim.cmd("runtime plugin/render-markdown.lua") end
 if vim.g.capture_state:match("^detail%-markdown.*%-plain$") then
   vim.treesitter.start = function() error("parser unavailable in fallback capture") end
 end
-vim.o.termguicolors = true
-vim.o.laststatus = 3
-vim.o.statusline = " EXTERNAL EDITOR BAR %= untouched by Explainr "
-vim.o.showmode = false
-vim.o.signcolumn = "auto:2"
-if vim.g.capture_state == "detail-light" or vim.g.capture_state == "detail-highlight-rose-pine-light" then
-  vim.o.background = "light"
+if not vim.g.capture_personal then
+  vim.o.termguicolors = true
+  vim.o.laststatus = 3
+  vim.o.statusline = " EXTERNAL EDITOR BAR %= untouched by Irrelevant Explainer "
+  vim.o.showmode = false
+  vim.o.signcolumn = "auto:2"
+  if vim.g.capture_state == "detail-light" or vim.g.capture_state == "detail-highlight-rose-pine-light" then
+    vim.o.background = "light"
+  end
+  vim.cmd("colorscheme default")
+  vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
+    and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
+  vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
 end
-vim.cmd("colorscheme default")
-vim.api.nvim_set_hl(0, "Normal", vim.g.capture_state == "detail-light"
-  and { fg = "#263544", bg = "#fafafa" } or { fg = "#d5dce5", bg = "#18212b" })
-vim.api.nvim_set_hl(0, "StatusLine", { fg = "#adc6dd", bg = "#263544" })
+if vim.g.capture_state:match("^publication%-code") then
+  local api = vim.api
+  local source = api.nvim_get_current_win()
+  api.nvim_buf_set_name(0, vim.fn.getcwd() .. "/authorize.lua")
+  local lines = {
+    "-- Editing policy for an offline example.", "local policy = {}", "",
+    "function policy.can_edit(user, document)", "  if not user then", "    return false", "  end", "",
+    "  if document.archived then", "    return false", "  end", "",
+    '  return user.is_admin or user.role == "editor"', "end", "",
+    "function policy.describe(user)", '  return user and user.role or "guest"', "end", "",
+  }
+  for row = 20, 70 do lines[row] = "-- Public example context " .. row end
+  lines[70] = "return policy"
+  api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  vim.bo.filetype = "lua"
+  local function note(first, last, summary, detail, kind)
+    return { kind = kind, summary = summary, detail = detail, intent_basis = "inferred",
+      anchors = { { path = "authorize.lua", side = "buffer", start_line = first, end_line = last } } }
+  end
+  _G.capture_pane = require("irrelevant_explainer.ui").open(source, { windows = { buffer = source } }, { notes = {
+    note(1, 70, "File overview: one editing policy.",
+      "Centralizes editing authorization and describes the user's role.", "overview"),
+    note(4, 14, "Deny missing users and archived documents.",
+      "## Guard the editing decision\n\nMissing users and archived documents are denied before checking roles.\n\n"
+        .. "```lua\nreturn user.is_admin or user.role == \"editor\"\n```\n\n"
+        .. "Administrators and editors can edit an active document. These are offline fixture explanations."),
+    note(16, 18, "Describe a role without changing access.",
+      "Returns the user's role, or `guest` when there is no user. This helper does not authorize an edit."),
+  } })
+  local p = capture_pane
+  api.nvim_set_current_win(p.win)
+  api.nvim_win_set_width(p.win, 90)
+  api.nvim_win_set_cursor(p.win, { vim.g.capture_state == "publication-code" and 1 or 4, 0 }); p:sync(p.win)
+  if vim.g.capture_state:find("narrow") then api.nvim_win_set_width(p.win, 38); p:header() end
+  if vim.g.capture_state:find("detail%-still") then p:detail(2) end
+  return
+end
 if vim.g.capture_state:match("^diff%-review%-open") then
   local api = vim.api
-  local fixture = dofile("tests/review.lua").open(true)
+  local fixture = dofile((vim.g.capture_checkout or vim.fn.getcwd()) .. "/tests/review.lua").open(true)
   require("diffview").close()
   vim.cmd.edit(vim.fn.fnameescape(fixture.root .. "/policy.lua"))
-  local plugin = require("explainr")
-  plugin.setup({ ai = { command = { "python3", fixture.cwd .. "/tests/fixtures/agent.py", "whole-review" } } })
+  local plugin = require("irrelevant_explainer")
+  plugin.setup({ ai = { output = "plain", command = { "python3", (vim.g.capture_checkout or fixture.cwd) .. "/tests/fixtures/agent.py", "whole-review" } } })
   local held
   if vim.g.capture_state == "diff-review-open-annotations" then
-    require("explainr.agent").run = function(input)
+    require("irrelevant_explainer.agent").run = function(input)
       held = vim.json.decode(assert(input:match("UNTRUSTED REVIEW REQUEST JSON:\n(.*)")))
       assert(held.phase == "annotate")
       return { cancel = function() end }
@@ -35,7 +74,7 @@ if vim.g.capture_state:match("^diff%-review%-open") then
   local operation = plugin.explain("review")
   local session
   assert(vim.wait(10000, function()
-    session = operation.view and require("explainr.session").sessions[operation.view.tabpage]
+    session = operation.view and require("irrelevant_explainer.session").sessions[operation.view.tabpage]
     return session and (held or session.pane.review and not session.pending)
   end, 20), "outside review did not finish")
   fixture.view = operation.view
@@ -47,11 +86,11 @@ if vim.g.capture_state:match("^diff%-review%-open") then
     vim.wait(300)
     require("diffview").close()
     vim.cmd.edit(vim.fn.fnameescape(fixture.root .. "/policy.lua"))
-    local agent, launches = require("explainr.agent"), 0
+    local agent, launches = require("irrelevant_explainer.agent"), 0
     agent.run = function() launches = launches + 1; error("cached review invoked inference") end
     operation = plugin.explain("review")
     assert(vim.wait(10000, function()
-      session = operation.view and require("explainr.session").sessions[operation.view.tabpage]
+      session = operation.view and require("irrelevant_explainer.session").sessions[operation.view.tabpage]
       return session and session.pane.review and not session.pending
     end, 20), "outside cached review did not finish")
     fixture.view, _G.capture_pane = operation.view, session.pane
@@ -67,7 +106,7 @@ if vim.g.capture_state:match("^loading%-file") then
   api.nvim_buf_set_lines(0, 0, -1, false, { "local policy = require('policy')", "",
     "local function authorize(request)", "  return policy.allow(request)", "end", "", "return authorize" })
   vim.bo.filetype = "lua"
-  local p = require("explainr.ui").open(source, { windows = { new = source } }, nil)
+  local p = require("irrelevant_explainer.ui").open(source, { windows = { new = source } }, nil)
   p.mode, p.auto_explain = "diff", true
   if vim.g.capture_state:find("detail") then
     p:set({ notes = { { summary = "Use the shared authorization policy", intent_basis = "inferred",
@@ -93,7 +132,7 @@ if vim.g.capture_state:match("^review%-reader") then
   api.nvim_buf_set_lines(0, 0, -1, false, { "-- A comparison stays visible while reading.",
     "local policy = require('policy')", "", "return policy.allow(request)" })
   vim.bo.filetype = "lua"
-  local p = require("explainr.ui").open(source, { windows = { new = source } }, { notes = {} })
+  local p = require("irrelevant_explainer.ui").open(source, { windows = { new = source } }, { notes = {} })
   p.mode, p.auto_explain = "diff", true
   local narrative = { title = "Centralize authorization policy", sections = {
     { heading = "Policy and caller now share one decision", intent_basis = "inferred",
@@ -115,7 +154,7 @@ if vim.g.capture_state:match("^review%-reader") then
   local status = state:find("pending") and "Pending · comparison · 2 files"
     or state:find("stale") and "Stale · regenerate review"
     or state:find("failed") and "Failed · see :messages"
-    or state:find("empty") and "No review · :Explainr review" or "Ready"
+    or state:find("empty") and "No review · :IrrelevantExplainer review" or "Ready"
   if state:find("loading") then
     status = state:find("saved") and "Checking saved review" or "Pending · checking result context"
   end
@@ -128,10 +167,10 @@ if vim.g.capture_state:match("^review%-reader") then
       or "Pending · synthesizing"
     if state:find("failed") then
       local phase = state:find("annotation") and "annotate" or state:find("reduction") and "reduce" or "synthesize"
-      status = "Failed · " .. phase .. " · " .. count .. " units · :Explainr review to resume; Refresh regenerates"
+      status = "Failed · " .. phase .. " · " .. count .. " units · :IrrelevantExplainer review to resume; Refresh regenerates"
     elseif state:find("resume") and not state:find("reduction") and not state:find("synthesis") then
       status = "Pending · Annotating 25% · 7 files"
-    elseif state:find("cancel") then status = "Cancelled · " .. count .. " units · :Explainr review to resume"
+    elseif state:find("cancel") then status = "Cancelled · " .. count .. " units · :IrrelevantExplainer review to resume"
     elseif state:find("cached") then status = "Ready · cached" end
   end
   p:set_review(not state:find("empty") and not state:find("stale") and narrative or nil, manifest, status)
@@ -186,7 +225,7 @@ if vim.g.capture_state:match("^source%-window%-") then
   vim.bo.filetype = "lua"
   vim.cmd("syntax enable")
   vim.wo.signcolumn, vim.wo.winbar = "yes:1", " ORIGINAL · explained window "
-  local p = require("explainr.ui").open(source, { source_buf = buf, windows = { buffer = source } }, { notes = {
+  local p = require("irrelevant_explainer.ui").open(source, { source_buf = buf, windows = { buffer = source } }, { notes = {
     { summary = "Calculate the total", detail = "Add tax to the subtotal and print the result.", intent_basis = "inferred",
       anchors = { { path = "example.lua", side = "buffer", start_line = 5, end_line = 6 } } },
   } })
@@ -211,14 +250,14 @@ if vim.g.capture_state == "gutter-cleanup" then
   local api = vim.api
   local source = api.nvim_get_current_win()
   api.nvim_buf_set_lines(0, 0, -1, false, { "local value = 1", "return value" })
-  local p = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = {
+  local p = require("irrelevant_explainer.ui").open(source, { windows = { buffer = source } }, { notes = {
     { summary = "Return the value", detail = "The source returns its local value.", intent_basis = "inferred",
       anchors = { { path = "example.lua", side = "buffer", start_line = 2, end_line = 2 } } },
   } })
   p:detail(1)
   api.nvim_win_close(source, true)
   assert(vim.wait(1000, function() return p.closed end))
-  assert(not vim.wo.statuscolumn:find("explainr_detail_active", 1, true))
+  assert(not vim.wo.statuscolumn:find("irrelevant_explainer_detail_active", 1, true))
   api.nvim_buf_set_lines(0, 0, -1, false, { "-- Ordinary editor buffer after reader cleanup.",
     "local value = 2", "return value" })
   vim.bo.filetype = "lua"
@@ -232,7 +271,7 @@ if vim.g.capture_state:match("^boundary%-") then
   api.nvim_buf_set_lines(0, 0, -1, false, lines)
   vim.bo.filetype = "lua"
   vim.wo.wrap, vim.wo.scrolloff = false, 0
-  _G.capture_pane = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(source, { windows = { buffer = source } }, { notes = {
     { summary = "Boundary explanation", detail = "First paragraph.\n\nSecond paragraph.", intent_basis = "inferred",
       anchors = { { path = "example.lua", side = "buffer", start_line = 40, end_line = 100 } } },
   } })
@@ -275,7 +314,7 @@ if vim.g.capture_state == "diff-sticky-wrapped-filler" or vim.g.capture_state ==
     note("Validate the final payload", "Preserve the final validation call."),
     note("Preserve its original anchor", "This overflow explanation follows every trailing deletion row."),
   } or { note("Validate the wrapped payload", "Pin this explanation below the header when its first wrapped segment scrolls away.") }
-  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } }, { notes = notes })
+  _G.capture_pane = require("irrelevant_explainer.ui").open(new, { windows = { old = old, new = new } }, { notes = notes })
   local p = capture_pane
   p:detail(eof and 2 or 1)
   if eof then p:place_detail()
@@ -325,7 +364,7 @@ if vim.g.capture_state:match("^sticky%-") then
     selected.anchors[1].end_line = 50
     selected.anchors[2] = { path = "preparation.lua", side = "buffer", start_line = 80, end_line = 100 }
   end
-  _G.capture_pane = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(source, { windows = { buffer = source } }, { notes = {
     note(24, 24, "Earlier request context", "Previous explanation."),
     selected,
     note(65, 65, "Preserve validation", "Following explanation."),
@@ -411,7 +450,7 @@ if vim.g.capture_state:match("^detail%-eof") then
   vim.wo.number, vim.wo.cursorline, vim.wo.wrap = true, true, false
   vim.wo.winbar = " SOURCE · preparation.lua "
   api.nvim_set_hl(0, "CursorLine", { bg = "#34485c" })
-  _G.capture_pane = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = { {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(source, { windows = { buffer = source } }, { notes = { {
     summary = "Validate the request before preparation.",
     detail = "Reject missing or extra fields before preparing the request.\n\n"
       .. "The validation continues through line 110, beyond the initial viewport.\n\n"
@@ -453,7 +492,7 @@ if vim.g.capture_state:match("^range%-") then
     return { kind = kind, summary = summary, detail = detail, intent_basis = "inferred",
       anchors = { { path = "preparation.lua", side = "new", start_line = first, end_line = last } } }
   end
-  _G.capture_pane = require("explainr.ui").open(source, { windows = { new = source } }, { notes = {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(source, { windows = { new = source } }, { notes = {
     note(1, 40, "Prepare and validate incoming requests.", "The file provides safe request preparation.", "overview"),
     note(10, 24, "Prepare the request without blocking.",
       "The preparation function validates the payload before forwarding it.\n\nExisting validation remains in place."),
@@ -506,7 +545,7 @@ if vim.g.capture_state == "diff-scroll-deletion" then
     api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end)
   end
   vim.cmd("diffupdate")
-  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } }, { notes = { {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(new, { windows = { old = old, new = new } }, { notes = { {
     summary = "Review the removed comparison context",
     detail = "The old side retains the deleted code.\n\nThe new side shows native diff filler.",
     intent_basis = "inferred", anchors = { { path = "comparison.lua", side = "old", start_line = 30, end_line = 80 } },
@@ -553,7 +592,7 @@ if vim.g.capture_state:match("^diff%-prose") then
   vim.cmd("diffupdate")
   local wrapped = vim.g.capture_state:find("wrapped", 1, true) ~= nil
   local boundary = vim.g.capture_state == "diff-prose-boundary"
-  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } }, { notes = { {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(new, { windows = { old = old, new = new } }, { notes = { {
     summary = "Both routes require bearer auth.",
     detail = wrapped and string.rep("Both routes use bearer auth and forward their payload to a shared service. ", 5)
       or "Both routes use bearer authentication.\n\nEach handler forwards its payload to the shared service.",
@@ -588,7 +627,7 @@ if vim.g.capture_state:match("^detail%-highlight") then
   api.nvim_buf_set_lines(0, 0, -1, false, lines)
   vim.bo.filetype = "php"; vim.wo.winbar = " OLD · ExampleValidationException.php "
   vim.wo.number = true
-  _G.capture_pane = require("explainr.ui").open(source, { windows = { old = source } }, { notes = { {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(source, { windows = { old = source } }, { notes = { {
     summary = "Removes the example request validation exception specialization.",
     detail = "This file defined `ExampleValidationException`, a creation-specific subclass of `RuntimeException`. "
       .. "The diff deletes the entire file. Inferred intent: remove this specialization; the supplied snapshot does not establish why it was removed or what replaces it.\n\n"
@@ -613,7 +652,7 @@ if vim.g.capture_state:match("^diff%-overlap%-single") then
     api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end)
   end
   vim.cmd("diffupdate")
-  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } }, { notes = {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(new, { windows = { old = old, new = new } }, { notes = {
     { kind = "overview", summary = "Initialize the package by loading its helper module.",
       detail = "This package initializer imports the sibling `helpers` module when the package is loaded.",
       intent_basis = "inferred", anchors = { { path = "__init__.py", side = "new", start_line = 1, end_line = 1 } } },
@@ -645,7 +684,7 @@ if vim.g.capture_state == "diff-overview-range" then
     api.nvim_win_call(win, function() vim.cmd("diffthis | normal! zR") end)
   end
   vim.cmd("diffupdate")
-  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } }, { notes = {
+  _G.capture_pane = require("irrelevant_explainer.ui").open(new, { windows = { old = old, new = new } }, { notes = {
     { kind = "overview", summary = "Adds safe request preparation and status lookup.",
       detail = "This added file validates requests, prepares pending work, and reports existing results.\n\n"
         .. "Inferred purpose: provide a narrowly scoped preparation operation with retry protection.",
@@ -684,7 +723,7 @@ if vim.g.capture_state:match("^diff%-neighbors") then
     return { summary = text, detail = "Requests use `nonblocking` preparation to avoid waiting for a busy resource.\n\nThe existing validation still runs before the result is saved.",
       intent_basis = "documented", anchors = { { path = "requests.lua", side = "new", start_line = first, end_line = last } } }
   end
-  _G.capture_pane = require("explainr.ui").open(new, { windows = { old = old, new = new } },
+  _G.capture_pane = require("irrelevant_explainer.ui").open(new, { windows = { old = old, new = new } },
     { notes = { note(2, 3, "Reuse the cached request."), note(6, 13, "Prepare without blocking."),
       note(16, 19, "Save the keyed result."), note(23, 23, "Keep cleanup separate.") } })
   api.nvim_set_current_win(capture_pane.win)
@@ -711,7 +750,7 @@ end
 if vim.g.capture_state:match("^diff%-multihunk") then
   local api = vim.api
   vim.o.diffopt = "internal,filler,closeoff,context:3"
-  local fixture = dofile("tests/multihunk.lua").open()
+  local fixture = dofile((vim.g.capture_checkout or vim.fn.getcwd()) .. "/tests/multihunk.lua").open()
   for side, win in pairs({ old = fixture.old, new = fixture.new }) do
     vim.wo[win].number, vim.wo[win].relativenumber = true, false
     vim.wo[win].winbar = " " .. side:upper() .. " · config.lua "
@@ -721,7 +760,7 @@ if vim.g.capture_state:match("^diff%-multihunk") then
     fixture.result.notes[3].anchors[2].end_line = 71
     fixture.result.notes[3].detail = "The `in_progress` setting now uses `play` instead of `tools`. Nearby configuration is otherwise unchanged."
   end
-  _G.capture_pane = require("explainr.ui").open(fixture.new,
+  _G.capture_pane = require("irrelevant_explainer.ui").open(fixture.new,
     { windows = { old = fixture.old, new = fixture.new } }, fixture.result)
   local source = vim.g.capture_state == "diff-multihunk-old" and fixture.old or fixture.new
   api.nvim_win_call(source, function() vim.cmd("normal! 34Gzt") end)
@@ -789,7 +828,7 @@ if vim.g.capture_state:match("^diff%-motion") then
       api.nvim_buf_set_extmark(buf, signs, row, 0, { sign_text = "+", sign_hl_group = "DiffAdd", priority = 6 })
     end
   end
-  _G.capture_pane = require("explainr.ui").open(old, { windows = { old = old, new = new },
+  _G.capture_pane = require("irrelevant_explainer.ui").open(old, { windows = { old = old, new = new },
     context = { strategy = "focused", radius = 20, omitted_files = 39 } }, { notes = { {
       summary = "Editors bypass the admin check.", detail = "The added branch returns before the original admin check.",
       intent_basis = "inferred", evidence = {}, anchors = { { path = "access.lua", side = "new", start_line = 3, end_line = 5 } },
@@ -849,7 +888,7 @@ if vim.g.capture_state:match("^ranges%-diff") then
     { summary = "Editors can authorize.", detail = "The role grants another route to authorization.",
       intent_basis = "documented", evidence = {}, anchors = paired },
   } }
-  _G.capture_pane = require("explainr.ui").open(old, { windows = { old = old, new = new } }, result)
+  _G.capture_pane = require("irrelevant_explainer.ui").open(old, { windows = { old = old, new = new } }, result)
   if vim.g.capture_state ~= "ranges-diff-old" then capture_pane:sync(new) end
   if vim.g.capture_state == "ranges-diff-pending" then
     capture_pane.pending = { source = old, scope = "hunk", row = 2, windows = { old = old, new = new },
@@ -861,8 +900,8 @@ if vim.g.capture_state:match("^ranges%-diff") then
   return
 end
 if vim.g.capture_state:match("^diff") then
-  local script = vim.fn.getcwd() .. "/tests/fixtures/agent.py"
-  _G.capture_review = dofile("tests/review.lua").open(true)
+  local script = (vim.g.capture_checkout or vim.fn.getcwd()) .. "/tests/fixtures/agent.py"
+  _G.capture_review = dofile((vim.g.capture_checkout or vim.fn.getcwd()) .. "/tests/review.lua").open(true)
   for _, win in pairs(capture_review.state.windows) do
     vim.wo[win].wrap = false
     if vim.g.capture_state:match("^diff%-numbers") then
@@ -870,14 +909,14 @@ if vim.g.capture_state:match("^diff") then
     end
     vim.api.nvim_win_call(win, function() vim.cmd("normal! zR") end)
   end
-  local plugin = require("explainr")
+  local plugin = require("irrelevant_explainer")
   local focused = vim.g.capture_state == "diff-focused"
   local overview = vim.g.capture_state:match("^diff%-file%-overview")
   if focused then
     capture_review:write("src/unrelated.lua", string.rep("unrelated\n", 20000))
     vim.api.nvim_win_set_cursor(capture_review.state.source, { 4, 0 })
   end
-  plugin.setup({ ai = { command = { "python3", script, focused and "explain" or overview and "review-overview" or "review" } },
+  plugin.setup({ ai = { output = "plain", command = { "python3", script, focused and "explain" or overview and "review-overview" or "review" } },
     context = { max_bytes = focused and 12000 or 262144, radius = 2 } })
   if vim.g.capture_state == "diff-old" or vim.g.capture_state == "diff-incremental" then
     vim.api.nvim_set_current_win(capture_review.state.windows.old)
@@ -885,7 +924,34 @@ if vim.g.capture_state:match("^diff") then
   local session = plugin.explain(focused and "hunk" or "file")
   assert(vim.wait(5000, function() return session.pane.result ~= nil end), session.pane.status)
   _G.capture_pane = session.pane
-  if vim.g.capture_state:match("^diff%-numbers") then
+  if vim.g.capture_state == "diff-publication-review" then
+    -- Run the real offline review pipeline, then retain readable File notes.
+    plugin.config.ai.command = { "python3", script, "whole-review" }
+    session = plugin.explain("review")
+    assert(vim.wait(10000, function() return capture_pane.review and not session.pending end))
+    capture_review:switch("openspec/spec.md")
+    plugin.config.ai.command = { "python3", script, "explain" }
+    session = plugin.explain("file")
+    assert(vim.wait(5000, function() return session.pane.result and #session.pane.result.notes > 0 and not session.pending end))
+    capture_review:switch("policy.lua")
+    plugin.config.ai.command = { "python3", script, "review" }
+    session = plugin.explain("file")
+    assert(vim.wait(5000, function() return capture_pane.result and #capture_pane.result.notes > 0 and not session.pending end))
+    plugin.review()
+    assert(vim.wait(5000, function() return capture_pane.review_mode and not session.review_checking end))
+    vim.api.nvim_set_current_win(capture_pane.win)
+    vim.api.nvim_win_set_width(capture_pane.win, 90)
+    vim.api.nvim_win_set_width(capture_review.state.windows.old, 51)
+    for row, entry in pairs(capture_pane.review_references) do
+      if entry.path == "openspec/spec.md" then
+        _G.capture_reference_row = row
+        vim.api.nvim_win_set_cursor(capture_pane.win, { row, 0 })
+      end
+    end
+    _G.capture_review_view = vim.api.nvim_win_call(capture_pane.win, vim.fn.winsaveview)
+    -- After the offline fixture preparation, navigation must launch no agent.
+    require("irrelevant_explainer.agent").run = function() error("display-only navigation launched inference") end
+  elseif vim.g.capture_state:match("^diff%-numbers") then
     local expanded = vim.g.capture_state == "diff-numbers-detail"
     vim.api.nvim_set_current_win(capture_pane.win)
     if expanded then capture_pane:detail(1) end
@@ -920,7 +986,7 @@ if vim.g.capture_state:match("^diff") then
           and capture_pane.status:match("^Ready")
       end), capture_pane.status)
       assert(capture_pane.detail_buf == nil)
-      assert(not vim.wo[capture_pane.win].statuscolumn:find("explainr_detail_active", 1, true))
+      assert(not vim.wo[capture_pane.win].statuscolumn:find("irrelevant_explainer_detail_active", 1, true))
       assert(api.nvim_get_current_win() == panel.winid)
     end
     vim.cmd("redraw!"); assert(vim.v.errmsg == "", vim.v.errmsg)
@@ -940,7 +1006,15 @@ if vim.g.capture_state:match("^diff") then
     assert(capture_pane.locations[1].row == 1)
     assert(vim.deep_equal(capture_pane.result.notes[1].anchors, session.snapshot.target.anchors))
     vim.api.nvim_set_current_win(capture_pane.win)
-    capture_pane:jump(1)
+    vim.api.nvim_win_set_width(capture_pane.win, 90)
+    if vim.g.capture_demo then
+      -- Concise synthetic summaries keep the complete overview readable.
+      capture_pane.result.notes[1].summary = "File overview: cancellation policy."
+      capture_pane.result.notes[2].summary = "Editors still bypass ownership."
+      vim.api.nvim_win_set_width(capture_review.state.windows.old, 51)
+      capture_pane:render()
+    end
+    vim.cmd("normal! gg"); capture_pane:sync(capture_pane.win)
     if vim.g.capture_state == "diff-file-overview-detail" then capture_pane:detail(1) end
   elseif vim.g.capture_state == "diff-saved-empty" or vim.g.capture_state == "diff-saved-restored" then
     local saved = vim.deepcopy(capture_pane.result)
@@ -955,7 +1029,7 @@ if vim.g.capture_state:match("^diff") then
     end
   elseif vim.g.capture_state == "diff-incremental" then
     vim.api.nvim_win_set_cursor(capture_review.state.windows.old, { 8, 0 })
-    plugin.setup({ ai = { command = { "python3", script, "explain-slow" } } })
+    plugin.setup({ ai = { output = "plain", command = { "python3", script, "explain-slow" } } })
     plugin.explain("hunk")
     assert(vim.wait(5000, function() return capture_pane.pending and capture_pane.pending.snapshot ~= nil end),
       capture_pane.status)
@@ -987,13 +1061,13 @@ if vim.g.capture_state:match("^diff") then
     capture_review:write("docs/adr.md", "Rationale: preserve the owner's decision.\nChanged during inference.\n")
     assert(vim.wait(4000, function() return session.stale end))
   elseif vim.g.capture_state == "diff-failed" then
-    plugin.setup({ ai = { command = { "python3", script, "nonzero" } } })
+    plugin.setup({ ai = { output = "plain", command = { "python3", script, "nonzero" } } })
     vim.notify = function() end
     session = plugin.refresh(); _G.capture_pane = session.pane
     assert(vim.wait(5000, function() return capture_pane.status:find("Failed", 1, true) ~= nil end))
   elseif vim.g.capture_state == "diff-switch" then
     capture_review:switch("openspec/spec.md")
-    plugin.setup({ ai = { command = { "python3", script, "explain" } } })
+    plugin.setup({ ai = { output = "plain", command = { "python3", script, "explain" } } })
     session = plugin.explain("file"); _G.capture_pane = session.pane
     assert(vim.wait(5000, function() return capture_pane.result ~= nil end))
   end
@@ -1014,7 +1088,7 @@ local function note(line, summary, detail, basis)
     anchors = { { path = "authorize.lua", side = "buffer", start_line = line, end_line = line } },
     evidence = { { path = "openspec/changes/editor-access/specs/access/spec.md", side = "new", start_line = 8, end_line = 12 } } }
 end
-_G.capture_pane = require("explainr.ui").open(source, { windows = { buffer = source } }, { notes = {
+_G.capture_pane = require("irrelevant_explainer.ui").open(source, { windows = { buffer = source } }, { notes = {
   note(1, "Controls who can edit.", "Checks access for the supplied user.", "unknown"),
   note(2, "Missing user: deny access.", "The guard returns false instead of indexing a missing user.", "inferred"),
   note(6, "Also grant editing access to editors.", "Previously, only `is_admin` could grant access. The role check adds another way to grant access, matching the editor-access requirement in this change.\n\n**Caution:** schema validation confirms that the cited range was supplied, not that the interpretation is necessarily correct."),

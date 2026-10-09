@@ -1,9 +1,9 @@
 local api = vim.api
-local plugin, sessions, agent = require("explainr"), require("explainr.session"), require("explainr.agent")
+local plugin, sessions, agent = require("irrelevant_explainer"), require("irrelevant_explainer.session"), require("irrelevant_explainer.agent")
 local fixture = vim.fn.getcwd() .. "/tests/fixtures/agent.py"
 local fixture_id = 0
 local function config(mode, limit)
-  plugin.setup({ ai = { command = { "python3", fixture, mode or "explain" } }, context = { max_bytes = limit or 262144 },
+  plugin.setup({ ai = { command = { "python3", fixture, mode or "explain" }, output = "plain" }, context = { max_bytes = limit or 262144 },
     cache = { enabled = false, namespace = "session-fixture-" .. fixture_id } })
 end
 local function fixture_buffer(run)
@@ -33,11 +33,66 @@ local function stale(s)
   T.eq(nil, s.pane.result)
 end
 
+T.test("public default missing executable and explicit empty argv fail without fallback or source changes", function()
+  fixture_buffer(function(buf, _, calls, errors)
+    local original, attempts = vim.system, {}
+    vim.system = function(command, ...)
+      if command[1] ~= "opencode" then return original(command, ...) end
+      attempts[#attempts + 1] = vim.deepcopy(command)
+      error("ENOENT: executable unavailable") -- deterministic even with OpenCode installed
+    end
+    local ok, err = xpcall(function()
+      for _, empty in ipairs({ false, true }) do
+        plugin.setup({ ai = empty and { command = {} } or {}, cache = { enabled = false } })
+        local s = plugin.explain()
+        assert(vim.wait(3000, function() return s.pane.status:match("^Failed") end), s.pane.status)
+        assert(errors[#errors]:find(empty and "configure a compatible command" or "install the configured executable", 1, true))
+        T.eq(nil, s.pane.result); T.eq(nil, s.pending)
+        T.eq(1, #attempts)
+        T.eq({ "opencode", "run", "--agent", "explain", "--format", "json" }, attempts[1])
+        T.eq({ "local outside = 1", "local function inner()", "  return outside", "end", "tail" },
+          api.nvim_buf_get_lines(buf, 0, -1, false))
+        plugin.close()
+      end
+      T.eq(2, calls()); T.eq(2, #errors)
+    end, debug.traceback)
+    vim.system = original
+    assert(ok, err)
+  end)
+end)
+
+T.test("public command-only override retains OpenCode decoding; paired plain Codex and custom decoders succeed", function()
+  fixture_buffer(function(_, _, calls, errors)
+    local attempts, original = {}, vim.system
+    vim.system = function(command, ...)
+      T.eq(fixture, command[1]) -- no default CLI or provider fallback is allowed
+      attempts[#attempts + 1] = vim.deepcopy(command)
+      return original(command, ...)
+    end
+    local ok, err = xpcall(function()
+      local custom = function(stdout) return stdout end
+      for _, case in ipairs({ { "plain" }, { "opencode" }, { "plain", "plain" }, { "codex", "codex" }, { "plain", custom } }) do
+        plugin.close()
+        plugin.setup({ ai = { command = { fixture, case[1] }, output = case[2] }, cache = { enabled = false } })
+        local s = plugin.explain()
+        if case[1] == "plain" and case[2] == nil then
+          assert(vim.wait(3000, function() return s.pane.status:match("^Failed") end))
+          assert(errors[#errors]:find("invalid JSON event output", 1, true)); T.eq(nil, s.pane.result)
+        else ready(s); T.eq({}, s.pane.result.notes) end
+        T.eq({ fixture, case[1] }, attempts[#attempts])
+      end
+      T.eq(5, calls()); T.eq(5, #attempts); T.eq(1, #errors)
+    end, debug.traceback)
+    vim.system = original
+    assert(ok, err)
+  end)
+end)
+
 T.test("public code commands produce aligned notes and cached detail without inference", function()
   fixture_buffer(function(buf, win, calls)
     config(); vim.cmd("normal! 2GV2j" .. string.char(27))
     api.nvim_win_set_cursor(win, { 3, 2 })
-    vim.cmd("'<,'>Explainr selection")
+    vim.cmd("'<,'>IrrelevantExplainer selection")
     local s = sessions.current(); ready(s)
     local rows = api.nvim_buf_get_lines(s.pane.buf, 0, 4, false)
     T.eq("", rows[1]); T.eq("", rows[3])
@@ -52,15 +107,15 @@ T.test("public code commands produce aligned notes and cached detail without inf
     local float_buf = api.nvim_win_get_buf(s.pane.detail_win)
     local lines = api.nvim_buf_get_lines(float_buf, 0, -1, false)
     assert(table.concat(lines, "\n"):find("Full fixture explanation", 1, true))
-    vim.cmd("ExplainrClose"); T.eq(nil, sessions.current())
+    vim.cmd("IrrelevantExplainerClose"); T.eq(nil, sessions.current())
     T.eq(false, api.nvim_win_is_valid(s.pane.win))
-    api.nvim_set_current_win(win); vim.cmd("Explainr")
+    api.nvim_set_current_win(win); vim.cmd("IrrelevantExplainer")
     local file = sessions.current(); ready(file); T.eq(2, calls())
     T.eq("file", file.snapshot.target.scope)
-    vim.cmd("Explainr file"); local cached = sessions.current(); ready(cached)
+    vim.cmd("IrrelevantExplainer file"); local cached = sessions.current(); ready(cached)
     T.eq(file, cached); T.eq(file.pane.win, cached.pane.win); T.eq(1, #cached.batches)
     T.eq("Ready · cached", cached.pane.status); T.eq(2, calls())
-    vim.cmd("ExplainrRefresh"); ready(sessions.current()); T.eq(3, calls())
+    vim.cmd("IrrelevantExplainerRefresh"); ready(sessions.current()); T.eq(3, calls())
     T.eq({ "local outside = 1", "local function inner()", "  return outside", "end", "tail" }, api.nvim_buf_get_lines(buf, 0, -1, false))
   end)
 end)
@@ -96,7 +151,7 @@ T.test("supersession cancellation closure and failed refresh preserve accepted r
     assert(vim.wait(1000, function() return closing.closed end)); vim.wait(500)
     T.eq(nil, sessions.current()); T.eq(nil, closing.invocation)
     T.eq(false, api.nvim_win_is_valid(closing.pane.win))
-    T.eq(false, pcall(api.nvim_get_autocmds, { group = "ExplainrSession" .. closing.pane.win }))
+    T.eq(false, pcall(api.nvim_get_autocmds, { group = "IrrelevantExplainerSession" .. closing.pane.win }))
   end)
 end)
 
@@ -125,7 +180,7 @@ T.test("explicit selections and Ex visual commands preserve their selected scope
     T.eq(2, s.snapshot.target.anchors[1].start_line); T.eq(4, s.snapshot.target.anchors[1].end_line)
     plugin.close(); api.nvim_set_current_win(win)
     vim.cmd("normal! 2GVj" .. string.char(27))
-    vim.cmd("'<,'>Explainr selection"); s = sessions.current(); ready(s)
+    vim.cmd("'<,'>IrrelevantExplainer selection"); s = sessions.current(); ready(s)
     T.eq(2, s.snapshot.target.anchors[1].start_line); T.eq(3, s.snapshot.target.anchors[1].end_line)
     T.eq("    def cancel(self):\n        permitted = True", s.snapshot.target.text)
     T.eq(3, calls())
@@ -135,20 +190,20 @@ end)
 T.test("retired code scopes reject command and Lua calls before reuse without dropping accepted notes", function()
   fixture_buffer(function(_, _, calls, errors)
     config()
-    T.eq({ "file", "selection", "hunk", "review" }, vim.fn.getcompletion("Explainr ", "cmdline"))
-    T.eq(0, vim.fn.exists(":ExplainrCode")); T.eq(0, vim.fn.exists(":ExplainrDiff"))
+    T.eq({ "file", "selection", "hunk", "review" }, vim.fn.getcompletion("IrrelevantExplainer ", "cmdline"))
+    T.eq(0, vim.fn.exists(":IrrelevantExplainerCode")); T.eq(0, vim.fn.exists(":IrrelevantExplainerDiff"))
     T.eq(nil, plugin.code); T.eq(nil, plugin.diff)
     local s = plugin.explain(); ready(s)
     T.eq("file", s.snapshot.target.scope)
     local accepted = vim.deepcopy(s.pane.result)
-    local prompt, builds = require("explainr.prompt"), 0
+    local prompt, builds = require("irrelevant_explainer.prompt"), 0
     local build = prompt.build
     prompt.build = function(...) builds = builds + 1; return build(...) end
     local ok, err = xpcall(function()
       for _, scope in ipairs({ "function", "class" }) do
         for _, command in ipairs({ false, true }) do
           api.nvim_set_current_win(s.pane.win)
-          if command then vim.cmd("Explainr " .. scope)
+          if command then vim.cmd("IrrelevantExplainer " .. scope)
           else T.eq(nil, plugin.explain(scope)) end
           assert(errors[#errors]:find("unsupported code scope: " .. scope, 1, true))
           assert(errors[#errors]:find("scopes were removed; use file or selection", 1, true))
@@ -181,9 +236,9 @@ end)
 T.test("diff results and cache wait for coalesced freshness; stale and cancelled checks cannot install results", function()
   fixture_buffer(function(_, win)
     config()
-    local diff = require("explainr.diff")
+    local diff = require("irrelevant_explainer.diff")
     local old_collect, old_fresh, old_agent = diff.collect_async, diff.fresh_async, agent.run
-    local captured = assert(require("explainr.code").collect(win, "file"))
+    local captured = assert(require("irrelevant_explainer.code").collect(win, "file"))
     captured.mode, captured.windows = "diff", { old = win, new = win }
     captured.source = win
     captured.fingerprint = "async-session-regression:" .. captured.fingerprint
@@ -378,8 +433,8 @@ local function diff_fixture(run)
     local old_win, old_buf = api.nvim_get_current_win(), api.nvim_create_buf(false, false)
     api.nvim_buf_set_lines(old_buf, 0, -1, false, api.nvim_buf_get_lines(buf, 0, -1, false))
     api.nvim_win_set_buf(old_win, old_buf); api.nvim_set_current_win(win)
-    local base = assert(require("explainr.code").collect(win, "file"))
-    local diff = require("explainr.diff")
+    local base = assert(require("irrelevant_explainer.code").collect(win, "file"))
+    local diff = require("irrelevant_explainer.diff")
     local old_collect, old_fresh, old_agent = diff.collect_async, diff.fresh_async, agent.run
     local f = { collections = {}, checks = {}, launches = {}, checked = 0, errors = errors, win = win, old_win = old_win }
     f.state = { cwd = base.cwd, windows = { old = old_win, new = win }, source = win,
@@ -817,13 +872,13 @@ T.test("captured config and context preferences key caching without dropping unr
     local s = plugin.explain("selection", { type = "V", pos1 = { buf, 2, 1, 0 }, pos2 = { buf, 4, 1, 0 } }); ready(s)
     local selection_batch = vim.deepcopy(s.batches[1])
     config("explain-slow"); T.eq(s, plugin.explain("file"))
-    plugin.setup({ ai = { command = { "python3", fixture, "explain-invalid" } }, context = { radius = 1 },
+    plugin.setup({ ai = { command = { "python3", fixture, "explain-invalid" }, output = "plain" }, context = { radius = 1 },
       cache = { enabled = false, namespace = "session-fixture-" .. fixture_id } })
     ready(s); T.eq(2, #s.batches); T.eq(selection_batch, s.batches[1]); T.eq(2, calls())
     -- Returning to the config captured by the pending request hits its cache.
     config("explain-slow"); T.eq(s, plugin.explain("file")); ready(s)
     T.eq("Ready · cached", s.pane.status); T.eq(2, calls())
-    plugin.setup({ ai = { command = { "python3", fixture, "explain-slow" } }, context = { radius = 1 },
+    plugin.setup({ ai = { command = { "python3", fixture, "explain-slow" }, output = "plain" }, context = { radius = 1 },
       cache = { enabled = false, namespace = "session-fixture-" .. fixture_id } })
     T.eq(s, plugin.explain("file")); ready(s); T.eq(3, calls()); T.eq(2, #s.batches)
     T.eq(selection_batch, s.batches[1])
@@ -835,7 +890,7 @@ T.test("source edits and cancellation during disk lookup prevent both hits and m
     for _, action in ipairs({ "edit", "cancel" }) do
       fixture_buffer(function(buf, _, calls)
         config(); plugin.config.cache.enabled = true
-        local cache, callback, envelope = require("explainr.cache"), nil, nil
+        local cache, callback, envelope = require("irrelevant_explainer.cache"), nil, nil
         local original = cache.read
         cache.read = function(source, key, _, deliver)
           callback = deliver

@@ -1,4 +1,4 @@
-local ui = require("explainr.ui")
+local ui = require("irrelevant_explainer.ui")
 local api = vim.api
 local function setup(lines)
   vim.cmd("silent! only!")
@@ -71,7 +71,7 @@ T.test("busy headers animate saved checks and focused detail without changing re
     assert(first:find("⠋", 1, true), first)
     p.frame = 2; p:state()
     assert(state(p):find("⠙", 1, true), state(p))
-    T.eq(tick, api.nvim_buf_get_changedtick(p.buf)); T.eq(status, vim.b[p.buf].explainr_status)
+    T.eq(tick, api.nvim_buf_get_changedtick(p.buf)); T.eq(status, vim.b[p.buf].irrelevant_explainer_status)
   end
   p:set_status("Ready"); p:detail(1); T.eq(nil, p.loading_cursor)
   local detail, view = p.detail_buf, api.nvim_win_call(p.win, vim.fn.winsaveview)
@@ -142,7 +142,7 @@ T.test("Review checking has continuous screen rails through wraps, clipped parag
   end
   p:show_file(); T.eq("  ", vim.wo[p.win].statuscolumn)
   p:show_review(); screen()
-  vim.b[p.review_buf].explainr_review_rails = nil; vim.cmd("redraw!")
+  vim.b[p.review_buf].irrelevant_explainer_review_rails = nil; vim.cmd("redraw!")
   T.eq("", vim.v.errmsg)
   p:close()
 end)
@@ -152,12 +152,12 @@ T.test("saved File checking animates without request anchors and clears on idle"
   local p = ui.open(source, { windows = { new = source } }, nil)
   p.restoring = true
   p:set_status("Checking saved explanations"); p:stop_spinner()
-  T.eq(nil, p.pending); T.eq(3, #marks(p, "explainr.loading"))
+  T.eq(nil, p.pending); T.eq(3, #marks(p, "irrelevant_explainer.loading"))
   p.restoring = nil; p:set_status("No explanations · request file or hunk")
-  T.eq({}, marks(p, "explainr.loading")); T.eq(nil, p.timer)
+  T.eq({}, marks(p, "irrelevant_explainer.loading")); T.eq(nil, p.timer)
   p.background, p.background_busy = "Running review", true
   p:set_status("Ready"); assert(p.timer)
-  T.eq({}, marks(p, "explainr.loading")) -- Background work cannot tint this File.
+  T.eq({}, marks(p, "irrelevant_explainer.loading")) -- Background work cannot tint this File.
   p.background, p.background_busy = nil, nil
   p:set_status("Ready"); T.eq(nil, p.timer); T.eq(nil, p.loading_cursor)
   p:close()
@@ -204,8 +204,8 @@ T.test("Review is independent, preserves reading position, and follows only host
   api.nvim_win_set_width(p.win, width)
   p:show_review(); T.eq(focus, api.nvim_get_current_win())
   assert(state(p):find("Review · Auto", 1, true)); assert(not state(p):find("1 /", 1, true))
-  T.eq("explainr", vim.bo[p.review_buf].filetype); T.eq(false, vim.bo[p.review_buf].modifiable)
-  T.eq(true, vim.wo[p.win].wrap); assert(vim.wo[p.win].statuscolumn:find("explainr_review_rails", 1, true))
+  T.eq("irrelevant_explainer", vim.bo[p.review_buf].filetype); T.eq(false, vim.bo[p.review_buf].modifiable)
+  T.eq(true, vim.wo[p.win].wrap); assert(vim.wo[p.win].statuscolumn:find("irrelevant_explainer_review_rails", 1, true))
   local source_view = api.nvim_win_call(source, vim.fn.winsaveview)
   motion(p.win, "30Gzt"); p:sync(p.win)
   T.eq(source_view, api.nvim_win_call(source, vim.fn.winsaveview))
@@ -228,7 +228,7 @@ T.test("Review is independent, preserves reading position, and follows only host
   p.on_file = function() p:show_file() end
   key(p.review_buf, "<Esc>"); T.eq(false, p.review_mode); T.eq("Replacement", p.result.notes[1].summary)
   p.on_review = function() p:show_review() end
-  key(p.buf, "<Plug>(ExplainrReview)")
+  key(p.buf, "<Plug>(IrrelevantExplainerReview)")
   T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
   local replacement = vim.deepcopy(narrative); replacement.title = "Fresh comparison"
   p:set_review(replacement, manifest, "Ready"); T.eq(1, api.nvim_win_get_cursor(p.win)[1])
@@ -273,7 +273,7 @@ end)
 T.test("Review loading animates empty and retained narratives without rewriting or moving readers", function()
   local source = setup({ "one", "two", "three" })
   local p = ui.open(source, { windows = { new = source } }, { notes = {} })
-  local namespace = api.nvim_create_namespace("explainr.loading")
+  local namespace = api.nvim_create_namespace("irrelevant_explainer.loading")
   local function decorations()
     return api.nvim_buf_get_extmarks(p.review_buf, namespace, 0, -1, { details = true })
   end
@@ -293,19 +293,19 @@ T.test("Review loading animates empty and retained narratives without rewriting 
   p:set_review(narrative, {}, "Pending · generating comparison"); p:stop_spinner()
   local first = decorations()
   assert(#first > 1)
-  local rails = vim.b[p.review_buf].explainr_review_rails
+  local rails = vim.b[p.review_buf].irrelevant_explainer_review_rails
   assert(rails["12"], "focused cursor row retains a rail")
   p.frame = p.frame + 6; p:state()
-  T.eq(rails["12"], vim.b[p.review_buf].explainr_review_rails["12"])
-  assert(rails["13"] ~= vim.b[p.review_buf].explainr_review_rails["13"], "other rails must animate")
+  T.eq(rails["12"], vim.b[p.review_buf].irrelevant_explainer_review_rails["12"])
+  assert(rails["13"] ~= vim.b[p.review_buf].irrelevant_explainer_review_rails["13"], "other rails must animate")
   T.eq(tick, api.nvim_buf_get_changedtick(p.review_buf))
   T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
   T.eq(source_view, api.nvim_win_call(source, vim.fn.winsaveview))
   motion(p.win, "j")
-  local moved = vim.b[p.review_buf].explainr_review_rails
+  local moved = vim.b[p.review_buf].irrelevant_explainer_review_rails
   p.frame = p.frame + 6; p:state()
-  assert(moved["12"] ~= vim.b[p.review_buf].explainr_review_rails["12"], "old focused line must resume")
-  T.eq(moved["13"], vim.b[p.review_buf].explainr_review_rails["13"])
+  assert(moved["12"] ~= vim.b[p.review_buf].irrelevant_explainer_review_rails["12"], "old focused line must resume")
+  T.eq(moved["13"], vim.b[p.review_buf].irrelevant_explainer_review_rails["13"])
   p:show_file(); T.eq({}, decorations())
   p:show_review(); assert(#decorations() > 0)
   for _, status in ipairs({ "Ready", "Failed", "Cancelled", "Stale" }) do
@@ -326,7 +326,7 @@ T.test("Review percentage keeps a bar only when it fits and stays readable in na
   local full = "Review · Auto · ⠋ Pending · Annotating 42% [████░░░░░░] · 7 files"
   local width = vim.fn.strwidth(full)
   api.nvim_win_set_width(p.win, width); p:header()
-  T.eq(full, state(p)); T.eq(status, vim.b[p.review_buf].explainr_status)
+  T.eq(full, state(p)); T.eq(status, vim.b[p.review_buf].irrelevant_explainer_status)
   api.nvim_win_set_width(p.win, width - 1); p:header()
   T.eq("Review · Auto · ⠋ " .. status, state(p))
   api.nvim_win_set_width(p.win, 32); p:header()
@@ -359,9 +359,9 @@ T.test("File detail defers fresh replacements and status-only updates do not res
   T.eq(nil, p.detail_buf); T.eq(nil, p.result)
   p:set(fresh, "Ready"); p:detail(1)
   p.on_review = function() p:show_review() end
-  key(p.detail_buf, "<Plug>(ExplainrReview)")
+  key(p.detail_buf, "<Plug>(IrrelevantExplainerReview)")
   T.eq(true, p.review_mode); T.eq(nil, p.detail_buf)
-  assert(table.concat(api.nvim_buf_get_lines(p.review_buf, 0, -1, false), "\n"):find(":Explainr review", 1, true))
+  assert(table.concat(api.nvim_buf_get_lines(p.review_buf, 0, -1, false), "\n"):find(":IrrelevantExplainer review", 1, true))
   p:close()
 end)
 
@@ -376,13 +376,13 @@ T.test("automatic header indicator survives every state and narrow widths withou
     p:set(result, status)
     local snapshot = p.snapshot; p.snapshot = nil -- Header mode must not depend on a collected snapshot.
     p:header(); p.snapshot = snapshot
-    assert(state(p):find("Auto", 1, true)); T.eq(status, p.status); T.eq(status, vim.b[p.buf].explainr_status)
+    assert(state(p):find("Auto", 1, true)); T.eq(status, p.status); T.eq(status, vim.b[p.buf].irrelevant_explainer_status)
     T.eq("SOURCE BAR", vim.wo[source].statusline); T.eq("EDITOR BAR", vim.wo[p.win].statusline)
     local evaluated = api.nvim_eval_statusline(vim.wo[p.win].winbar, { winid = p.win, use_winbar = true, highlights = true })
     local index = assert(evaluated.str:find("Auto", 1, true)) - 1
     local group
     for _, chunk in ipairs(evaluated.highlights) do if chunk.start <= index then group = chunk.group end end
-    T.eq("ExplainrMetadata", group)
+    T.eq("IrrelevantExplainerMetadata", group)
   end
   local selected = note(2, "Diff note", "new"); selected.anchors[1].end_line = 80
   selected.detail = string.rep("A reading paragraph about this diff.\n\n", 40)
@@ -407,7 +407,7 @@ T.test("automatic header indicator survives every state and narrow widths withou
     T.eq(enabled, state(p):find("Auto", 1, true) ~= nil)
     T.eq(detail, p.detail_buf); T.eq(index, p.detail_index); T.eq(tick, api.nvim_buf_get_changedtick(detail))
     T.eq(views, { api.nvim_win_call(source, vim.fn.winsaveview), api.nvim_win_call(p.win, vim.fn.winsaveview) })
-    T.eq("Ready", p.status); T.eq("Ready", vim.b[p.buf].explainr_status)
+    T.eq("Ready", p.status); T.eq("Ready", vim.b[p.buf].irrelevant_explainer_status)
     T.eq("EDITOR BAR", vim.wo[p.win].statusline)
   end
   p:close()
@@ -703,7 +703,7 @@ T.test("header reservation starts before results and survives every request stat
         T.eq(rows[#rows], vim.fn.screenpos(p.win, line, 1).row)
       end
       T.eq(" ", vim.wo[source].winbar); T.eq(1, vim.fn.getwininfo(p.win)[1].winbar)
-      T.eq(5, api.nvim_buf_line_count(p.buf)); T.eq({}, marks(p, "explainr.state"))
+      T.eq(5, api.nvim_buf_line_count(p.buf)); T.eq({}, marks(p, "irrelevant_explainer.state"))
       return rows
     end
     local initial = geometry()
@@ -740,8 +740,8 @@ T.test("matched headers reconcile diff source ownership and preserve user replac
 end)
 
 T.test("evaluated header colors are state independent and clipping preserves literal text", function()
-  local colors = { ExplainrTitle = 0x33ccdd, ExplainrMetadata = 0x778899,
-    ExplainrDocumented = 0x55bb66, ExplainrInferred = 0xddaa44, ExplainrUnknown = 0x6699ee }
+  local colors = { IrrelevantExplainerTitle = 0x33ccdd, IrrelevantExplainerMetadata = 0x778899,
+    IrrelevantExplainerDocumented = 0x55bb66, IrrelevantExplainerInferred = 0xddaa44, IrrelevantExplainerUnknown = 0x6699ee }
   local saved = {}
   for group, color in pairs(colors) do
     saved[group] = api.nvim_get_hl(0, { name = group })
@@ -771,34 +771,34 @@ T.test("evaluated header colors are state independent and clipping preserves lit
     end
     for _, status in ipairs({ "Pending · collecting", "Ready", "Failed", "Stale", "Cancelled" }) do
       p:set(nil, status)
-      check({ Explainr = "ExplainrTitle", [status] = "ExplainrMetadata", [" · "] = "ExplainrMetadata",
-        D = "ExplainrDocumented", ["~"] = "ExplainrInferred", ["?"] = "ExplainrUnknown",
-        documented = "ExplainrMetadata", inferred = "ExplainrMetadata", unknown = "ExplainrMetadata" })
+      check({ ["Irrelevant Explainer"] = "IrrelevantExplainerTitle", [status] = "IrrelevantExplainerMetadata", [" · "] = "IrrelevantExplainerMetadata",
+        D = "IrrelevantExplainerDocumented", ["~"] = "IrrelevantExplainerInferred", ["?"] = "IrrelevantExplainerUnknown",
+        documented = "IrrelevantExplainerMetadata", inferred = "IrrelevantExplainerMetadata", unknown = "IrrelevantExplainerMetadata" })
     end
     local literal = "Failed · 50% %#Error# 界界"
-    p:set(nil, literal); assert(check({ [literal] = "ExplainrMetadata" }):find(literal, 1, true))
+    p:set(nil, literal); assert(check({ [literal] = "IrrelevantExplainerMetadata" }):find(literal, 1, true))
     api.nvim_win_set_width(p.win, 80)
     p:set(nil, "Failed · " .. string.rep("界", 50))
-    assert(check({ ["Failed · 界"] = "ExplainrMetadata", D = "ExplainrDocumented",
-      ["~"] = "ExplainrInferred", ["?"] = "ExplainrUnknown" }):find("… · D", 1, true))
+    assert(check({ ["Failed · 界"] = "IrrelevantExplainerMetadata", D = "IrrelevantExplainerDocumented",
+      ["~"] = "IrrelevantExplainerInferred", ["?"] = "IrrelevantExplainerUnknown" }):find("… · D", 1, true))
     p:set(nil, "Ready")
     for _, width in ipairs({ 60, 59, 40, 25, 12 }) do
       api.nvim_win_set_width(p.win, width); p:render()
-      check({ [width >= 14 and "0 explanations" or "0 explan"] = "ExplainrMetadata" })
+      check({ [width >= 14 and "0 explanations" or "0"] = "IrrelevantExplainerMetadata" })
       if width >= 40 then
-        check({ D = "ExplainrDocumented", ["~"] = "ExplainrInferred", ["?"] = "ExplainrUnknown",
-          inferred = "ExplainrMetadata" })
+        check({ D = "IrrelevantExplainerDocumented", ["~"] = "IrrelevantExplainerInferred", ["?"] = "IrrelevantExplainerUnknown",
+          [width >= 50 and "inferred" or "Ready"] = "IrrelevantExplainerMetadata" })
       end
     end
     api.nvim_win_set_width(p.win, 130)
     p:set({ notes = { note(2), note(3) } }, "Ready"); motion(p.win, "2G0"); p:detail()
-    check({ Explainr = "ExplainrTitle", ["1 / 2"] = "ExplainrMetadata", Expanded = "ExplainrMetadata" })
+    check({ ["Irrelevant Explainer"] = "IrrelevantExplainerTitle", ["1 / 2"] = "IrrelevantExplainerMetadata", Expanded = "IrrelevantExplainerMetadata" })
     local row = vim.fn.screenpos(source, 2, 1).row
     vim.wo[source].winbar = ""
     api.nvim_exec_autocmds("OptionSet", { pattern = "winbar" })
     T.eq(" ", vim.wo[source].winbar); T.eq(row, vim.fn.screenpos(source, 2, 1).row)
-    key(p.detail_buf, "n"); check({ ["2 / 2"] = "ExplainrMetadata" })
-    key(p.detail_buf, "q"); check({ ["2 / 2"] = "ExplainrMetadata", D = "ExplainrDocumented" })
+    key(p.detail_buf, "n"); check({ ["2 / 2"] = "IrrelevantExplainerMetadata" })
+    key(p.detail_buf, "q"); check({ ["2 / 2"] = "IrrelevantExplainerMetadata", D = "IrrelevantExplainerDocumented" })
     for group, color in pairs(colors) do T.eq(color, api.nvim_get_hl(0, { name = group, link = false }).fg) end
   end, debug.traceback)
   if p and not p.closed then p:close() end
@@ -836,7 +836,7 @@ T.test("wrapped rows, folds, matched winbars and page scrolling", function()
   api.nvim_win_call(win, function() vim.cmd("2,4fold") end)
   p:render()
   T.eq(4, api.nvim_win_call(p.win, function() return vim.fn.foldclosedend(2) end))
-  local row = vim.b[p.buf].explainr_foldtext["2"]
+  local row = vim.b[p.buf].irrelevant_explainer_foldtext["2"]
   assert(row:find("folded") and row:find("Note 2") and row:find("Note 4"))
   api.nvim_win_set_cursor(p.win, { 2, 0 }); p:detail()
   local detail = table.concat(api.nvim_buf_get_lines(api.nvim_win_get_buf(p.detail_win), 0, -1, false), "\n")
@@ -904,7 +904,7 @@ T.test("queued expanded geometry skips destroyed reader or source windows and st
     T.eq({}, errors)
     T.eq(true, p.closed); T.eq(false, api.nvim_win_is_valid(p.win))
     T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(false, api.nvim_buf_is_valid(summary_buf))
-    T.eq(0, vim.fn.exists("#ExplainrPane" .. p.win))
+    T.eq(0, vim.fn.exists("#IrrelevantExplainerPane" .. p.win))
   end
 end)
 
@@ -956,7 +956,7 @@ T.test("pane wheel commands generic scrolling cursor navigation statuses and reo
   T.eq(summary("Note 4"), api.nvim_buf_get_lines(p.buf, 3, 4, false)[1])
   T.eq(4, api.nvim_win_call(p.win, vim.fn.winsaveview).topline)
   for _, status in ipairs({ "Pending", "Failed", "Stale", "Cancelled" }) do
-    p:set(nil, status); T.eq(nil, p.result); T.eq(status, vim.b[p.buf].explainr_status)
+    p:set(nil, status); T.eq(nil, p.result); T.eq(status, vim.b[p.buf].irrelevant_explainer_status)
     assert(state(p):find(status, 1, true))
     T.eq(120, api.nvim_buf_line_count(p.buf))
   end
@@ -1046,7 +1046,7 @@ T.test("external global statusline survives focus renders and all pane-local sta
       T.eq(1, vim.fn.getwininfo(p.win)[1].winbar); T.eq(" ", vim.wo[win].winbar)
       T.eq(projection, p.projection); T.eq({ 1 }, p.rows[2])
       T.eq(summary("Note 2"), api.nvim_buf_get_lines(p.buf, 1, 2, false)[1])
-      T.eq(status, vim.b[p.buf].explainr_status)
+      T.eq(status, vim.b[p.buf].irrelevant_explainer_status)
       assert(state(p):find(status:match("^%w+"), 1, true), state(p))
     end
   end
@@ -1062,14 +1062,14 @@ T.test("semantic fallback stays single-row and detail omits citation sections an
   n.detail = string.rep("Reason with **meaning**.\n\n", 40)
   local p = ui.open(win, { windows = { old = win } }, { notes = { n } })
   T.eq("▎ D Guard missing user [+]", api.nvim_buf_get_lines(p.buf, 0, 1, false)[1])
-  local ns = api.nvim_get_namespaces()["explainr.ui"]
+  local ns = api.nvim_get_namespaces()["irrelevant_explainer.ui"]
   local marks = api.nvim_buf_get_extmarks(p.buf, ns, 0, -1, { details = true })
-  T.eq("ExplainrDocumented", marks[1][4].hl_group)
-  T.eq(true, api.nvim_get_hl(0, { name = "ExplainrDetailCue", link = false }).nocombine)
+  T.eq("IrrelevantExplainerDocumented", marks[1][4].hl_group)
+  T.eq(true, api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailCue", link = false }).nocombine)
   for _, m in ipairs(marks) do assert(not m[4].virt_lines and not m[4].conceal_lines) end
   p:detail()
   local detail_win, detail = p.detail_win, api.nvim_win_get_buf(p.detail_win)
-  T.eq("explainr", vim.bo[detail].filetype)
+  T.eq("irrelevant_explainer", vim.bo[detail].filetype)
   local text = table.concat(api.nvim_buf_get_lines(detail, 0, -1, false), "\n")
   for _, expected in ipairs({ "▎ D Guard missing user", "**Intent basis:** documented", n.detail }) do
     assert(text:find(expected, 1, true), expected)
@@ -1089,16 +1089,16 @@ T.test("semantic fallback stays single-row and detail omits citation sections an
   p:close()
 end)
 
-T.test("explainr buffers keep Markdown visible without calling an installed renderer", function()
+T.test("irrelevant_explainer buffers keep Markdown visible without calling an installed renderer", function()
   local win = setup({ "one", "two", "three" })
   local previous, calls = package.loaded["render-markdown"], 0
-  local group = api.nvim_create_augroup("ExplainrRendererTest", { clear = true })
+  local group = api.nvim_create_augroup("IrrelevantExplainerRendererTest", { clear = true })
   local filetypes = {}
   local function called() calls = calls + 1 end
   package.loaded["render-markdown"] = {
     setup = called, render = called, enable = called, disable = called,
   }
-  api.nvim_create_autocmd("FileType", { group = group, pattern = { "explainr", "markdown" }, callback = function(event)
+  api.nvim_create_autocmd("FileType", { group = group, pattern = { "irrelevant_explainer", "markdown" }, callback = function(event)
     filetypes[#filetypes + 1] = vim.bo[event.buf].filetype
   end })
   local ok, err = xpcall(function()
@@ -1107,17 +1107,17 @@ T.test("explainr buffers keep Markdown visible without calling an installed rend
     selected.detail = "## Heading\n\n**Bold** and `code`.\n\n```lua\nreturn true\n```"
     local p = ui.open(win, { windows = { buffer = win } }, { notes = { selected, note(3) } })
     T.eq(0, vim.wo[p.win].conceallevel); T.eq(false, vim.wo[p.win].wrap)
-    T.eq("markdown", vim.treesitter.language.get_lang("explainr"))
+    T.eq("markdown", vim.treesitter.language.get_lang("irrelevant_explainer"))
     p:render(); T.eq({ 1 }, p.rows[1])
     p:detail(); local detail = api.nvim_win_get_buf(p.detail_win)
-    T.eq("explainr", vim.bo[detail].filetype)
+    T.eq("irrelevant_explainer", vim.bo[detail].filetype)
     T.eq(0, vim.wo[p.win].conceallevel); T.eq(true, vim.wo[p.win].wrap)
     T.eq(selected.detail, table.concat(vim.list_slice(detail_lines(p), 4, #detail_lines(p) - 1), "\n"))
     api.nvim_exec_autocmds("WinScrolled", { buffer = detail })
     api.nvim_win_set_width(p.win, 30); api.nvim_exec_autocmds("VimResized", {})
     key(detail, "n"); key(detail, "p")
     T.eq(detail, p.detail_buf); T.eq(0, vim.wo[p.win].conceallevel)
-    T.eq({ "explainr", "explainr" }, filetypes)
+    T.eq({ "irrelevant_explainer", "irrelevant_explainer" }, filetypes)
     p:back(); T.eq(false, vim.wo[p.win].wrap); T.eq(0, vim.wo[p.win].conceallevel)
     T.eq(3, vim.wo[win].conceallevel)
     p:close(); T.eq(false, api.nvim_buf_is_valid(detail))
@@ -1135,10 +1135,10 @@ T.test("missing Markdown parser leaves semantic native fallback usable", functio
     local win = setup({ "one", "two" })
     local p = ui.open(win, { windows = { buffer = win } }, { notes = { note(1) } })
     T.eq(summary("Note 1"), api.nvim_buf_get_lines(p.buf, 0, 1, false)[1])
-    assert(#api.nvim_buf_get_extmarks(p.buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, {}) > 0)
-    p:detail(); T.eq("explainr", vim.bo[p.detail_buf].filetype)
+    assert(#api.nvim_buf_get_extmarks(p.buf, api.nvim_get_namespaces()["irrelevant_explainer.ui"], 0, -1, {}) > 0)
+    p:detail(); T.eq("irrelevant_explainer", vim.bo[p.detail_buf].filetype)
     T.eq("Full explanation without another request.", detail_lines(p)[4])
-    assert(#api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, {}) > 0)
+    assert(#api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["irrelevant_explainer.ui"], 0, -1, {}) > 0)
     p:close()
   end, debug.traceback)
   vim.treesitter.start = start
@@ -1154,9 +1154,9 @@ T.test("full note viewport uses a separate state header without moving any ancho
   local rows, projection = vim.deepcopy(p.rows), vim.deepcopy(p.projection)
   p:set(result, "Stale")
   T.eq(rows, p.rows); T.eq(projection, p.projection)
-  T.eq({}, marks(p, "explainr.state"))
+  T.eq({}, marks(p, "irrelevant_explainer.state"))
   assert(state(p):find("Stale", 1, true))
-  assert(state(p):find("? unknown", 1, true)); p:close()
+  assert(state(p):find("?", 1, true)); p:close() -- Compact legends retain the semantic marker.
 end)
 
 T.test("blank and pending lines synchronize both directions beyond viewport without stealing focus", function()
@@ -1249,7 +1249,7 @@ end)
 T.test("pending spinner ticks only decorations and stops every terminal phase and close", function()
   local source = setup({ "a", "b", "c" })
   local p = ui.open(source, { windows = { buffer = source } }, nil)
-  local group = api.nvim_create_augroup("ExplainrSpinnerTest", { clear = true })
+  local group = api.nvim_create_augroup("IrrelevantExplainerSpinnerTest", { clear = true })
   local changed, renders, heights = 0, 0, 0
   api.nvim_create_autocmd("TextChanged", { group = group, buffer = p.buf, callback = function() changed = changed + 1 end })
   local render, height = p.render, api.nvim_win_text_height
@@ -1262,7 +1262,7 @@ T.test("pending spinner ticks only decorations and stops every terminal phase an
       vim.wait(20, function() return false end) -- drain structural callbacks
       local first, tick, before, scans = state(p), api.nvim_buf_get_changedtick(p.buf), renders, heights
       assert(vim.wait(500, function() return state(p) ~= first end), "spinner never animated")
-      T.eq("Pending · current phase", p.status); T.eq(p.status, vim.b[p.buf].explainr_status)
+      T.eq("Pending · current phase", p.status); T.eq(p.status, vim.b[p.buf].irrelevant_explainer_status)
       assert(state(p):find("~ inferred", 1, true))
       T.eq(tick, api.nvim_buf_get_changedtick(p.buf)); T.eq(before, renders); T.eq(scans, heights)
       T.eq("SOURCE BAR", vim.wo[source].statusline); T.eq("NOTES BAR", vim.wo[p.win].statusline)
@@ -1302,7 +1302,7 @@ T.test("focused context remains visible after scroll but is omitted from detail"
   local p = ui.open(source, snapshot, { notes = { note(100) } })
   assert(state(p):find("Focused ±12 · 2 files omitted", 1, true))
   motion(p.win, "100G"); assert(state(p):find("Focused", 1, true))
-  T.eq({}, marks(p, "explainr.state"))
+  T.eq({}, marks(p, "irrelevant_explainer.state"))
   key(p.buf, "K")
   local text = table.concat(api.nvim_buf_get_lines(api.nvim_win_get_buf(p.detail_win), 0, -1, false), "\n")
   assert(not text:find("**Context:**", 1, true))
@@ -1350,7 +1350,7 @@ T.test("trailing old deletions render in EOF filler and share the final logical 
   T.eq(summary("Trailing deletion"), p.eof[1]); T.eq(summary("Second deletion"), p.eof[2])
   T.eq(true, p.projection[2].eof)
   local found = false
-  for _, m in ipairs(marks(p, "explainr.geometry")) do
+  for _, m in ipairs(marks(p, "irrelevant_explainer.geometry")) do
     if m[4].virt_lines and not m[4].virt_lines_above then
       T.eq("[old:2] ", m[4].virt_lines[1][1][1])
       T.eq(summary("Trailing deletion"), m[4].virt_lines[1][2][1]); found = true
@@ -1456,7 +1456,7 @@ T.test("screen-filling wraps use bounded virtual geometry and retain a reachable
   api.nvim_win_call(source, function() vim.fn.winrestview({ topline = 1, skipcol = 600, lnum = 1, col = 600 }) end)
   p:align()
   T.eq({ 1, 600 }, api.nvim_win_get_cursor(source)); T.eq({ 1, 0 }, api.nvim_win_get_cursor(p.win))
-  local rows = marks(p, "explainr.geometry")
+  local rows = marks(p, "irrelevant_explainer.geometry")
   for _, m in ipairs(rows) do
     if m[4].virt_lines then T.eq(height - 1, #m[4].virt_lines); T.eq("", m[4].virt_lines[1][1][1]) end
   end
@@ -1479,7 +1479,7 @@ T.test("wrapped source cursor matches notes on each physical segment and n p rev
     T.eq({ 1, column }, api.nvim_win_get_cursor(source))
     if column >= 40 then
       local overlay = false
-      for _, m in ipairs(marks(p, "explainr.geometry")) do
+      for _, m in ipairs(marks(p, "irrelevant_explainer.geometry")) do
         if m[2] == 0 and m[4].virt_text then T.eq("CursorLine", m[4].virt_text[1][2]); overlay = true end
       end
       assert(overlay, "wrapped cursor row was not highlighted")
@@ -2761,28 +2761,28 @@ T.test("expansion keeps its summary position and preceding context; K toggles wi
   T.eq(before, detail_screen(p, 1))
   T.eq(3, #p.overview.context)
   T.eq("[buffer:2] " .. summary("Earlier note"), p.overview.context[2][1][1])
-  T.eq("ExplainrDetailContext", p.overview.context[2][1][2])
+  T.eq("IrrelevantExplainerDetailContext", p.overview.context[2][1][2])
   local lines = detail_lines(p)
   T.eq("▎ D Selected range", lines[1])
   local controls = {}
-  for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, { details = true })) do
+  for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["irrelevant_explainer.ui"], 0, -1, { details = true })) do
     if m[2] == p.detail_layout.first - 1 and m[4].virt_text then controls[#controls + 1] = m[4].virt_text[1][1] end
   end
   T.eq({ "[buffer:4–5] ", " [−]" }, controls)
   T.eq("**Intent basis:** documented · `test.lua`", lines[2])
   T.eq(selected.detail, lines[4])
-  assert(vim.wo[p.win].winbar:find("Explainr", 1, true))
-  local active_ns = api.nvim_get_namespaces()["explainr.detail." .. p.win]
+  assert(vim.wo[p.win].winbar:find("Irrelevant Explainer", 1, true))
+  local active_ns = api.nvim_get_namespaces()["irrelevant_explainer.detail." .. p.win]
   local active = api.nvim_buf_get_extmarks(source_buf, active_ns, 0, -1, { details = true })
   T.eq(2, #active); T.eq(3, active[1][2]); T.eq(4, active[2][2])
   for _, mark in ipairs(active) do
     T.eq("▎ ", mark[4].sign_text)
-    T.eq("ExplainrActiveRange", mark[4].sign_hl_group)
+    T.eq("IrrelevantExplainerActiveRange", mark[4].sign_hl_group)
     T.eq(5, mark[4].priority)
     T.eq(nil, mark[4].hl_group); T.eq(nil, mark[4].line_hl_group)
     T.eq(nil, mark[4].number_hl_group); T.eq(nil, mark[4].end_row)
   end
-  T.eq(nil, api.nvim_get_hl(0, { name = "ExplainrActiveRange", link = false }).underline)
+  T.eq(nil, api.nvim_get_hl(0, { name = "IrrelevantExplainerActiveRange", link = false }).underline)
   T.eq(tick, api.nvim_buf_get_changedtick(source_buf)); T.eq(code_view, api.nvim_win_call(source, vim.fn.winsaveview))
   local detail = p.detail_buf
   key(detail, "K"); T.eq(nil, p.detail_win); T.eq(false, api.nvim_buf_is_valid(detail))
@@ -2821,7 +2821,7 @@ T.test("expanded neighbors remain dimmed at the same screen columns and source r
   text(rows[4], "[buffer:4–10] ▎ ? Selected range [−]")
   text(rows[12], "[buffer:12] " .. summary("After"))
   text(rows[20], "[buffer:20] " .. summary("Later"))
-  local dimmed = api.nvim_get_hl(0, { name = "ExplainrDetailContext", link = false })
+  local dimmed = api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailContext", link = false })
   for _, line in ipairs({ 2, 12, 20 }) do
     local cell = api.nvim__inspect_cell(1, rows[line] - 1, info.wincol + 1)[2]
     T.eq(dimmed.fg, cell.foreground); T.eq(dimmed.bg, cell.background)
@@ -2843,12 +2843,12 @@ T.test("long and overlapping expanded cards retain following notes instead of co
       { notes = { selected, note(5, "Inside anchor"), note(18, "Outside anchor") } })
     motion(p.win, "3G0"); p:detail(); vim.cmd("redraw!")
     local tail = {}
-    for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, { details = true })) do
+    for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["irrelevant_explainer.ui"], 0, -1, { details = true })) do
       if m[2] >= p.detail_layout.last and m[4].virt_text then tail[#tail + 1] = m[4].virt_text end
     end
     assert(#tail > 0, "following notes must be retained")
     T.eq("[buffer:5] " .. summary("Inside anchor"), tail[1][1][1])
-    T.eq({ "ExplainrDetailContext", "ExplainrDetailActive" }, tail[1][1][2])
+    T.eq({ "IrrelevantExplainerDetailContext", "IrrelevantExplainerDetailActive" }, tail[1][1][2])
     -- The second neighbor may be below the viewport: it still owns an exact
     -- target, but receives decorations only when that reader row is visible.
     local destination
@@ -2856,13 +2856,13 @@ T.test("long and overlapping expanded cards retain following notes instead of co
     T.eq(p.detail_layout.last + 14, destination)
     api.nvim_win_call(p.win, function() vim.cmd.normal({ destination .. "Gzt", bang = true }) end)
     p:scroll(nil, p.win)
-    local decorated = api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.ui"],
+    local decorated = api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["irrelevant_explainer.ui"],
       { destination - 1, 0 }, { destination - 1, -1 }, { details = true })
     local label
     for _, m in ipairs(decorated) do if m[4].virt_text then label = m[4].virt_text end end
     assert(label, "off-screen context must be decorated when it becomes visible")
     T.eq("[buffer:18] " .. summary("Outside anchor"), label[1][1])
-    T.eq("ExplainrDetailContext", label[1][2])
+    T.eq("IrrelevantExplainerDetailContext", label[1][2])
     T.eq(lines, api.nvim_buf_get_lines(api.nvim_win_get_buf(source), 0, -1, false))
     p:close()
   end
@@ -2931,7 +2931,7 @@ T.test("expanded card background covers semantic labels and wrapped margins with
   note.detail = "This file defined a creation-specific validation exception. The diff deletes the entire file. "
     .. "The supplied snapshot does not establish why it was removed or what replaces it."
   local p = ui.open(source, { windows = { buffer = source } }, { notes = { note } })
-  local groups = { "ExplainrSummary", "ExplainrMetadata", "ExplainrInferred", "ExplainrDetailCue" }
+  local groups = { "IrrelevantExplainerSummary", "IrrelevantExplainerMetadata", "IrrelevantExplainerInferred", "IrrelevantExplainerDetailCue" }
   local saved = {}
   for _, name in ipairs(groups) do
     saved[name] = api.nvim_get_hl(0, { name = name, link = true })
@@ -2942,8 +2942,8 @@ T.test("expanded card background covers semantic labels and wrapped margins with
   local ok, err = xpcall(function()
     p:detail(); api.nvim__inspect_cell(1, 0, 0); vim.cmd("redraw!")
     local info = vim.fn.getwininfo(p.win)[1]
-    local active = api.nvim_get_hl(0, { name = "ExplainrDetailActive", link = false }).bg
-    local backdrop = api.nvim_get_hl(0, { name = "ExplainrDetailBackdrop", link = false }).bg
+    local active = api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailActive", link = false }).bg
+    local backdrop = api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailBackdrop", link = false }).bg
     local first = vim.fn.screenpos(p.win, 1, 1).row
     for col = info.wincol + info.textoff, info.wincol + info.width - 1 do
       T.eq(active, api.nvim__inspect_cell(1, first - 1, col - 1)[2].background)
@@ -2967,7 +2967,7 @@ end)
 
 T.test("focus tint softens theme CursorLine with neutral fallbacks and respects overrides", function()
   local saved, background = {}, vim.o.background
-  for _, name in ipairs({ "Normal", "CursorLine", "NormalFloat", "DiagnosticInfo", "ExplainrDetailActive" }) do
+  for _, name in ipairs({ "Normal", "CursorLine", "NormalFloat", "DiagnosticInfo", "IrrelevantExplainerDetailActive" }) do
     saved[name] = api.nvim_get_hl(0, { name = name, link = true })
   end
   local ok, err = xpcall(function()
@@ -2982,16 +2982,16 @@ T.test("focus tint softens theme CursorLine with neutral fallbacks and respects 
       api.nvim_set_hl(0, "CursorLine", theme[3] and { bg = theme[3] } or {})
       api.nvim_set_hl(0, "NormalFloat", theme[5] and { bg = theme[5] } or {})
       api.nvim_set_hl(0, "DiagnosticInfo", { fg = 0x00ff00 })
-      api.nvim_set_hl(0, "ExplainrDetailActive", {})
+      api.nvim_set_hl(0, "IrrelevantExplainerDetailActive", {})
       local source = setup({ "source" })
       local p = ui.open(source, { windows = { buffer = source } }, { notes = { note(1) } })
-      T.eq(theme[4], api.nvim_get_hl(0, { name = "ExplainrDetailActive", link = false }).bg)
+      T.eq(theme[4], api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailActive", link = false }).bg)
       p:close()
     end
-    api.nvim_set_hl(0, "ExplainrDetailActive", { bg = 0x123456 })
+    api.nvim_set_hl(0, "IrrelevantExplainerDetailActive", { bg = 0x123456 })
     local source = setup({ "source" })
     local p = ui.open(source, { windows = { buffer = source } }, { notes = { note(1) } })
-    T.eq(0x123456, api.nvim_get_hl(0, { name = "ExplainrDetailActive", link = false }).bg)
+    T.eq(0x123456, api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailActive", link = false }).bg)
     p:close()
   end, debug.traceback)
   vim.o.background = background
@@ -3025,9 +3025,9 @@ T.test("expanded following context retains folded notes and old-side deletion fi
       { notes = { note(3, "Selected", "new"), deleted, note(17, "Fold", "new") } })
     motion(p.win, "3G0"); p:detail()
     local tail = ""
-    for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, { details = true })) do
+    for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["irrelevant_explainer.ui"], 0, -1, { details = true })) do
       if m[2] >= p.detail_layout.last and m[4].virt_text then
-        T.eq("ExplainrDetailContext", m[4].virt_text[1][2])
+        T.eq("IrrelevantExplainerDetailContext", m[4].virt_text[1][2])
         tail = tail .. m[4].virt_text[1][1] .. "\n"
       end
     end
@@ -3048,7 +3048,7 @@ T.test("short expanded detail extends its tint and gutter using navigable rows w
   api.nvim__inspect_cell(1, 0, 0); vim.cmd("redraw!")
   local info = vim.fn.getwininfo(p.win)[1]
   local last = vim.fn.screenpos(source, 18, 1).row
-  local active = api.nvim_get_hl(0, { name = "ExplainrDetailActive", link = false }).bg
+  local active = api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailActive", link = false }).bg
   T.eq("▎", vim.fn.screenstring(last, info.wincol))
   T.eq(active, api.nvim__inspect_cell(1, last - 1, info.wincol + info.width - 2)[2].background)
   assert(vim.fn.screenstring(last + 1, info.wincol) ~= "▎", "rail must stop at the anchor end when text is shorter")
@@ -3150,9 +3150,9 @@ T.test("expanded whole-file diff overview keeps its full visible range active pa
   local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { overview, next_entry } })
   motion(p.win, "1G0"); p:detail(); api.nvim__inspect_cell(1, 0, 0); vim.cmd("redraw!")
   local info = vim.fn.getwininfo(p.win)[1]
-  local active = api.nvim_get_hl(0, { name = "ExplainrDetailActive", link = false }).bg
-  local backdrop = api.nvim_get_hl(0, { name = "ExplainrDetailBackdrop", link = false }).bg
-  local dimmed = api.nvim_get_hl(0, { name = "ExplainrDetailContext", link = false }).fg
+  local active = api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailActive", link = false }).bg
+  local backdrop = api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailBackdrop", link = false }).bg
+  local dimmed = api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailContext", link = false }).fg
   local function cell(row, col) return api.nvim__inspect_cell(1, row - 1, col - 1)[2] end
   local first = vim.fn.screenpos(new, 1, 1).row
   local last = vim.fn.screenpos(new, vim.fn.getwininfo(new)[1].botline - 1, 1).row
@@ -3211,7 +3211,7 @@ T.test("expanded diff focus also covers anchored context before the changed-line
   T.eq({ row = 8 }, p.locations[1]); motion(p.win, "8G0"); p:detail()
   api.nvim__inspect_cell(1, 0, 0); vim.cmd("redraw!")
   local info = vim.fn.getwininfo(p.win)[1]
-  local active = api.nvim_get_hl(0, { name = "ExplainrDetailActive", link = false }).bg
+  local active = api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailActive", link = false }).bg
   for _, source_line in ipairs({ 2, 7, 18 }) do
     local row = vim.fn.screenpos(new, source_line, 1).row
     T.eq("▎", vim.fn.screenstring(row, info.wincol))
@@ -3238,7 +3238,7 @@ T.test("detail gutter tolerates replacement buffers without decoration data", fu
   local values, errors = {}, {}
   for _, case in ipairs({ { row = 1 }, { data = {}, row = 1 },
     { data = { ["1"] = 1 }, row = 1 }, { data = { ["1"] = 1 }, row = 2 }, { row = 1 } }) do
-    vim.b[replacement].explainr_detail_active = case.data
+    vim.b[replacement].irrelevant_explainer_detail_active = case.data
     vim.v.errmsg = ""
     values[#values + 1] = vim.trim(api.nvim_eval_statusline(gutter,
       { winid = p.win, use_statuscol_lnum = case.row }).str)
@@ -3309,11 +3309,11 @@ T.test("Enter toggles focused detail with a continuous gutter and leaves Tab unm
   T.eq(opening_row, detail_screen(p, 1))
   T.eq("yes:1", vim.wo[p.win].signcolumn)
   assert(vim.wo[p.win].winhighlight:find("CursorLine:Search", 1, true))
-  assert(vim.wo[p.win].winhighlight:find("Normal:ExplainrDetailActive", 1, true))
-  T.eq(nil, api.nvim_get_hl(0, { name = "ExplainrDetailActive", link = false }).fg) -- Don't overwrite Markdown/intent colors.
+  assert(vim.wo[p.win].winhighlight:find("Normal:IrrelevantExplainerDetailActive", 1, true))
+  T.eq(nil, api.nvim_get_hl(0, { name = "IrrelevantExplainerDetailActive", link = false }).fg) -- Don't overwrite Markdown/intent colors.
   local active = 0
-  for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.ui"], 0, -1, { details = true })) do
-    if m[4].hl_group == "ExplainrDetailActive" and m[4].hl_eol and m[4].priority == 0 then active = active + 1 end
+  for _, m in ipairs(api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["irrelevant_explainer.ui"], 0, -1, { details = true })) do
+    if m[4].hl_group == "IrrelevantExplainerDetailActive" and m[4].hl_eol and m[4].priority == 0 then active = active + 1 end
   end
   T.eq(#detail_lines(p), active) -- Include blank lines and the entire explanation.
   local info = vim.fn.getwininfo(p.win)[1]
@@ -3328,7 +3328,7 @@ T.test("Enter toggles focused detail with a continuous gutter and leaves Tab unm
   local detail = p.detail_buf
   key(detail, "<CR>"); T.eq(false, api.nvim_buf_is_valid(detail)); T.eq(nil, p.detail_buf)
   T.eq("yes:1", vim.wo[p.win].signcolumn); T.eq("%s", vim.wo[p.win].statuscolumn)
-  assert(vim.wo[p.win].winhighlight:find("Normal:ExplainrDetailBackdrop", 1, true))
+  assert(vim.wo[p.win].winhighlight:find("Normal:IrrelevantExplainerDetailBackdrop", 1, true))
   T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
   api.nvim_set_current_win(source) -- Leaving collapsed focus restores the user's exact settings.
   T.eq("Normal:Normal,CursorLine:Search", vim.wo[p.win].winhighlight)
@@ -3344,18 +3344,18 @@ T.test("collapsed explanation focus follows notes, highlights their ranges and r
     { notes = { note(1), selected, note(8) } })
   local original = vim.wo[p.win].winhighlight
   local tick, source_tick = api.nvim_buf_get_changedtick(p.buf), api.nvim_buf_get_changedtick(source_buf)
-  local focus_ns = api.nvim_get_namespaces()["explainr.focus." .. p.win]
-  local active_ns = api.nvim_get_namespaces()["explainr.detail." .. p.win]
-  local overview_ns = "explainr.overview.focus." .. p.win
+  local focus_ns = api.nvim_get_namespaces()["irrelevant_explainer.focus." .. p.win]
+  local active_ns = api.nvim_get_namespaces()["irrelevant_explainer.detail." .. p.win]
+  local overview_ns = "irrelevant_explainer.overview.focus." .. p.win
   motion(p.win, "4G")
   T.eq(nil, p.detail_buf); T.eq({ 2 }, p.focus_ids)
   T.eq(3, #api.nvim_buf_get_extmarks(source_buf, active_ns, 0, -1, {}))
   local colored = {}
   for _, mark in ipairs(marks(p, overview_ns)) do colored[mark[2] + 1] = mark[4].virt_text end
-  T.eq("ExplainrDetailContext", colored[1][1][2])
-  for row = 4, 6 do T.eq("ExplainrDetailActive", colored[row][#colored[row]][2]) end
+  T.eq("IrrelevantExplainerDetailContext", colored[1][1][2])
+  for row = 4, 6 do T.eq("IrrelevantExplainerDetailActive", colored[row][#colored[row]][2]) end
   T.eq("▎ ", colored[5][1][1])
-  T.eq("ExplainrDetailContext", colored[7][#colored[7]][2])
+  T.eq("IrrelevantExplainerDetailContext", colored[7][#colored[7]][2])
   T.eq(tick, api.nvim_buf_get_changedtick(p.buf)); T.eq(source_tick, api.nvim_buf_get_changedtick(source_buf))
   key(p.buf, "n"); T.eq({ 3 }, p.focus_ids)
   T.eq(7, api.nvim_buf_get_extmarks(source_buf, active_ns, 0, -1, {})[1][2])
@@ -3381,13 +3381,13 @@ T.test("file overview has a separate matched status header and focuses the compl
   local p = ui.open(source, { source_buf = source_buf, windows = { buffer = source } },
     { notes = { overview, note(3) } })
   local bar = vim.o.statusline
-  T.eq(" ", vim.wo[source].winbar); assert(vim.wo[p.win].winbar:find("Explainr", 1, true))
-  T.eq({}, marks(p, "explainr.state")) -- No overlay may overwrite the file overview.
+  T.eq(" ", vim.wo[source].winbar); assert(vim.wo[p.win].winbar:find("Irrelevant Explainer", 1, true))
+  T.eq({}, marks(p, "irrelevant_explainer.state")) -- No overlay may overwrite the file overview.
   vim.cmd("redraw")
   for _, row in ipairs({ 1, 3 }) do T.eq(vim.fn.screenpos(source, row, 1).row, vim.fn.screenpos(p.win, row, 1).row) end
   motion(p.win, "1G")
-  local active_ns = api.nvim_get_namespaces()["explainr.detail." .. p.win]
-  local focus_ns = api.nvim_get_namespaces()["explainr.focus." .. p.win]
+  local active_ns = api.nvim_get_namespaces()["irrelevant_explainer.detail." .. p.win]
+  local focus_ns = api.nvim_get_namespaces()["irrelevant_explainer.focus." .. p.win]
   T.eq(5, #api.nvim_buf_get_extmarks(source_buf, active_ns, 0, -1, {}))
   T.eq({}, api.nvim_buf_get_extmarks(source_buf, focus_ns, 0, -1, {}))
   key(p.buf, "<CR>"); T.eq(5, #api.nvim_buf_get_extmarks(source_buf, active_ns, 0, -1, {}))
@@ -3412,10 +3412,10 @@ T.test("whole-file diff overview stays at the start instead of its first changed
   local p = ui.open(new, { windows = { old = old, new = new } }, { notes = { overview, note(2, "Change", "new") } })
   T.eq({ row = 1 }, p.locations[1]); T.eq({ row = 2 }, p.locations[2])
   motion(p.win, "1G")
-  local active_ns = api.nvim_get_namespaces()["explainr.detail." .. p.win]
+  local active_ns = api.nvim_get_namespaces()["irrelevant_explainer.detail." .. p.win]
   T.eq(3, #api.nvim_buf_get_extmarks(api.nvim_win_get_buf(old), active_ns, 0, -1, {}))
   T.eq(4, #api.nvim_buf_get_extmarks(new_buf, active_ns, 0, -1, {}))
-  p:sync(old); T.eq({ row = 1 }, p.locations[1]); T.eq({}, marks(p, "explainr.state"))
+  p:sync(old); T.eq({ row = 1 }, p.locations[1]); T.eq({}, marks(p, "irrelevant_explainer.state"))
   p:close(); T.eq("", vim.wo[old].winbar); T.eq("", vim.wo[new].winbar); vim.cmd("diffoff!")
 end)
 
@@ -3486,7 +3486,7 @@ T.test("collapsed diff focus colors deleted filler without highlighting unrelate
   -- Entering this hunk refines native linematch filler without a text edit.
   T.eq(1, api.nvim_win_call(fixture.new, function() return vim.fn.diff_filler(74) end))
   T.eq(75, p:coordinates(fixture.new)[74]); T.eq(77, p:coordinates(fixture.new)[75])
-  local active_ns = api.nvim_get_namespaces()["explainr.detail." .. p.win]
+  local active_ns = api.nvim_get_namespaces()["irrelevant_explainer.detail." .. p.win]
   local active = api.nvim_buf_get_extmarks(api.nvim_win_get_buf(fixture.old), active_ns, 0, -1, {})
   T.eq(2, #active); T.eq(70, active[1][2]); T.eq(71, active[2][2])
   T.eq({}, api.nvim_buf_get_extmarks(api.nvim_win_get_buf(fixture.new), active_ns, 0, -1, {}))
@@ -3496,18 +3496,18 @@ T.test("collapsed diff focus colors deleted filler without highlighting unrelate
       local chunks = geometry.opts.virt_lines[i]
       local hl = chunks[#chunks][2]
       if coordinate >= p:coordinates(fixture.old)[71] and coordinate <= p:coordinates(fixture.old)[72] then
-        T.eq("ExplainrDetailActive", hl); selected = selected + 1
-      elseif hl == "ExplainrDetailContext" then dimmed = dimmed + 1 end
+        T.eq("IrrelevantExplainerDetailActive", hl); selected = selected + 1
+      elseif hl == "IrrelevantExplainerDetailContext" then dimmed = dimmed + 1 end
     end
   end
   -- Native diff pairs the first deleted old line with changed new line 74;
   -- only the second deletion is filler. Both must retain the focus tint.
   T.eq(1, selected); assert(dimmed > 0)
   local paired = false
-  for _, mark in ipairs(marks(p, "explainr.overview.focus." .. p.win)) do
+  for _, mark in ipairs(marks(p, "irrelevant_explainer.overview.focus." .. p.win)) do
     if mark[2] == 73 then
       local chunks = mark[4].virt_text
-      T.eq("ExplainrDetailActive", chunks[#chunks][2]); paired = true
+      T.eq("IrrelevantExplainerDetailActive", chunks[#chunks][2]); paired = true
     end
   end
   assert(paired)
@@ -3551,8 +3551,8 @@ T.test("expanded range decorations update for entries, clear on set/close and pr
   local snapshot = { source_buf = source_buf, windows = { buffer = source } }
   local p, other = ui.open(source, snapshot, result), ui.open(source, snapshot, result)
   local namespaces = api.nvim_get_namespaces()
-  local first_ns, other_ns = namespaces["explainr.detail." .. p.win], namespaces["explainr.detail." .. other.win]
-  local focus_ns, other_focus_ns = namespaces["explainr.focus." .. p.win], namespaces["explainr.focus." .. other.win]
+  local first_ns, other_ns = namespaces["irrelevant_explainer.detail." .. p.win], namespaces["irrelevant_explainer.detail." .. other.win]
+  local focus_ns, other_focus_ns = namespaces["irrelevant_explainer.focus." .. p.win], namespaces["irrelevant_explainer.focus." .. other.win]
   p:detail(1); other:detail(2)
   T.eq(1, #api.nvim_buf_get_extmarks(source_buf, first_ns, 0, -1, {}))
   T.eq(1, #api.nvim_buf_get_extmarks(source_buf, other_ns, 0, -1, {}))
@@ -3617,15 +3617,15 @@ T.test("source focus dims only the complement of overlapping and disjoint anchor
   selected.anchors[3] = { path = "test.lua", side = "buffer", start_line = 2, end_line = 4 }
   local original, tick = vim.deepcopy(selected.anchors), api.nvim_buf_get_changedtick(source_buf)
   local p = ui.open(source, { source_buf = source_buf, windows = { buffer = source } }, { notes = { selected } })
-  local focus_ns = api.nvim_get_namespaces()["explainr.focus." .. p.win]
+  local focus_ns = api.nvim_get_namespaces()["irrelevant_explainer.focus." .. p.win]
   p:detail(1)
   local gaps = {}
   for _, mark in ipairs(api.nvim_buf_get_extmarks(source_buf, focus_ns, 0, -1, { details = true })) do
     gaps[#gaps + 1] = { mark[2], mark[4].end_row }
-    T.eq("ExplainrSourceContext", mark[4].hl_group); T.eq(0, mark[4].end_col)
+    T.eq("IrrelevantExplainerSourceContext", mark[4].hl_group); T.eq(0, mark[4].end_col)
   end
   T.eq({ { 0, 1 }, { 5, 6 }, { 9, 11 } }, gaps)
-  T.eq(nil, api.nvim_get_hl(0, { name = "ExplainrSourceContext", link = false }).bg)
+  T.eq(nil, api.nvim_get_hl(0, { name = "IrrelevantExplainerSourceContext", link = false }).bg)
   T.eq(original, selected.anchors); T.eq(tick, api.nvim_buf_get_changedtick(source_buf))
   p:back(); api.nvim_set_current_win(source)
   T.eq({}, api.nvim_buf_get_extmarks(source_buf, focus_ns, 0, -1, {}))
@@ -3674,11 +3674,11 @@ T.test("deletion expansion marks original paired coordinates without replacing G
   p:detail(1)
   T.eq(1, #p.overview.context) -- first row, then the first deleted virtual row
   T.eq("▎ ? Removed branch", detail_lines(p)[1])
-  local active_ns = api.nvim_get_namespaces()["explainr.detail." .. p.win]
+  local active_ns = api.nvim_get_namespaces()["irrelevant_explainer.detail." .. p.win]
   local active = api.nvim_buf_get_extmarks(old_buf, active_ns, 0, -1, {})
   T.eq(2, #active); T.eq(1, active[1][2]); T.eq(2, active[2][2])
   T.eq({}, api.nvim_buf_get_extmarks(new_buf, active_ns, 0, -1, {}))
-  local focus_ns = api.nvim_get_namespaces()["explainr.focus." .. p.win]
+  local focus_ns = api.nvim_get_namespaces()["irrelevant_explainer.focus." .. p.win]
   local paired_focus = api.nvim_buf_get_extmarks(new_buf, focus_ns, 0, -1, { details = true })
   T.eq(1, #paired_focus); T.eq(0, paired_focus[1][2]); T.eq(3, paired_focus[1][4].end_row)
   vim.cmd("redraw")
@@ -3759,7 +3759,7 @@ T.test("range references and continuation rails retain logical lines including p
   local n = note(2); n.anchors[1].end_line = 4
   local p = ui.open(source, { windows = { buffer = source } }, { notes = { n } })
   local refs, rails = {}, {}
-  for _, m in ipairs(marks(p, "explainr.ranges")) do
+  for _, m in ipairs(marks(p, "irrelevant_explainer.ranges")) do
     local text = m[4].virt_text[1][1]
     if text == "│ " then rails[#rails + 1] = m[2] + 1 else refs[#refs + 1] = text end
     assert(not m[4].virt_lines)
@@ -3779,7 +3779,7 @@ T.test("range references and continuation rails retain logical lines including p
   T.eq("[old:4–5 ↔ new:2–3] ", p.references[2])
   T.eq("[old:2–3] ", p.filler_refs[2][-2])
   local found = false
-  for _, m in ipairs(marks(p, "explainr.geometry")) do
+  for _, m in ipairs(marks(p, "irrelevant_explainer.geometry")) do
     if m[4].virt_lines_above then
       T.eq("[old:2–3] ", m[4].virt_lines[1][1][1]); T.eq("│ ", m[4].virt_lines[2][1][1]); found = true
     end
@@ -3801,7 +3801,7 @@ T.test("overlapping notes occupy separate rows in their ranges without stealing 
   T.eq(view, api.nvim_win_call(source, vim.fn.winsaveview))
   motion(p.win, "2G"); vim.cmd("normal n"); T.eq(3, api.nvim_win_get_cursor(source)[1])
   vim.cmd("normal n"); T.eq(4, api.nvim_win_get_cursor(source)[1]); key(p.buf, "<CR>"); T.eq(1, p.detail_index)
-  local active = api.nvim_buf_get_extmarks(api.nvim_win_get_buf(source), api.nvim_get_namespaces()["explainr.detail." .. p.win], 0, -1, {})
+  local active = api.nvim_buf_get_extmarks(api.nvim_win_get_buf(source), api.nvim_get_namespaces()["irrelevant_explainer.detail." .. p.win], 0, -1, {})
   T.eq(5, #active); T.eq(1, active[1][2]); T.eq(5, active[#active][2])
   p:close()
 end)
@@ -3907,14 +3907,14 @@ T.test("ready and pending headers explain intent symbols without adding rows or 
   for _, bar in ipairs({ "", "Source" }) do
     local source = setup({ "one", "two", "three" }); vim.wo[source].winbar = bar
     local p = ui.open(source, { windows = { buffer = source } }, { notes = { note(2) } })
-    api.nvim_win_set_width(p.win, 100); p:render()
+    api.nvim_win_set_width(p.win, 120); p:render()
     local count, projection = api.nvim_buf_line_count(p.buf), vim.deepcopy(p.projection)
     for _, status in ipairs({ "Ready", "Pending · external agent" }) do
       p:set(p.result, status)
       local header = state(p)
       for _, meaning in ipairs({ "D documented", "~ inferred", "? unknown" }) do assert(header:find(meaning, 1, true), header) end
       T.eq(count, api.nvim_buf_line_count(p.buf)); T.eq(projection, p.projection)
-      T.eq(status, vim.b[p.buf].explainr_status)
+      T.eq(status, vim.b[p.buf].irrelevant_explainer_status)
     end
     p:close()
   end
@@ -3988,6 +3988,17 @@ T.test("File header keeps terminal status readable before branding", function()
       assert(state(p):find(status, 1, true), state(p))
     end
   end
+  api.nvim_win_set_width(p.win, 32)
+  p.auto_explain = true
+  for _, status in ipairs({ "Ready", "Pending", "Failed", "Stale", "Cancelled" }) do
+    p:set_status(status .. " · source context")
+    assert(state(p):find("File · 2 · Auto", 1, true), state(p))
+    assert(state(p):find(status, 1, true), state(p))
+    assert(vim.fn.strwidth(state(p)) <= 32, state(p))
+  end
+  p:set(nil, "Pending · collecting comparison")
+  assert(state(p):find("File · 0 · Auto", 1, true), state(p))
+  assert(state(p):find("Pending", 1, true), state(p))
   p:close()
 end)
 
@@ -4017,11 +4028,11 @@ T.test("expanded first-row counter stays in the reserved header without changing
   motion(p.win, "2G0"); assert(state(p):find("1 explanation ·", 1, true), state(p))
   motion(p.win, "1G0"); key(p.buf, "K")
   T.eq({}, p.overview.context); T.eq(1, vim.fn.getwininfo(p.win)[1].winbar)
-  local m = api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.state"], 0, -1, { details = true })
+  local m = api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["irrelevant_explainer.state"], 0, -1, { details = true })
   T.eq({}, m); assert(state(p):find("1 / 1 · Expanded", 1, true), state(p))
   T.eq("▎ ? Note 1", api.nvim_buf_get_lines(p.detail_buf, 0, 1, false)[1])
   key(p.detail_buf, "n")
-  T.eq({}, api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["explainr.state"], 0, -1, {}))
+  T.eq({}, api.nvim_buf_get_extmarks(p.detail_buf, api.nvim_get_namespaces()["irrelevant_explainer.state"], 0, -1, {}))
   p:close()
 end)
 
@@ -4031,7 +4042,7 @@ T.test("requested scopes animate only matching visible rows without writes or co
   local result = { notes = { note(3) } }
   local p = ui.open(source, { windows = { buffer = source } }, result)
   local function rows()
-    local rows = {}; for _, m in ipairs(marks(p, "explainr.loading")) do rows[#rows + 1] = m[2] + 1 end
+    local rows = {}; for _, m in ipairs(marks(p, "irrelevant_explainer.loading")) do rows[#rows + 1] = m[2] + 1 end
     return rows
   end
   for _, scope in ipairs({ "selection", "hunk" }) do
@@ -4043,16 +4054,16 @@ T.test("requested scopes animate only matching visible rows without writes or co
   vim.wait(20, function() return false end)
   local fill, height, render = vim.fn.diff_filler, api.nvim_win_text_height, p.render
   local calls, writes, renders = 0, 0, 0
-  local group = api.nvim_create_augroup("ExplainrRangeAnimationTest", { clear = true })
+  local group = api.nvim_create_augroup("IrrelevantExplainerRangeAnimationTest", { clear = true })
   api.nvim_create_autocmd("TextChanged", { group = group, buffer = p.buf, callback = function() writes = writes + 1 end })
   vim.fn.diff_filler = function(...) calls = calls + 1; return fill(...) end
   api.nvim_win_text_height = function(...) calls = calls + 1; return height(...) end
   p.render = function(self) renders = renders + 1; return render(self) end
   local ok, err = xpcall(function()
     local tick, frame = api.nvim_buf_get_changedtick(p.buf), p.frame
-    local first = marks(p, "explainr.loading")[1][4].virt_text[1][2][1]
+    local first = marks(p, "irrelevant_explainer.loading")[1][4].virt_text[1][2][1]
     assert(vim.wait(500, function() return p.frame ~= frame end))
-    assert(vim.wait(1000, function() return first ~= marks(p, "explainr.loading")[1][4].virt_text[1][2][1] end))
+    assert(vim.wait(1000, function() return first ~= marks(p, "irrelevant_explainer.loading")[1][4].virt_text[1][2][1] end))
     T.eq({ 4, 5, 6 }, rows())
     -- Collection finishing between ticks replaces the provisional region, with
     -- no structural render or new full-file coordinate scan.
@@ -4072,13 +4083,13 @@ T.test("requested scopes animate only matching visible rows without writes or co
   api.nvim_win_call(source, function() vim.cmd("2,8fold") end)
   p.pending.snapshot = { target = { anchors = { { side = "buffer", start_line = 4, end_line = 6 } } } }
   p:set(result, "Pending · folded selection")
-  local first = vim.b[p.buf].explainr_loading_folds["2"]
+  local first = vim.b[p.buf].irrelevant_explainer_loading_folds["2"]
   assert(first and first:find("[buffer:3]", 1, true))
   assert(vim.startswith(first, "▊ "))
   local frame = p.frame
   assert(vim.wait(500, function() return p.frame ~= frame end))
-  T.eq(first, vim.b[p.buf].explainr_loading_folds["2"]) -- Fold text is steady; the gutter glow changes.
-  p.pending = nil; p:set(result, "Cancelled"); T.eq({}, rows()); T.eq({}, vim.b[p.buf].explainr_loading_folds); p:close()
+  T.eq(first, vim.b[p.buf].irrelevant_explainer_loading_folds["2"]) -- Fold text is steady; the gutter glow changes.
+  p.pending = nil; p:set(result, "Cancelled"); T.eq({}, rows()); T.eq({}, vim.b[p.buf].irrelevant_explainer_loading_folds); p:close()
 end)
 
 T.test("active and queued scopes animate together, retain accepted notes and clear completed ranges", function()
@@ -4091,7 +4102,7 @@ T.test("active and queued scopes animate together, retain accepted notes and cle
       snapshot = { target = { anchors = { { side = "buffer", start_line = first, end_line = last } } } } }
   end
   local function rows()
-    return vim.tbl_map(function(m) return m[2] + 1 end, marks(p, "explainr.loading"))
+    return vim.tbl_map(function(m) return m[2] + 1 end, marks(p, "irrelevant_explainer.loading"))
   end
   p.pending = request(2, 3)
   p.queued = { request(5, 6), { source = source, scope = "hunk", row = 9, windows = { buffer = source } } }
@@ -4126,11 +4137,11 @@ T.test("loading does not repaint the focused cursor cell on summaries, blank row
       T.eq(pos, vim.fn.screenpos(p.win, line, 1))
       T.eq(char, vim.fn.screenstring(pos.row, pos.col)); T.eq(attr, vim.fn.screenattr(pos.row, pos.col))
     end
-    T.eq(5, #marks(p, "explainr.loading")) -- The cursor row freezes rather than disappearing.
+    T.eq(5, #marks(p, "irrelevant_explainer.loading")) -- The cursor row freezes rather than disappearing.
   end
   api.nvim_set_current_win(source)
   api.nvim_exec_autocmds("WinEnter", { buffer = api.nvim_win_get_buf(source) })
-  assert(vim.wait(500, function() return #marks(p, "explainr.loading") == 5 end))
+  assert(vim.wait(500, function() return #marks(p, "irrelevant_explainer.loading") == 5 end))
   api.nvim_set_current_win(p.win)
   vim.wo[source].foldmethod = "manual"; vim.wo[source].foldenable = true
   api.nvim_win_call(source, function() vim.cmd("2,4fold") end)
@@ -4154,7 +4165,7 @@ T.test("loading rail cascades while full-width backgrounds and accepted text rem
   local width = api.nvim_win_get_width(p.win) - vim.fn.getwininfo(p.win)[1].textoff
   local function inspect(frame)
     p.frame = frame; p:loading()
-    local active = marks(p, "explainr.loading")
+    local active = marks(p, "irrelevant_explainer.loading")
     T.eq(3, #active)
     local rails = {}
     for index, m in ipairs(active) do
@@ -4163,15 +4174,15 @@ T.test("loading rail cascades while full-width backgrounds and accepted text rem
       for _, chunk in ipairs(m[4].virt_text) do
         text = text .. chunk[1]
         colors[chunk[2][1]] = true
-        T.eq("ExplainrLoading", chunk[2][#chunk[2]])
+        T.eq("IrrelevantExplainerLoading", chunk[2][#chunk[2]])
       end
       local rail = m[4].virt_text[1]
-      T.eq("▊", rail[1]); assert(rail[2][1]:match("^ExplainrLoadingRail[1-8]$"))
+      T.eq("▊", rail[1]); assert(rail[2][1]:match("^IrrelevantExplainerLoadingRail[1-8]$"))
       rails[index] = rail[2][1]
       T.eq(width, vim.fn.strdisplaywidth(text))
       if index == 1 then
         assert(text:find("[buffer:2] " .. summary("Café 界"), 1, true))
-        assert(colors.ExplainrUnknown and colors.ExplainrSummary and colors.ExplainrDetailCue)
+        assert(colors.IrrelevantExplainerUnknown and colors.IrrelevantExplainerSummary and colors.IrrelevantExplainerDetailCue)
       end
     end
     return rails, active
@@ -4187,11 +4198,11 @@ T.test("loading rail cascades while full-width backgrounds and accepted text rem
   -- the final cell during resize, before the overview has been shortened again.
   result.notes[1].summary = "界Z"; p:set(result, "Pending · narrow")
   p:stop_spinner(); api.nvim_win_set_width(p.win, 18); p.frame = 21; p:loading()
-  local chunks = marks(p, "explainr.loading")[1][4].virt_text
+  local chunks = marks(p, "irrelevant_explainer.loading")[1][4].virt_text
   local text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, chunks))
   T.eq(16, vim.fn.strdisplaywidth(text)); assert(not text:find("界", 1, true)); assert(not text:find("Z", 1, true))
   for _, terminal in ipairs({ "Ready", "Failed", "Cancelled", "Stale" }) do
-    p:set(result, terminal); T.eq({}, marks(p, "explainr.loading")); T.eq(nil, p.timer)
+    p:set(result, terminal); T.eq({}, marks(p, "irrelevant_explainer.loading")); T.eq(nil, p.timer)
   end
   p:close()
 end)
@@ -4204,12 +4215,12 @@ T.test("loading rails cover wrapped continuations without duplicating their acce
   p.pending = { source = source, scope = "selection", windows = { buffer = source },
     snapshot = { target = { anchors = { { side = "buffer", start_line = 2, end_line = 2 } } } } }
   p:set(p.result, "Pending · wrapped selection"); p:stop_spinner(); p.frame = 21; p:loading()
-  local logical = marks(p, "explainr.loading")
+  local logical = marks(p, "irrelevant_explainer.loading")
   T.eq(1, #logical); T.eq(1, logical[1][2])
   local text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, logical[1][4].virt_text))
   assert(not text:find("Wrapped summary", 1, true))
   local summaries, animated = 0, 0
-  for _, m in ipairs(marks(p, "explainr.geometry")) do
+  for _, m in ipairs(marks(p, "irrelevant_explainer.geometry")) do
     for _, row in ipairs(m[4].virt_lines or {}) do
       if type(row[1][2]) == "table" then
         animated = animated + 1
@@ -4222,12 +4233,12 @@ T.test("loading rails cover wrapped continuations without duplicating their acce
   T.eq(3, animated); T.eq(1, summaries)
   api.nvim_set_current_win(p.win); api.nvim_win_set_cursor(p.win, { 2, 0 })
   p.frame = 1; p:state()
-  local geometry = marks(p, "explainr.geometry")
+  local geometry = marks(p, "irrelevant_explainer.geometry")
   p.frame = 9; p:state()
-  T.eq(geometry, marks(p, "explainr.geometry")) -- Every continuation of the focused logical row freezes.
+  T.eq(geometry, marks(p, "irrelevant_explainer.geometry")) -- Every continuation of the focused logical row freezes.
   motion(p.win, "j")
   p.frame = 15; p:state()
-  assert(not vim.deep_equal(geometry, marks(p, "explainr.geometry")), "wrapped rails must resume after cursor moves")
+  assert(not vim.deep_equal(geometry, marks(p, "irrelevant_explainer.geometry")), "wrapped rails must resume after cursor moves")
   p:close()
 end)
 
@@ -4285,14 +4296,14 @@ T.test("multi-hunk summaries prefer changed lines within anchors, preserving unc
   api.nvim_win_call(fixture.new, function() vim.cmd("normal! 38Gzt") end)
   p:align()
   local refs = 0
-  for _, m in ipairs(marks(p, "explainr.ranges")) do
+  for _, m in ipairs(marks(p, "irrelevant_explainer.ranges")) do
     if m[2] == 37 then refs = refs + 1; T.eq("[new:37–38] ", m[4].virt_text[1][1]) end
   end
   T.eq(1, refs) -- No redundant continuation rail on the summary itself.
   api.nvim_set_current_win(p.win)
   p:jump(1); T.eq(55, api.nvim_win_get_cursor(p.win)[1])
   key(p.buf, "<CR>"); T.eq(3, p.detail_index)
-  local active_ns = api.nvim_get_namespaces()["explainr.detail." .. p.win]
+  local active_ns = api.nvim_get_namespaces()["irrelevant_explainer.detail." .. p.win]
   for side, range in pairs({ old = { 49, 52 }, new = { 53, 56 } }) do
     local source_buf = api.nvim_win_get_buf(fixture[side])
     local active = api.nvim_buf_get_extmarks(source_buf, active_ns, 0, -1, {})
@@ -4408,7 +4419,7 @@ T.test("status stays above content when the viewport begins inside diff filler",
   api.nvim_win_call(new, function() vim.fn.winrestview({ topline = 2, topfill = 2, lnum = 2, col = 0 }) end)
   p:align()
   local first
-  for _, m in ipairs(marks(p, "explainr.geometry")) do
+  for _, m in ipairs(marks(p, "irrelevant_explainer.geometry")) do
     if m[2] == 1 and m[4].virt_lines_above then
       local lines = m[4].virt_lines
       first = lines[#lines - 1]
@@ -4419,7 +4430,7 @@ T.test("status stays above content when the viewport begins inside diff filler",
   assert(not text:find("Focused", 1, true), "status must not be in a filler row")
   assert(state(p):find("Focused ±20", 1, true), "status must remain in the reserved header")
   assert(text:find("[old:3]", 1, true), "annotation content must remain intact")
-  T.eq({}, marks(p, "explainr.state"))
+  T.eq({}, marks(p, "irrelevant_explainer.state"))
   p:close(); vim.cmd("diffoff!")
 end)
 
@@ -4439,17 +4450,17 @@ T.test("large deletion filler has bounded animated geometry and source closure c
   api.nvim_win_call(new, function() vim.fn.winrestview({ topline = 2, topfill = 1000, lnum = 2, col = 0 }) end)
   p:set(p.result, "Pending · deletion")
   local count, animated = 0, false
-  for _, m in ipairs(marks(p, "explainr.geometry")) do
+  for _, m in ipairs(marks(p, "irrelevant_explainer.geometry")) do
     for _, row in ipairs(m[4].virt_lines or {}) do
       count = count + 1
-      if type(row[1][2]) == "table" and row[1][2][1]:match("^ExplainrLoadingRail") then
+      if type(row[1][2]) == "table" and row[1][2][1]:match("^IrrelevantExplainerLoadingRail") then
         animated = true
         local text = table.concat(vim.tbl_map(function(chunk) return chunk[1] end, row))
         T.eq(api.nvim_win_get_width(p.win) - vim.fn.getwininfo(p.win)[1].textoff, vim.fn.strdisplaywidth(text))
       end
     end
   end
-  T.eq({}, marks(p, "explainr.loading")) -- Filler-only request must not animate the surviving logical row.
+  T.eq({}, marks(p, "irrelevant_explainer.loading")) -- Filler-only request must not animate the surviving logical row.
   assert(animated); assert(count <= 2 * api.nvim_win_get_height(new))
   local tick, frame = api.nvim_buf_get_changedtick(p.buf), p.frame
   assert(vim.wait(500, function() return p.frame ~= frame end)); T.eq(tick, api.nvim_buf_get_changedtick(p.buf))
@@ -4465,7 +4476,7 @@ T.test("Markdown detail preserves JSON quotes backslashes and fences without a r
   local snapshot = { mode = "code", windows = { buffer = win },
     files = { { path = "test.lua", side = "buffer", lines = { 'return user.role == "editor"' } } },
     target = { anchors = { { path = "test.lua", side = "buffer", start_line = 1, end_line = 1 } } } }
-  local result = assert(require("explainr.model").validate([[{"version":1,"notes":[{
+  local result = assert(require("irrelevant_explainer.model").validate([[{"version":1,"notes":[{
     "summary":"Checks the editor role","detail":"Reads `user.role`.\n\n```lua\nreturn user.role == \"editor\"\n```\n\nA literal backslash: `\\`.",
     "anchors":[{"path":"test.lua","side":"buffer","start_line":1,"end_line":1}],
     "intent_basis":"inferred","evidence":[]}]}]], snapshot))
@@ -4480,7 +4491,7 @@ end)
 -- Opt in by adding render-markdown + parser directories to runtimepath and
 -- sourcing its normal plugin entrypoint before tests/run.lua. No setup needed.
 if vim.g.loaded_render_markdown then
-  T.test("installed renderer leaves explainr alone throughout navigation but still renders Markdown", function()
+  T.test("installed renderer leaves irrelevant_explainer alone throughout navigation but still renders Markdown", function()
     local win = setup({ "one", "two", "three" })
     local n = note(1, "==Marked== **bold**")
     n.detail = string.rep("## Reason\n\nA **semantic** explanation.\n\n", 40)
@@ -4497,7 +4508,7 @@ if vim.g.loaded_render_markdown then
     T.eq(1, api.nvim_win_text_height(p.win, { start_row = 0, end_row = 0 }).all)
     local rows = vim.deepcopy(p.rows)
     p:detail(); local detail = api.nvim_win_get_buf(p.detail_win)
-    T.eq("explainr", vim.bo[detail].filetype); T.eq(0, vim.wo[p.win].conceallevel)
+    T.eq("irrelevant_explainer", vim.bo[detail].filetype); T.eq(0, vim.wo[p.win].conceallevel)
     api.nvim_win_call(p.detail_win, function() vim.cmd.normal({ p.detail_layout.last .. "G", bang = true }) end)
     api.nvim_exec_autocmds("WinScrolled", { buffer = detail })
     vim.wait(150, function() return false end); T.eq({}, marks(detail))
@@ -4741,7 +4752,7 @@ T.test("expanded source scrolling retains EOF targets with viewport-bounded scan
     if ok then
       motion(p.win, "G0")
       T.eq(count, api.nvim_win_get_cursor(source)[1]); T.eq(1, p.detail_index)
-      T.eq(1, vim.b[p.detail_buf].explainr_detail_active[tostring(api.nvim_buf_line_count(p.detail_buf))])
+      T.eq(1, vim.b[p.detail_buf].irrelevant_explainer_detail_active[tostring(api.nvim_buf_line_count(p.detail_buf))])
     end
     p:close(); assert(ok, err)
   end

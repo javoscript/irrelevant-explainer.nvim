@@ -1,0 +1,33 @@
+# Private scratch, raw captures, audit output, and local tools (not all .amp).
+/.amp/in/
+
+# Editor/OS temporary files.
+*.swp
+*.swo
+*.swn
+*~
+.*.un~
+.DS_Store
+
+# Python bytecode.
+__pycache__/
+*.py[cod]
+
+# Local credentials. Examples remain publishable and must still be audited.
+.env
+.env.*
+!.env.example
+!.env.sample
+/.envrc.local
+/.netrc
+/.credentials/
+/credentials/
+/credentials*.json
+/secrets/
+/secrets.local.*
+/auth.local.json
+/service-account*.json
+/.ssh/
+/id_rsa
+/id_ed25519
+/*.private-key.pem

@@ -1,4 +1,4 @@
-local code = require("explainr.code")
+local code = require("irrelevant_explainer.code")
 local api = vim.api
 local block, esc = string.char(22), string.char(27)
 
@@ -231,10 +231,10 @@ T.test("code Ex-invoked marks preserve character line and block shapes", functio
     }) do
       api.nvim_win_set_cursor(0, { 1, 1 })
       vim.cmd("normal! " .. case.keys .. esc)
-      _G.explainr_code_ex_capture = function() return collect("selection") end
-      vim.cmd("'<,'>lua _G.explainr_code_ex_result = _G.explainr_code_ex_capture()")
-      local s = _G.explainr_code_ex_result
-      _G.explainr_code_ex_capture, _G.explainr_code_ex_result = nil, nil
+      _G.irrelevant_explainer_code_ex_capture = function() return collect("selection") end
+      vim.cmd("'<,'>lua _G.irrelevant_explainer_code_ex_result = _G.irrelevant_explainer_code_ex_capture()")
+      local s = _G.irrelevant_explainer_code_ex_result
+      _G.irrelevant_explainer_code_ex_capture, _G.irrelevant_explainer_code_ex_result = nil, nil
       T.eq(case.text, s.target.text)
       T.eq(case.spans, s.target.spans)
     end

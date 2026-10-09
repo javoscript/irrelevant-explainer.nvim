@@ -1,6 +1,27 @@
 local api = vim.api
-local plugin, sessions = require("explainr"), require("explainr.session")
-local adapter = require("explainr.diffview")
+local plugin, sessions = require("irrelevant_explainer"), require("irrelevant_explainer.session")
+local adapter = require("irrelevant_explainer.diffview")
+
+T.test("fresh loader exposes only the renamed commands and Lua package", function()
+  local check = [[lua
+    assert(vim.g.loaded_irrelevant_explainer); assert(not vim.g.loaded_explainr)
+    local p = require('irrelevant_explainer').setup()
+    assert(not p.code and not p.diff)
+    for name in pairs(vim.api.nvim_get_commands({})) do assert(not name:match('^Explainr')) end
+    for _, suffix in ipairs({'', 'Review', 'Refresh', 'Cancel', 'Close', 'CacheClear', 'ToggleAutoExplain'}) do
+      assert(vim.fn.exists(':IrrelevantExplainer' .. suffix) == 2)
+    end
+    assert(vim.deep_equal({'file', 'hunk', 'review', 'selection'},
+      vim.fn.getcompletion('IrrelevantExplainer ', 'cmdline')))
+    assert(not pcall(require, 'explainr')); assert(not package.loaded['diffview'])
+    assert(not package.loaded['irrelevant_explainer.session'])
+    print('fresh renamed startup verified')
+  ]]
+  local result = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n",
+    "--cmd", "set runtimepath^=" .. vim.fn.fnameescape(vim.fn.getcwd()),
+    "-c", check, "-c", "qa!" }):wait(10000)
+  assert(result.code == 0 and result.signal == 0, (result.stdout or "") .. (result.stderr or ""))
+end)
 
 T.test("ordinary routing needs no Diffview and rejects utility and hunk origins", function()
   plugin.close(); plugin.setup()
@@ -25,7 +46,7 @@ end)
 
 T.test("missing Diffview and immediate cancellation cannot start opening or inference", function()
   local loader, notify, messages = package.preload["diffview"], vim.notify, {}
-  local agent = require("explainr.agent")
+  local agent = require("irrelevant_explainer.agent")
   local run, calls = agent.run, 0
   agent.run = function() calls = calls + 1; error("unexpected inference") end
   vim.notify = function(message) messages[#messages + 1] = message end
@@ -43,25 +64,25 @@ T.test("missing Diffview and immediate cancellation cannot start opening or infe
   assert(ok, err)
 end)
 
-local runtime = vim.env.EXPLAINR_DIFFVIEW_PATH or vim.fn.stdpath("data") .. "/lazy/diffview.nvim"
+local runtime = vim.env.IRRELEVANT_EXPLAINER_DIFFVIEW_PATH or vim.fn.stdpath("data") .. "/lazy/diffview.nvim"
 if vim.fn.isdirectory(runtime .. "/lua/diffview") ~= 1 then
   print("SKIP command integration: missing Diffview at " .. runtime)
   return
 end
-if vim.env.EXPLAINR_COMMAND_CHILD ~= "1" then
+if vim.env.IRRELEVANT_EXPLAINER_COMMAND_CHILD ~= "1" then
   T.test("unified commands with real Diffview in isolated Neovim", function()
     local result = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n",
       "-c", "luafile tests/run.lua" }, { cwd = vim.fn.getcwd(), env = {
-        EXPLAINR_TEST = "tests/commands_test.lua", EXPLAINR_COMMAND_CHILD = "1",
-        EXPLAINR_DIFFVIEW_PATH = runtime } }):wait(120000)
+        IRRELEVANT_EXPLAINER_TEST = "tests/commands_test.lua", IRRELEVANT_EXPLAINER_COMMAND_CHILD = "1",
+        IRRELEVANT_EXPLAINER_DIFFVIEW_PATH = runtime } }):wait(120000)
     print((result.stdout or "") .. (result.stderr or ""))
     assert(result.code == 0 and result.signal == 0, "command integration failed")
   end)
   return
 end
 vim.opt.runtimepath:append(runtime)
-vim.opt.runtimepath:append(vim.env.EXPLAINR_PLENARY_PATH or vim.fn.stdpath("data") .. "/lazy/plenary.nvim")
-local dv, lib, agent = require("diffview"), require("diffview.lib"), require("explainr.agent")
+vim.opt.runtimepath:append(vim.env.IRRELEVANT_EXPLAINER_PLENARY_PATH or vim.fn.stdpath("data") .. "/lazy/plenary.nvim")
+local dv, lib, agent = require("diffview"), require("diffview.lib"), require("irrelevant_explainer.agent")
 
 local function fixture(run)
   plugin.close()
@@ -90,7 +111,7 @@ local function fixture(run)
   vim.cmd("tabnew"); f.origin_tab, f.origin = api.nvim_get_current_tabpage(), api.nvim_get_current_win()
   vim.cmd.edit(vim.fn.fnameescape(root .. "/mixed.lua"))
   dv.setup({ watch_index = false, use_icons = false })
-  plugin.setup({ ai = { command = { "fixture-only" } }, diff = { auto_explain = true }, cache = { enabled = false } })
+  plugin.setup({ ai = { command = { "fixture-only" }, output = "plain" }, diff = { auto_explain = true }, cache = { enabled = false } })
   vim.notify = function(message, level)
     if level == vim.log.levels.ERROR then f.errors[#f.errors + 1] = message end
   end
@@ -153,7 +174,7 @@ T.test("outside review captures net HEAD-to-working changes and window-owned fil
     T.eq({ ["mixed.lua"] = "base", ["staged.lua"] = "base", ["working.lua"] = "base" }, originals)
     for _, entry in ipairs(s.pending.snapshot.comparison.manifest) do T.eq(nil, entry.patch) end
     T.eq("annotate", f.jobs[1].request.phase)
-    local plan = require("explainr.review").inspect(s.review_job)
+    local plan = require("irrelevant_explainer.review").inspect(s.review_job)
     T.eq(2, #plan.annotations); T.eq(3, #f.jobs[1].request.units)
     for _, unit in ipairs(plan.units) do paths[#paths + 1] = unit.target.path end
     table.sort(paths)
@@ -188,10 +209,10 @@ T.test("opening waits for buffers, deduplicates in the new view and preserves co
     adapter.current = function(...) if held then return nil, "loading" end; return current(...) end
     local ok, err = xpcall(function()
       local captured = vim.deepcopy(plugin.config)
-      local epoch = require("explainr.cache").epoch()
+      local epoch = require("irrelevant_explainer.cache").epoch()
       local op = plugin.explain("review")
       plugin.clear_cache() -- Opening is already pending, even before collection.
-      plugin.setup({ ai = { command = { "changed-after-invocation" }, timeout_ms = 1 },
+      plugin.setup({ ai = { command = { "changed-after-invocation" }, output = "plain", timeout_ms = 1 },
         context = { max_bytes = 100, radius = 0 }, review = { request_max_bytes = 100, max_requests = 1 },
         cache = { enabled = true, namespace = "changed-after-invocation" } })
       f.wait(function() return op.view and op.view.initialized end)
@@ -203,8 +224,8 @@ T.test("opening waits for buffers, deduplicates in the new view and preserves co
       f.wait(function() return #f.jobs == 1 end)
       T.eq({ "fixture-only" }, f.jobs[1].config.command)
       T.eq(epoch, sessions.current().pending.cache_epoch)
-      assert(epoch ~= require("explainr.cache").epoch())
-      local config = require("explainr.review").config(sessions.current().review_job)
+      assert(epoch ~= require("irrelevant_explainer.cache").epoch())
+      local config = require("irrelevant_explainer.review").config(sessions.current().review_job)
       for _, key in ipairs({ "ai", "context", "review", "cache" }) do T.eq(captured[key], config[key]) end
       local found
       for _, file in ipairs(sessions.current().pending.snapshot.files) do

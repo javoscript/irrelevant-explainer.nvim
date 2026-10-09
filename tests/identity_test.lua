@@ -1,5 +1,5 @@
-local identity = require("explainr.identity")
-local code, api = require("explainr.code"), vim.api
+local identity = require("irrelevant_explainer.identity")
+local code, api = require("irrelevant_explainer.code"), vim.api
 
 local function key(snapshot, config) return select(2, identity.key(snapshot, config)) end
 local function fixture()

@@ -1,11 +1,11 @@
-local review = require("explainr.review")
-local model = require("explainr.model")
+local review = require("irrelevant_explainer.review")
+local model = require("irrelevant_explainer.model")
 
 T.test("setup validates review and persistent cache limits without changing prior configuration", function()
-  local plugin = require("explainr")
+  local plugin = require("irrelevant_explainer")
   local saved = vim.deepcopy(plugin.config)
   plugin.setup()
-  T.eq({ request_max_bytes = 65536, response_max_bytes = 32768, max_snapshot_bytes = 16777216,
+  T.eq({ request_max_bytes = 262144, response_max_bytes = 32768, max_snapshot_bytes = 16777216,
     max_requests = 128 }, plugin.config.review)
   T.eq({ enabled = true, max_bytes = 104857600, namespace = "default" }, plugin.config.cache)
   for _, group in ipairs({ "review", "cache" }) do
@@ -22,7 +22,7 @@ T.test("setup validates review and persistent cache limits without changing prio
     { decoder_key = "" }, { decoder_key = false } }) do
     T.eq(false, pcall(plugin.setup, { cache = options }))
   end
-  T.eq(65536, plugin.config.review.request_max_bytes)
+  T.eq(262144, plugin.config.review.request_max_bytes)
   plugin.setup(saved)
 end)
 
@@ -59,7 +59,7 @@ local function answer(req)
   return value
 end
 local function run(job, respond, fresh)
-  local agent = require("explainr.agent")
+  local agent = require("irrelevant_explainer.agent")
   local original = agent.run
   local calls, statuses, completion, running = {}, {}, nil, false
   agent.run = function(text, _, _, callback)
@@ -81,6 +81,50 @@ local function run(job, respond, fresh)
   assert(ok, err)
   return completion, calls, statuses
 end
+
+T.test("default review budget keeps larger file pairs whole and respects either smaller cap", function()
+  local s = fixture(1, 700, 100)
+  local path, old = s.files[1].path, { path = s.files[1].path, side = "old", lines = {} }
+  for n = 1, 600 do old.lines[n] = "old " .. n .. string.rep("y", 100) end
+  s.files[#s.files + 1] = old
+  table.insert(s.target.files[1].anchors, 1, range(path, "old", 1, 600))
+  s.target.files[1].hunks = { { 1, 600, 1, 700 } }
+  s.comparison.manifest[1].old = old
+  local job = assert(review.create(s, {}))
+  local plan = review.inspect(job)
+  T.eq(262144, review.config(job).review.request_max_bytes)
+  T.eq(1, #plan.units)
+  assert(plan.units[1].whole_file and not plan.units[1].fragment)
+  T.eq("file", plan.units[1].target.scope)
+  T.eq({ range(path, "old", 1, 600), range(path, "new", 1, 700) }, plan.units[1].target.anchors)
+  T.eq(1, #plan.annotations)
+  assert(plan.annotations[1].bytes > 65536 and plan.annotations[1].bytes <= 262144)
+  T.eq(32768, plan.annotations[1].request.output_limits.response_bytes)
+  assert(review.validate_coverage(job, plan.units))
+
+  for _, config in ipairs({ { review = { request_max_bytes = 65536 } }, { context = { max_bytes = 65536 } } }) do
+    local smaller = assert(review.create(s, config))
+    local split = review.inspect(smaller)
+    assert(#split.units > 1)
+    local owned = { old = {}, new = {} }
+    for _, unit in ipairs(split.units) do
+      assert(unit.fragment and not unit.whole_file)
+      T.eq("hunk", unit.target.scope)
+      for _, anchor in ipairs(unit.target.anchors) do
+        T.eq(path, anchor.path)
+        for n = anchor.start_line, anchor.end_line do
+          assert(not owned[anchor.side][n]); owned[anchor.side][n] = true
+        end
+      end
+    end
+    for _, side in ipairs({ "old", "new" }) do
+      local expected = {}; for n = 1, side == "old" and 600 or 700 do expected[n] = true end
+      T.eq(expected, owned[side])
+    end
+    for _, invocation in ipairs(split.annotations) do assert(invocation.bytes <= 65536) end
+    assert(review.validate_coverage(smaller, split.units))
+  end
+end)
 
 T.test("review planner preserves asymmetric rename sides and split hunk coverage exactly", function()
   local s = fixture(1, 43, 100)
@@ -240,7 +284,7 @@ T.test("large cached review replay services events and cancellation without infe
   local s, config = fixture(76, 300, 80), {}
   local done = run(assert(review.create(s, config)))
   assert(done.result, done.error)
-  local agent, original = require("explainr.agent"), require("explainr.agent").run
+  local agent, original = require("irrelevant_explainer.agent"), require("irrelevant_explainer.agent").run
   agent.run = function() error("cached replay must not launch inference") end
   local timer = vim.uv.new_timer()
   local ok, err = xpcall(function()
@@ -289,7 +333,7 @@ T.test("failed sibling invocation is discarded and resume reuses only validated 
     return value
   end)
   T.eq(nil, failed.result); T.eq(nil, failed.record); T.eq(3, #calls)
-  assert(failed.error:find("2/7", 1, true) and failed.error:find(":Explainr review", 1, true))
+  assert(failed.error:find("2/7", 1, true) and failed.error:find(":IrrelevantExplainer review", 1, true))
   local before = review.inspect(job).checkpoints; T.eq(2, vim.tbl_count(before))
   local done, resumed = run(assert(review.create(s, config, job)))
   assert(done.result, done.error); T.eq(6, #resumed)
@@ -328,7 +372,7 @@ T.test("freshness is checked before checkpointing and again at final atomic comp
 end)
 
 T.test("cancel retains prior checkpoints and late callbacks cannot dispatch or complete", function()
-  local agent, original = require("explainr.agent"), require("explainr.agent").run
+  local agent, original = require("irrelevant_explainer.agent"), require("irrelevant_explainer.agent").run
   local job = assert(review.create(fixture(4), {}))
   local callbacks, calls, completed, cancelled = {}, {}, false, 0
   agent.run = function(text, _, _, callback)
@@ -354,7 +398,7 @@ end)
 
 T.test("cancel between annotation and synthesis prevents dispatch", function()
   local job = assert(review.create(fixture(), {}))
-  local agent, original, calls, completed, operation = require("explainr.agent"), require("explainr.agent").run, 0, false, nil
+  local agent, original, calls, completed, operation = require("irrelevant_explainer.agent"), require("irrelevant_explainer.agent").run, 0, false, nil
   agent.run = function(text, _, _, callback)
     calls = calls + 1
     local req = vim.json.decode(text:match("UNTRUSTED REVIEW REQUEST JSON:\n(.*)"))
@@ -559,7 +603,7 @@ T.test("reduction calls consume the same allowance and successful reductions sur
 end)
 
 T.test("cancel while asynchronous freshness waits prevents late checkpoints and installation", function()
-  local agent, original = require("explainr.agent"), require("explainr.agent").run
+  local agent, original = require("irrelevant_explainer.agent"), require("irrelevant_explainer.agent").run
   local job = assert(review.create(fixture(), {}))
   local waiting, checks, calls, completed = nil, 0, 0, false
   agent.run = function(text, _, _, done)
@@ -584,7 +628,7 @@ T.test("completed record revalidates in a separate Neovim process without execut
   local done = run(assert(review.create(s, config))); assert(done.result, done.error)
   local input = vim.json.encode({ record = done.record, snapshot = s, config = config })
   local script = string.format([[vim.opt.runtimepath:prepend(%q); local input = vim.json.decode(%q);
-    local result, err = require('explainr.review').validate_record(input.record, input.snapshot, input.config);
+    local result, err = require('irrelevant_explainer.review').validate_record(input.record, input.snapshot, input.config);
     assert(result, err); assert(#result.files == 2); vim.cmd('qa!')]], vim.fn.getcwd(), input)
   local child = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n", "-c", "lua " .. script }):wait(10000)
   assert(child.code == 0, child.stderr)
@@ -618,14 +662,14 @@ T.test("large split review resumes mid-job, reduces multiple levels and reopens 
   local path = vim.fn.tempname()
   vim.fn.writefile({ vim.json.encode({ snapshot = s, config = config, record = done.record }) }, path)
   local script = string.format([[vim.opt.runtimepath:prepend(%q);
-    require('explainr.agent').run = function() error('reopen must not infer') end;
+    require('irrelevant_explainer.agent').run = function() error('reopen must not infer') end;
     local data = vim.json.decode(table.concat(vim.fn.readfile(%q), '\n'));
-    local value, err = require('explainr.review').validate_record(data.record, data.snapshot, data.config);
+    local value, err = require('irrelevant_explainer.review').validate_record(data.record, data.snapshot, data.config);
     assert(value, err); assert(#value.files == 14); vim.cmd('qa!')]], vim.fn.getcwd(), path)
   local child = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n", "-c", "lua " .. script }):wait(10000)
   vim.fn.delete(path)
   assert(child.code == 0, child.stderr)
-  local agent, original = require("explainr.agent"), require("explainr.agent").run
+  local agent, original = require("irrelevant_explainer.agent"), require("irrelevant_explainer.agent").run
   local late, dispatched, installed = nil, 0, false
   agent.run = function(text, _, _, callback)
     dispatched = dispatched + 1

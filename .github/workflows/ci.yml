@@ -1,0 +1,130 @@
+name: Offline verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  base:
+    name: Base / Neovim ${{ matrix.neovim }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - neovim: '0.11.5'
+            sha256: b2f91117be5b5ea39edd7297156dc2a4a8df4add6c95a90809a8df19e7ab6f52
+          - neovim: '0.12.5'
+            sha256: bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.12'
+      - name: Install checksum-pinned Neovim
+        env:
+          NVIM_VERSION: ${{ matrix.neovim }}
+          NVIM_SHA256: ${{ matrix.sha256 }}
+        run: |
+          install_root="$RUNNER_TEMP/neovim"
+          mkdir -p "$install_root"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim-linux-x86_64.tar.gz" \
+            --output "$install_root/nvim.tar.gz"
+          printf '%s  %s\n' "$NVIM_SHA256" "$install_root/nvim.tar.gz" | sha256sum --check --strict
+          tar -xzf "$install_root/nvim.tar.gz" -C "$install_root"
+          echo "$install_root/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Offline base tests (normal editor startup, no optional runtimes)
+        run: bash tests/ci.sh base
+
+  diffview:
+    name: Diffview / Neovim ${{ matrix.neovim }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - neovim: '0.11.5'
+            sha256: b2f91117be5b5ea39edd7297156dc2a4a8df4add6c95a90809a8df19e7ab6f52
+          - neovim: '0.12.5'
+            sha256: bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.12'
+      - name: Install checksum-pinned Neovim
+        env:
+          NVIM_VERSION: ${{ matrix.neovim }}
+          NVIM_SHA256: ${{ matrix.sha256 }}
+        run: |
+          install_root="$RUNNER_TEMP/neovim"
+          mkdir -p "$install_root"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/nvim-linux-x86_64.tar.gz" \
+            --output "$install_root/nvim.tar.gz"
+          printf '%s  %s\n' "$NVIM_SHA256" "$install_root/nvim.tar.gz" | sha256sum --check --strict
+          tar -xzf "$install_root/nvim.tar.gz" -C "$install_root"
+          echo "$install_root/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+      - name: Fetch immutable integration runtimes
+        env:
+          DIFFVIEW_REV: 4516612fe98ff56ae0415a259ff6361a89419b0a
+          PLENARY_REV: 74b06c6c75e4eeb3108ec01852001636d85a932b
+        run: |
+          fetch_runtime() {
+            local repository=$1 revision=$2 destination=$3
+            git init -q "$destination"
+            git -C "$destination" remote add origin "https://github.com/${repository}.git"
+            git -C "$destination" fetch --depth=1 origin "$revision"
+            git -C "$destination" checkout --detach FETCH_HEAD
+            test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
+          }
+          fetch_runtime sindrets/diffview.nvim "$DIFFVIEW_REV" "$RUNNER_TEMP/diffview.nvim"
+          fetch_runtime nvim-lua/plenary.nvim "$PLENARY_REV" "$RUNNER_TEMP/plenary.nvim"
+      - name: Required offline Diffview integration (preflight and skip guard)
+        env:
+          IRRELEVANT_EXPLAINER_DIFFVIEW_PATH: ${{ runner.temp }}/diffview.nvim
+          IRRELEVANT_EXPLAINER_PLENARY_PATH: ${{ runner.temp }}/plenary.nvim
+        run: bash tests/ci.sh integration
+
+  secrets:
+    name: Candidate files and all-ref history / Gitleaks 8.30.1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.12'
+      - name: Ensure all remote branches and tags are in scan scope
+        run: git fetch --force --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Install checksum-pinned Gitleaks
+        run: |
+          install_root="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$install_root"
+          curl --fail --silent --show-error --location --retry 3 \
+            'https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz' \
+            --output "$install_root/gitleaks.tar.gz"
+          printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' \
+            "$install_root/gitleaks.tar.gz" | sha256sum --check --strict
+          tar -xzf "$install_root/gitleaks.tar.gz" -C "$install_root"
+          echo "$install_root" >> "$GITHUB_PATH"
+      - name: Scan candidate files and complete reachable history (redacted)
+        run: bash tests/ci.sh secrets

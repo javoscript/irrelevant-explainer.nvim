@@ -97,7 +97,7 @@ Enter or K SHALL toggle already-returned detail inside the explanation pane, wit
 
 #### Scenario: Tab is not expansion
 - **WHEN** the user presses Tab in either code or diff explanation mode
-- **THEN** Explainr does not use it as an expand/collapse mapping; diff mode can pass it to configured Diffview navigation
+- **THEN** Irrelevant Explainer does not use it as an expand/collapse mapping; diff mode can pass it to configured Diffview navigation
 
 #### Scenario: Expansion from a continuation row
 - **WHEN** a note's summary is at line 20 and the user presses Enter or K at a summary-free row corresponding to line 31 within its 20–40 anchors
@@ -359,11 +359,11 @@ Focused collapsed and expanded notes SHALL emphasize their full anchor ranges an
 #### Scenario: Shared-buffer split stays undecorated
 - **WHEN** a collapsed summary is focused or its detail is expanded and another split displays the same source buffer
 - **THEN** dimming and anchor gutter rails appear only in the captured source window, including when the other split is opened after focus styling is applied
-- **AND** the other split retains its normal syntax colors and existing signs without Explainr source decorations
+- **AND** the other split retains its normal syntax colors and existing signs without Irrelevant Explainer source decorations
 
 #### Scenario: Shared-buffer tab stays undecorated
 - **WHEN** expanded detail is open and the user opens the same source buffer in another tab
-- **THEN** the new tab shows neither Explainr source dimming nor anchor gutter rails
+- **THEN** the new tab shows neither Irrelevant Explainer source dimming nor anchor gutter rails
 - **AND** returning to the original tab retains the expanded explanation and its source decorations until normal focus cleanup
 
 #### Scenario: Short detail covers a long range
@@ -394,7 +394,7 @@ Focused collapsed and expanded notes SHALL emphasize their full anchor ranges an
 
 ### Requirement: Renderer-free Markdown highlighting
 
-Overview and detail buffers SHALL use the `explainr` filetype and remain usable without optional parsers. When available, Markdown syntax highlighting SHALL style detail without hiding Markdown markers or adding renderer layout decorations. Explainr SHALL NOT invoke or configure a Markdown renderer. Existing semantic styling, range controls, and single-line collapsed summaries SHALL remain readable.
+Overview and detail buffers SHALL use the `irrelevant_explainer` filetype and remain usable without optional parsers. When available, Markdown syntax highlighting SHALL style detail without hiding Markdown markers or adding renderer layout decorations. Irrelevant Explainer SHALL NOT invoke or configure a Markdown renderer. Existing semantic styling, range controls, and single-line collapsed summaries SHALL remain readable.
 
 #### Scenario: Markdown detail with installed parsers
 - **WHEN** detail contains headings, emphasis, inline code, and a language-tagged fenced snippet with the corresponding syntax parsers available
@@ -404,12 +404,12 @@ Overview and detail buffers SHALL use the `explainr` filetype and remain usable 
 #### Scenario: Missing syntax support
 - **WHEN** Markdown, inline Markdown, or a fenced language parser is unavailable
 - **THEN** opening and reading detail remains usable without a dependency error or automatic parser installation
-- **AND** available syntax highlighting and Explainr's semantic summary, metadata, focus tint, gutter, and range controls remain usable without requiring rich highlighting in unsupported regions
+- **AND** available syntax highlighting and Irrelevant Explainer's semantic summary, metadata, focus tint, gutter, and range controls remain usable without requiring rich highlighting in unsupported regions
 
 #### Scenario: Renderer installed for ordinary Markdown
 - **WHEN** render-markdown.nvim is installed and configured to render ordinary Markdown buffers
-- **THEN** opening, navigating, resizing, and closing Explainr neither invokes its renderer APIs nor changes its user configuration
-- **AND** ordinary Markdown buffers retain their existing filetypes and renderer behavior, while Explainr's buffers use `explainr`
+- **THEN** opening, navigating, resizing, and closing Irrelevant Explainer neither invokes its renderer APIs nor changes its user configuration
+- **AND** ordinary Markdown buffers retain their existing filetypes and renderer behavior, while Irrelevant Explainer's buffers use `irrelevant_explainer`
 
 #### Scenario: Predictable wrapping and lifecycle
 - **WHEN** a long explanation is opened, traversed, resized, replaced through entry navigation, and collapsed
@@ -442,7 +442,7 @@ Normal-mode j/k in expanded detail SHALL move by displayed row, with counts usin
 
 #### Scenario: Mapping isolation and ordinary motions
 - **WHEN** expanded j/k is used with global j/k remappings installed
-- **THEN** Explainr's normal-mode buffer-local mappings provide consistent display-row movement in both directions without invoking those global mappings
+- **THEN** Irrelevant Explainer's normal-mode buffer-local mappings provide consistent display-row movement in both directions without invoking those global mappings
 - **AND** native gj/gk, other ordinary cursor motions, collapsed diff navigation, source-buffer mappings, and global mappings remain unchanged
 
 #### Scenario: Synchronization settles after visual movement
@@ -568,7 +568,7 @@ The UI SHALL identify pending, failed, and stale explanation states separately f
 - **AND** late callbacks cannot reopen the reader or install cancelled results
 
 #### Scenario: Explicit reader close
-- **WHEN** the user presses q/Esc in the code or diff File collapsed overview, q in Review, or invokes ExplainrClose
+- **WHEN** the user presses q/Esc in the code or diff File collapsed overview, q in Review, or invokes IrrelevantExplainerClose
 - **THEN** the owned reader is closed and pending work is cancelled without closing the source; q/Esc in expanded detail instead collapses the current entry and Esc in Review returns to File
 
 ### Requirement: Explanation status and legend
@@ -585,8 +585,8 @@ Code and diff File mode SHALL show request state, explanation count, current/tot
 - **AND** status never falls back to a content row, including virtual filler, and visible segments retain their semantic colors
 
 #### Scenario: External lualine remains active
-- **WHEN** focus, loading, expansion, Review/File switching or entry navigation updates Explainr
-- **THEN** the user's local/global statusline remains unchanged, with pane state available through vim.b.explainr_status for optional user integration
+- **WHEN** focus, loading, expansion, Review/File switching or entry navigation updates Irrelevant Explainer
+- **THEN** the user's local/global statusline remains unchanged, with pane state available through vim.b.irrelevant_explainer_status for optional user integration
 
 ### Requirement: Persistent matched explanation header
 
@@ -614,7 +614,7 @@ The pane SHALL reserve its header above content from opening until closure, inde
 
 ### Requirement: State-independent header colors
 
-Header text SHALL use stable semantic colors across request states and detail modes. Visible `Explainr` text SHALL use the theme's information accent by default; counts, spinner, state, separators, descriptions, and navigation hints SHALL be muted. Legend symbols D, ~, and ? SHALL use the same documented, inferred, and unknown highlight groups as explanation items. User highlight overrides SHALL be respected.
+Header text SHALL use stable semantic colors across request states and detail modes. Visible `Irrelevant Explainer` branding SHALL use the theme's information accent by default; counts, spinner, state, separators, descriptions, and navigation hints SHALL be muted. Legend symbols D, ~, and ? SHALL use the same documented, inferred, and unknown highlight groups as explanation items. User highlight overrides SHALL be respected.
 
 #### Scenario: Loading and ready share the same palette
 - **WHEN** a header transitions from pending to ready, failed, stale, or cancelled
@@ -627,7 +627,7 @@ Header text SHALL use stable semantic colors across request states and detail mo
 - **AND** adjacent descriptions and separators remain muted rather than inheriting marker colors
 
 #### Scenario: Expanded header and custom theme
-- **WHEN** detail is shown under a theme with customized Explainr semantic highlights
+- **WHEN** detail is shown under a theme with customized IrrelevantExplainer semantic highlights
 - **THEN** visible title and muted header text use those overrides without changing color when focus or the selected entry changes
 
 #### Scenario: Literal status text
@@ -743,7 +743,7 @@ Diff explanation panes SHALL show `Auto` in their existing winbar when automatic
 
 ### Requirement: Nondisruptive live mode indication
 
-Toggling automation SHALL immediately update all open diff-pane headers, including background tabs and expanded detail. Header updates SHALL preserve request state, accepted notes, active jobs, selected explanation, detail buffer, cursors, viewports, and focus. The editor's local/global statusline and the existing request-state meaning of `vim.b.explainr_status` SHALL remain unchanged.
+Toggling automation SHALL immediately update all open diff-pane headers, including background tabs and expanded detail. Header updates SHALL preserve request state, accepted notes, active jobs, selected explanation, detail buffer, cursors, viewports, and focus. The editor's local/global statusline and the existing request-state meaning of `vim.b.irrelevant_explainer_status` SHALL remain unchanged.
 
 #### Scenario: Toggle while reading expanded detail
 - **WHEN** the user toggles automation with a diff explanation expanded and its prose scrolled
@@ -756,7 +756,7 @@ Toggling automation SHALL immediately update all open diff-pane headers, includi
 
 #### Scenario: Existing status integrations
 - **WHEN** automation is toggled with a user statusline or lualine active
-- **THEN** the editor statusline remains unchanged and `vim.b.explainr_status` continues to expose the existing request-state string rather than an indicator-decorated replacement
+- **THEN** the editor statusline remains unchanged and `vim.b.irrelevant_explainer_status` continues to expose the existing request-state string rather than an indicator-decorated replacement
 
 ### Requirement: Buffer-safe detail gutter
 
@@ -779,7 +779,7 @@ The detail gutter SHALL remain scoped to expanded explanation content. Collapse 
 #### Scenario: Select another diff file while expanded
 - **WHEN** a user opens diff explanations, expands a note, and selects another file through the Diffview explorer
 - **THEN** the old detail exits and the explanation pane follows the selected file without gutter errors or stale detail rails
-- **AND** source and explorer gutters retain their settings without Explainr stealing focus or applying the old detail cursor to replacement source buffers
+- **AND** source and explorer gutters retain their settings without Irrelevant Explainer stealing focus or applying the old detail cursor to replacement source buffers
 
 #### Scenario: Select another diff file after collapse
 - **WHEN** a user expands a note, explicitly collapses it, and selects another file through the Diffview explorer
@@ -798,12 +798,12 @@ The detail gutter SHALL remain scoped to expanded explanation content. Collapse 
 
 #### Scenario: Cleanup leaves an ordinary editor window
 - **WHEN** closing a source or view cleans up expanded explanations and an ordinary editor window survives or must be created to replace the last reader window
-- **THEN** the remaining window does not inherit Explainr's detail-gutter expression
+- **THEN** the remaining window does not inherit Irrelevant Explainer's detail-gutter expression
 - **AND** drawing that window without explanation data produces no gutter errors
 
 ### Requirement: Comparison narrative reading mode
 
-Diff readers SHALL offer Review and File modes in the same right-hand pane. Review SHALL display the whole-change narrative as read-only, independently scrollable Markdown, without source alignment, source focus decorations, or a floating window. File SHALL retain aligned overview and expanded detail behavior. Review SHALL use the explainr filetype, optional syntax highlighting, visible Markdown markers, and native wrapping without a renderer dependency.
+Diff readers SHALL offer Review and File modes in the same right-hand pane. Review SHALL display the whole-change narrative as read-only, independently scrollable Markdown, without source alignment, source focus decorations, or a floating window. File SHALL retain aligned overview and expanded detail behavior. Review SHALL use the irrelevant_explainer filetype, optional syntax highlighting, visible Markdown markers, and native wrapping without a renderer dependency.
 
 #### Scenario: Read across files without displacing code
 - **WHEN** Review is selected after a review response is accepted
@@ -860,15 +860,15 @@ Review Ctrl-e/Ctrl-y SHALL scroll by one visible screen row per press, with coun
 
 ### Requirement: Display-only narrative access
 
-Explainr SHALL expose `:ExplainrReview`, `require("explainr").review()`, and a pane-local remappable `<Plug>(ExplainrReview)` action to select Review without inference. They SHALL show a retained narrative or an explicit pending, empty, failed, or stale state for the current comparison. No global default mapping SHALL be installed. Reopening the same narrative SHALL preserve its reading position.
+Irrelevant Explainer SHALL expose `:IrrelevantExplainerReview`, `require("irrelevant_explainer").review()`, and a pane-local remappable `<Plug>(IrrelevantExplainerReview)` action to select Review without inference. They SHALL show a retained narrative or an explicit pending, empty, failed, or stale state for the current comparison. No global default mapping SHALL be installed. Reopening the same narrative SHALL preserve its reading position.
 
 #### Scenario: Return to the narrative
-- **WHEN** the user scrolls Review, reads two files, and invokes ExplainrReview
+- **WHEN** the user scrolls Review, reads two files, and invokes IrrelevantExplainerReview
 - **THEN** the same narrative returns at its saved reading position without another request or selecting another Diffview file
 
 #### Scenario: Narrative has not been generated
-- **WHEN** ExplainrReview is invoked in a supported comparison without a retained or pending review
-- **THEN** the reader shows an empty Review state directing the user to Explainr review
+- **WHEN** IrrelevantExplainerReview is invoked in a supported comparison without a retained or pending review
+- **THEN** the reader shows an empty Review state directing the user to IrrelevantExplainer review
 - **AND** opening that state does not generate explanations, including with Auto enabled
 
 #### Scenario: No supported comparison
@@ -876,7 +876,7 @@ Explainr SHALL expose `:ExplainrReview`, `require("explainr").review()`, and a p
 - **THEN** it reports the missing comparison without inference, opening Diffview, or changing a code explanation reader
 
 #### Scenario: Review generation begins
-- **WHEN** Explainr review is explicitly requested in a coherent comparison
+- **WHEN** IrrelevantExplainer review is explicitly requested in a coherent comparison
 - **THEN** the pane selects Review pending mode without stealing focus and preserves any still-fresh prior narrative while waiting
 - **AND** a replacement narrative starts at its beginning only if Review is still selected when installed
 
@@ -899,7 +899,7 @@ Enter on a rendered Review file reference SHALL select that exact comparison ent
 #### Scenario: Return and close have distinct controls
 - **WHEN** Esc is pressed in Review
 - **THEN** the pane returns to File overview without cancelling pending work
-- **AND** q or ExplainrClose instead closes the reader and cancels owned pending work
+- **AND** q or IrrelevantExplainerClose instead closes the reader and cancels owned pending work
 
 #### Scenario: Navigate through Diffview bindings
 - **WHEN** a configured next/previous-file action or explorer selection actually changes the file while Review is displayed
@@ -964,7 +964,7 @@ The diff-pane header SHALL identify Review/File mode and distinguish selected, b
 - **AND** resizing wider restores the bar when the complete header fits again
 
 #### Scenario: Opening precedes generation
-- **WHEN** Explainr review from ordinary code is waiting for coherent Diffview sources
+- **WHEN** IrrelevantExplainer review from ordinary code is waiting for coherent Diffview sources
 - **THEN** the existing pending-opening notification remains distinct from job progress, without a new source-bound reader or annotation count
 - **AND** opening failure is reported as preflight failure, not a failed annotation unit
 
@@ -1007,7 +1007,7 @@ Review failures SHALL identify the phase and failed unit/request, retain honest 
 
 #### Scenario: Annotation failure with retained checkpoints
 - **WHEN** an annotation invocation fails after earlier invocations validate
-- **THEN** the reader shows failure with completed-unit progress, and diagnostics direct the user to Explainr review in the owning comparison or reader to resume, or ExplainrRefresh in Review to regenerate
+- **THEN** the reader shows failure with completed-unit progress, and diagnostics direct the user to IrrelevantExplainer review in the owning comparison or reader to resume, or IrrelevantExplainerRefresh in Review to regenerate
 - **AND** earlier fresh accepted visible explanations remain available without implying that the new review succeeded
 
 #### Scenario: Synthesis budget failure
@@ -1018,6 +1018,19 @@ Review failures SHALL identify the phase and failed unit/request, retain honest 
 #### Scenario: Background failure during file detail
 - **WHEN** a review fails while the user reads accepted expanded File detail
 - **THEN** the error and background status identify the review job without marking the accepted file notes failed, collapsing detail, stealing focus, or switching to Review
+
+### Requirement: Renamed public reader integrations
+
+Reader integrations SHALL use the `IrrelevantExplainer` highlight prefix and `vim.b.irrelevant_explainer_status` for the existing request-state string. Visible branding SHALL read Irrelevant Explainer where space permits; mode, counts, Auto, and activity SHALL keep their existing priorities over branding. The rename SHALL NOT alter source options, alignment, focus, or navigation, or install legacy integration aliases.
+
+#### Scenario: Theme and statusline use the new identity
+- **WHEN** a user overrides IrrelevantExplainer semantic highlights and reads vim.b.irrelevant_explainer_status
+- **THEN** the reader respects those overrides and exposes its existing request-state meaning without taking over the user's statusline
+- **AND** migration instructions explain replacing the former Explainr highlight prefix and explainr_status variable
+
+#### Scenario: Full brand does not fit
+- **WHEN** a narrow pane has room for its essential mode, counts, Auto, and activity but not the full brand
+- **THEN** the brand is omitted or shortened before those essential elements and no header text enters content rows or overflows the pane
 
 ## Decisions
 

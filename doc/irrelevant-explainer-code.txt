@@ -1,0 +1,116 @@
+*irrelevant-explainer-code.txt*  Code-source collection for Irrelevant Explainer
+
+COLLECTION                              *irrelevant-explainer-code-collect*
+
+    require("irrelevant_explainer.code").collect(win, scope, selection?)
+
+Returns a detached snapshot, or nil and an actionable error. win is a source
+window ID (0 means the current window). The source must be an ordinary loaded
+text buffer. No disk text is substituted for unsaved buffer contents. Scopes:
+
+    file        Entire buffer; no parser required.
+    selection   Exact Visual region; no parser required.
+
+Snapshot fields:
+
+    mode = "code"
+    files = {{path, side = "buffer", lines, empty, endofline}}
+    target = {anchors, scope, spans, text}
+    windows = {buffer = win}
+    source_buf, changedtick, cwd, fingerprint
+
+path is the absolute buffer filename, or "[buffer:ID]" for an unnamed buffer.
+lines always contains the whole current buffer, including contextual lines
+outside a narrower target. Neovim represents an empty buffer as {""}; empty
+distinguishes that state from one actual blank line. An empty file snapshot has
+no anchors or spans and text = "". endofline records the buffer's final-newline
+option; text joins selected lines with "\n", without adding a final newline.
+
+anchors contains one {path, side = "buffer", start_line, end_line} range for
+nonempty file/selection targets (1-based inclusive line numbers).
+spans retains precise per-line boundaries independently of line-only anchors.
+An empty selection is rejected; no AI is invoked by this module.
+
+SELECTION DESCRIPTOR                    *irrelevant-explainer-code-selection*
+
+To preserve a selection across command-line transitions, pass a descriptor:
+>
+    local selection = {
+      type = vim.fn.mode(),
+      pos1 = vim.fn.getpos("v"),
+      pos2 = vim.fn.getpos("."),
+      exclusive = vim.o.selection == "exclusive",
+    }
+    local snapshot, err = require("irrelevant_explainer.code").collect(
+      vim.api.nvim_get_current_win(), "selection", selection)
+<
+Capture this while Visual mode is active, for example inside a <Cmd> mapping.
+type is "v", "V", or CTRL-V (string.char(22), optionally followed by block
+width). pos1 and pos2 use |getpos()| format: {buffer, line, byte_column, offset}.
+Zero buffer means the source buffer. Byte columns are 1-based; offset is the
+virtual screen-cell offset, not a byte offset. Reversed endpoints are valid.
+Omitted exclusive follows 'selection'. Explicit descriptors need no active
+Visual mode. Do not convert block columns to byte slices yourself.
+
+When selection is omitted, active Visual mode uses getpos("v")/getpos(".").
+Otherwise the collector uses '< / '> marks and |visualmode()|, supporting an
+Ex invocation after leaving Visual mode. These are the last Visual selection,
+not an arbitrary Ex line range. Prefer an explicit descriptor when retaining
+virtual offsets and options across later window/option changes matters.
+For block selections with 'virtualedit=block', the collector temporarily
+evaluates the region with virtual editing enabled even after leaving Visual
+mode, then restores the exact local option, including global inheritance.
+
+Text comes from |getregion()| evaluated in the source window. spans is the
+unmodified |getregionpos()| result with eol = true:
+>
+    {
+      {{buffer, line, start_col, start_off},
+       {buffer, line, end_col, end_off}},
+      -- one pair per selected line
+    }
+<
+Both columns are 1-based byte positions with Neovim's endpoint semantics.
+An end column can denote the last byte of a multibyte character. EOL positions
+can be one past the line's byte length. Nonzero start_off denotes the first
+selected screen cell within a character; nonzero end_off denotes the first
+cell NOT selected within the ending character. These offsets preserve partial
+tabs/wide characters and virtual padding. Do not treat them as ordinary
+half-open byte ranges. Selected portions of partial multi-cell characters may
+be spaces in text, as specified by Neovim, while spans still identifies their
+original position. 'virtualedit', 'tabstop', 'list', and 'selection' semantics
+are those of the source window/buffer at collection time.
+
+REMOVED STRUCTURAL SCOPES               *irrelevant-explainer-code-structures*
+
+Function/class scopes and their language-specific queries have been removed.
+Existing command or Lua calls using those scopes fail before cache lookup or
+inference, with guidance to use file or selection. No alias or automatic
+scope expansion is provided, and fresh accepted notes remain available.
+
+To explain a function or class, explicitly select its text and use selection
+scope. Include decorators or surrounding lines when you want them in the
+target. See |irrelevant-explainer-commands| for a Visual mapping and
+|irrelevant-explainer-code-selection| for precise descriptors. File and selection work
+without parsers for any ordinary text buffer. Optional Markdown highlighting
+in the explanation reader is unchanged; installed user parsers are untouched.
+
+FRESHNESS                               *irrelevant-explainer-code-fresh*
+
+    require("irrelevant_explainer.code").fresh(snapshot)
+
+Returns a boolean. Requires the original live window to still display the
+same loaded buffer, unchanged changedtick, filename, complete text, empty/EOL
+state, and source-window cwd. Closing/replacing the window or editing and then
+reverting still invalidates the old snapshot. Cursor movement alone does not:
+the caller owns target/session generation and invalidates a switched target.
+
+fingerprint is SHA-256 over content, source path, empty/EOL state, scope, exact
+spans/text, and cwd. It is stable on identical captures, including reversed
+equivalent selections, and changes when context or target changes. changedtick
+is deliberately not part of the fingerprint so equivalent content can reuse
+cached results, but it remains mandatory for freshness. Treat snapshots as
+immutable; this module never edits source text and leaves window options
+unchanged after collection.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:

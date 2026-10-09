@@ -1,4 +1,4 @@
-local diff, adapter = require("explainr.diff"), require("explainr.diffview")
+local diff, adapter = require("irrelevant_explainer.diff"), require("irrelevant_explainer.diffview")
 local api = vim.api
 
 local function repo(run)
@@ -115,7 +115,7 @@ T.test("diff two commits exclude local edits and include full cross-file spec AD
     for _, item in ipairs(s.comparison.manifest) do assert(item.patch and item.full_text) end
     T.eq(nil, manifest(s, "unrelated.txt")); T.eq(true, diff.fresh(s))
     T.eq(s.fingerprint, r.collect().fingerprint)
-    local validated, err = require("explainr.model").validate({ version = 1, notes = { {
+    local validated, err = require("irrelevant_explainer.model").validate({ version = 1, notes = { {
       summary = "Permission mismatch", detail = "Editors contradict the owner-only requirement.", intent_basis = "documented",
       anchors = { { path = "policy.lua", side = "new", start_line = 1, end_line = 1 } },
       evidence = { { path = "openspec/spec.md", side = "new", start_line = 1, end_line = 1 },
@@ -286,7 +286,7 @@ T.test("async Git startup and polling yield; cancellation and late checks never 
     r.write("focus.lua", "old\nunchanged\n"); local a = r.commit()
     r.write("focus.lua", "new\nunchanged\n"); local b = r.commit()
     local state = r.display({ old = rev(a), new = rev(b) }, "focus.lua", "old\nunchanged\n", "new\nunchanged\n")
-    local plugin, sessions, agent = require("explainr"), require("explainr.session"), require("explainr.agent")
+    local plugin, sessions, agent = require("irrelevant_explainer"), require("irrelevant_explainer.session"), require("irrelevant_explainer.agent")
     plugin.close(); plugin.setup()
     local system, old_run, old_notify = vim.system, agent.run, vim.notify
     local held, gates, kills, launches, heartbeats = true, {}, 0, {}, 0
@@ -535,7 +535,7 @@ T.test("auto keeps affordable review and exact serialized UTF-8 boundary", funct
     local state = r.display({ old = { type = "stage", stage = 0 }, new = { type = "local" } },
       "focus.lua", "old é中\n", "new é中\n")
     local review = assert(diff.collect(state.source, "hunk", { diff = "review" }))
-    local prompt = require("explainr.prompt")
+    local prompt = require("irrelevant_explainer.prompt")
     local text, _, bytes = prompt.build(review, 100000)
     assert(#text > vim.fn.strchars(text))
     local auto = assert(diff.collect(state.source, "hunk", { diff = "auto", max_bytes = bytes }))
@@ -573,7 +573,7 @@ T.test("many unrelated changes fail review but auto preflights before reading th
     assert(ok and snapshot, message or snapshot)
     T.eq(4, reads) -- Only target old/new, twice for coherence.
     T.eq("focused", snapshot.context.strategy); T.eq(60, snapshot.context.omitted_files)
-    local request = assert(require("explainr.prompt").build(snapshot, snapshot.max_bytes))
+    local request = assert(require("irrelevant_explainer.prompt").build(snapshot, snapshot.max_bytes))
     assert(not request:find(directory, 1, true))
     T.eq(snapshot.fingerprint, assert(diff.collect(state.source, "hunk", { diff = "auto", max_bytes = 10000 })).fingerprint)
     T.eq(true, diff.fresh(snapshot))
@@ -609,7 +609,7 @@ T.test("auto skips huge unrelated and oversized optional docs but preserves affo
     local note = { summary = "Permission mismatch", detail = "Supplied policy conflicts with this target.", intent_basis = "documented",
       anchors = { { path = "focus.lua", side = "new", start_line = 1, end_line = 1 } },
       evidence = { { path = "openspec/spec.md", side = "new", start_line = 1, end_line = 1 } } }
-    assert(require("explainr.model").validate({ version = 1, notes = { note } }, s))
+    assert(require("irrelevant_explainer.model").validate({ version = 1, notes = { note } }, s))
     T.eq(true, diff.fresh(s))
   end)
 end)
@@ -631,15 +631,15 @@ T.test("huge selected versions use compact hunk excerpts and reject omitted same
     local supplied = file(s, "focus.lua", "new")
     T.eq(nil, supplied.lines); T.eq(2000, supplied.line_count)
     T.eq(998, supplied.chunks[1].start_line); T.eq(5, #supplied.chunks[1].lines)
-    local prompt = assert(require("explainr.prompt").build(s, s.max_bytes))
+    local prompt = assert(require("irrelevant_explainer.prompt").build(s, s.max_bytes))
     assert(not prompt:find("OTHER HUNK NOT SUPPLIED", 1, true))
     local n = { summary = "Selected change", detail = "Visible change only.", intent_basis = "unknown", evidence = {},
       anchors = { { path = "focus.lua", side = "new", start_line = 1000, end_line = 1000 } } }
-    assert(require("explainr.model").validate({ version = 1, notes = { n } }, s))
+    assert(require("irrelevant_explainer.model").validate({ version = 1, notes = { n } }, s))
     n.evidence = { { path = "focus.lua", side = "new", start_line = 1800, end_line = 1800 } }
-    T.eq(nil, require("explainr.model").validate({ version = 1, notes = { n } }, s))
+    T.eq(nil, require("irrelevant_explainer.model").validate({ version = 1, notes = { n } }, s))
     api.nvim_win_set_cursor(state.source, { 1800, 0 }); T.eq(true, diff.fresh(s))
-    local config = require("explainr").config.context
+    local config = require("irrelevant_explainer").config.context
     local strategy, radius = config.diff, config.radius
     config.diff, config.radius = "review", 100
     local fresh = diff.fresh(s)
@@ -663,7 +663,7 @@ T.test("focused surroundings shrink before rejection and mandatory UTF-8 target 
     local state = r.display({ old = rev(a), new = rev(b) }, "focus.lua", old, new)
     api.nvim_win_set_cursor(state.source, { 40, 0 })
     local minimal = assert(diff.collect(state.source, "hunk", { diff = "focused", radius = 0, max_bytes = 100000 }))
-    local prompt = require("explainr.prompt")
+    local prompt = require("irrelevant_explainer.prompt")
     local text, _, bytes = prompt.build(minimal, 100000)
     -- Leave a little room for surroundings, independent of instruction length.
     local s = assert(diff.collect(state.source, "hunk", { diff = "focused", radius = 20, max_bytes = bytes + 1024 }))
@@ -687,7 +687,7 @@ T.test("focused file scope retains entire target and optional docs are omitted d
     T.eq({ "new", "unchanged" }, file(complete, "focus.lua", "new").lines)
     T.eq(2, complete.target.anchors[2].end_line)
     T.eq({ { 1, 1, 1, 1 } }, complete.target.hunks) -- Focused file fallback keeps the same change priority.
-    local prompt = require("explainr.prompt")
+    local prompt = require("irrelevant_explainer.prompt")
     local reduced = vim.deepcopy(complete)
     reduced.context.omitted_files = 1
     reduced.comparison.manifest[3] = nil
@@ -768,7 +768,7 @@ T.test("focused changed requirements outrank optional nearby source surroundings
     local state = r.display({ old = rev(a), new = rev(b) }, "focus.lua", before, after)
     api.nvim_win_set_cursor(state.source, { 40, 0 })
     local solo = assert(diff.collect(state.source, "hunk", { diff = "focused", radius = 20, max_bytes = 100000 }))
-    local _, _, bytes = require("explainr.prompt").build(solo, 100000)
+    local _, _, bytes = require("irrelevant_explainer.prompt").build(solo, 100000)
     r.write("openspec/spec.md", "Owner-only cancellation\nnew strict policy\n"); local c = r.commit()
     state = r.display({ old = rev(a), new = rev(c) }, "focus.lua", before, after)
     api.nvim_win_set_cursor(state.source, { 40, 0 })

@@ -8,7 +8,7 @@ Delegate AI inference to user-configured local commands while providing a reliab
 
 ### Requirement: Configurable command transport
 
-Users SHALL be able to configure an executable and argument list for noninteractive prompting. The plugin SHALL send the complete prompt through stdin by default, close stdin after sending, and run asynchronously without interpolating prompt content into a shell command.
+Users SHALL be able to configure an executable and argument list for noninteractive prompting through `ai.command`. An explicitly supplied command list SHALL replace the entire default argv, never merge or append default arguments. The plugin SHALL send the complete prompt through stdin by default, close stdin after sending, and run asynchronously without interpolating prompt content into a shell command.
 
 #### Scenario: Prompt includes shell syntax
 - **WHEN** code contains quotes, newlines, dollar expansions, or shell metacharacters
@@ -19,12 +19,23 @@ Users SHALL be able to configure an executable and argument list for noninteract
 - **THEN** the same request contract works without plugin-owned provider credentials
 
 #### Scenario: No configured executable
-- **WHEN** setup uses the default empty command list and inference is requested
+- **WHEN** setup explicitly uses ai.command={} and inference is requested
 - **THEN** setup/loading remain valid but the request reports that a compatible command must be configured before generation
+- **AND** the explicitly empty list is not replaced with the default OpenCode command
 
 #### Scenario: Project execution environment
 - **WHEN** a configured command is launched
 - **THEN** it inherits the user's tool environment and runs in the captured source/project directory, without adding conversation-continuation, server-attachment or automatic-approval flags
+
+#### Scenario: Shorter override replaces all default arguments
+- **WHEN** the user configures ai.command={"my-wrapper"} with ai.output="plain"
+- **THEN** the effective argv contains exactly my-wrapper with none of run, --agent, explain, --format, or json appended
+- **AND** paths and arguments with spaces or shell syntax remain individual literal argv elements
+
+#### Scenario: Setup reset and caller-owned options
+- **WHEN** a custom argv has been supplied and setup() is later called without overrides
+- **THEN** defaults are restored rather than retaining the previous custom command
+- **AND** setup does not modify the caller's options table or command list
 
 ### Requirement: Agent-owned authentication and permissions
 
@@ -40,11 +51,11 @@ Authentication, model selection, billing, and external-agent permissions SHALL r
 
 #### Scenario: Subscription-configured command
 - **WHEN** the user's tool is authenticated with a subscription rather than an API credential
-- **THEN** Explainr delegates to that tool without managing login or promising a particular provider's subscription billing behavior
+- **THEN** Irrelevant Explainer delegates to that tool without managing login or promising a particular provider's subscription billing behavior
 
 ### Requirement: Output decoding
 
-The plugin SHALL support OpenCode event output, Codex event output, and plain final structured output, plus a user-supplied decoder for other command formats. It SHALL separate stdout from stderr and distinguish completed answers from progress, reasoning, tool events, and errors.
+The plugin SHALL support OpenCode event output, Codex event output, and plain final structured output, plus a user-supplied decoder for other command formats through `ai.output`, defaulting to opencode. Custom command configuration SHALL NOT imply decoder detection or fallback; users SHALL select a compatible decoder. The plugin SHALL separate stdout from stderr and distinguish completed answers from progress, reasoning, tool events, and errors.
 
 #### Scenario: Progress looks like a valid explanation
 - **WHEN** an event stream contains a schema-shaped progress message before the final answer
@@ -55,12 +66,21 @@ The plugin SHALL support OpenCode event output, Codex event output, and plain fi
 - **THEN** decoding preserves complete event boundaries and assistant message ordering
 
 #### Scenario: Plain structured-output command
-- **WHEN** a compatible command successfully returns one final explanation object on stdout
+- **WHEN** a compatible command successfully returns one final explanation object on stdout and ai.output="plain" is selected
 - **THEN** the object is accepted without interpreting it as agent transport events
 
 #### Scenario: Custom decoder fails
 - **WHEN** a user decoder throws, returns an error, or the process exits nonzero
 - **THEN** the invocation fails rather than promoting malformed output or allowing a custom decoder to override failed process completion
+
+#### Scenario: Codex override
+- **WHEN** the user configures ai.command={"codex","exec","-","--json","--sandbox","read-only"} and ai.output="codex"
+- **THEN** the configured argv and Codex decoder are used without OpenCode flags, tool invocation, or decoder fallback
+
+#### Scenario: Command override without decoder override
+- **WHEN** the user overrides ai.command but leaves ai.output unset
+- **THEN** the decoder remains opencode and incompatible output fails the normal decoder/validation checks
+- **AND** documentation explains explicitly choosing plain, codex, or a custom function when required
 
 ### Requirement: Structured payload contract
 
@@ -258,7 +278,16 @@ The plugin SHALL install the assembled narrative and all file results together o
 
 ### Requirement: Review resource limits
 
-Review SHALL expose positive finite integer limits: request_max_bytes=65536, response_max_bytes=32768, max_snapshot_bytes=16777216, and max_requests=128 under review configuration. Each prompt SHALL fit both context.max_bytes and review.request_max_bytes. Responses SHALL fit the decoded JSON byte cap. The snapshot cap SHALL apply to canonical serialized review data; max_requests SHALL bound new external calls in each explicit run or resume, across every phase.
+Review SHALL expose positive finite integer limits: request_max_bytes=262144, response_max_bytes=32768, max_snapshot_bytes=16777216, and max_requests=128 under review configuration. Each prompt SHALL fit both context.max_bytes and review.request_max_bytes. Responses SHALL fit the decoded JSON byte cap. The snapshot cap SHALL apply to canonical serialized review data; max_requests SHALL bound new external calls in each explicit run or resume, across every phase.
+
+#### Scenario: Default review request budget
+- **WHEN** review limits are not explicitly configured
+- **THEN** the request cap is 262144 UTF-8 bytes, matching the default context.max_bytes
+- **AND** the response, snapshot and invocation defaults remain 32768 bytes, 16777216 bytes and 128 calls respectively
+
+#### Scenario: Explicit smaller request or context budget
+- **WHEN** review.request_max_bytes or context.max_bytes is explicitly set to 65536 while the other cap is 262144
+- **THEN** every complete review prompt remains bounded to 65536 UTF-8 bytes rather than using the larger default
 
 #### Scenario: Raising the old input limit
 - **WHEN** context.max_bytes is increased above review.request_max_bytes
@@ -282,6 +311,8 @@ Review SHALL expose positive finite integer limits: request_max_bytes=65536, res
 
 Review planning SHALL account for bounded note/finding/detail output as well as exact input bytes, publishing finite output allowances in each prompt and validating them in responses. Small inputs with many targets SHALL not imply unlimited combined output. Limits SHALL be described as host guardrails, not provider token counts, output-token controls, billing guarantees, or proof that external compaction cannot occur.
 
+Annotation units SHALL share available response capacity after reserving the serialized envelope and array separators, rather than retain an unnecessarily fixed per-unit cap. Sparse note/finding/text ceilings and whole-response validation SHALL remain enforced. Prompts SHALL clarify that serialized unit limits include identities, anchors, evidence, and JSON escaping, and that count/text limits are ceilings rather than quotas.
+
 #### Scenario: Many tiny files
 - **WHEN** many small file targets fit the input cap but their allocated notes/findings exceed the response allowance
 - **THEN** the planner creates multiple annotation requests rather than requesting unbounded detail in one answer
@@ -293,7 +324,16 @@ Review planning SHALL account for bounded note/finding/detail output as well as 
 #### Scenario: Provider rejects a bounded request
 - **WHEN** the external agent reports context overflow, compaction failure, or output truncation despite the local bounds
 - **THEN** the error remains visible with phase/request size context and advice to reduce review limits or scope
-- **AND** Explainr does not change external agent configuration or claim a model-capacity guarantee
+- **AND** Irrelevant Explainer does not change external agent configuration or claim a model-capacity guarantee
+
+#### Scenario: Affordable unit output exceeds the former fixed cap
+- **WHEN** one, two, or three units share a default 32768-byte annotation response and an encoded unit exceeds 8192 bytes while obeying all newly published allowances
+- **THEN** its unit allocation is respectively 32256, 16128, or 10752 bytes
+- **AND** the response is accepted only if its full serialized JSON and all other schema, size, coverage, and freshness checks pass
+
+#### Scenario: Large configured annotation batch
+- **WHEN** a configured response budget admits enough units that the serialized response envelope and array separators exceed the usual 512-byte reserve
+- **THEN** the allocation reserves the actual larger overhead so all full unit allocations together still fit the response cap
 
 ### Requirement: Review checkpoint provenance
 
@@ -325,7 +365,7 @@ Persistent reuse SHALL cover selection, code file, diff file, diff hunk and revi
 - **THEN** the plugin reuses the result without external inference after recapturing and validating current inputs
 
 #### Scenario: Unified entrypoints share semantic identity
-- **WHEN** Explainr review and explain("review") resolve identical source namespace, comparison, supplied content and generation settings, including through manual versus automatic Diffview opening
+- **WHEN** IrrelevantExplainer review and explain("review") resolve identical source namespace, comparison, supplied content and generation settings, including through manual versus automatic Diffview opening
 - **THEN** they resolve the same completed-result key after coherent capture and target resolution
 - **AND** an equal file scope in code and diff modes does not resolve the same key merely because the source buffer or public command matches
 
@@ -387,12 +427,12 @@ Completed answers SHALL use private local storage under Neovim's cache directory
 - **AND** operational failures produce bounded diagnostics without revealing source or credentials
 
 #### Scenario: Local privacy
-- **WHEN** Explainr creates cache directories and files on a system supporting Unix permissions
+- **WHEN** Irrelevant Explainer creates cache directories and files on a system supporting Unix permissions
 - **THEN** it uses owner-only access and never presents that protection as encryption
 
 ### Requirement: Persistent cache controls
 
-Persistent caching SHALL default to enabled and support opt-out, a size limit and an explicit namespace. ExplainrCacheClear and the Lua equivalent SHALL clear plugin-owned completed disk entries and reusable memory answers while preserving displayed notes. Refresh SHALL bypass both answer caches and replace a prior persistent answer only after successful validation. Invalid cache configuration SHALL be rejected during setup.
+Persistent caching SHALL default to enabled and support opt-out, a size limit and an explicit namespace. IrrelevantExplainerCacheClear and `require("irrelevant_explainer").clear_cache()` SHALL clear plugin-owned completed disk entries and reusable memory answers while preserving displayed notes. Refresh SHALL bypass both answer caches and replace a prior persistent answer only after successful validation. Invalid cache configuration SHALL be rejected during setup.
 
 #### Scenario: Disable persistence
 - **WHEN** cache.enabled is false
@@ -403,7 +443,7 @@ Persistent caching SHALL default to enabled and support opt-out, a size limit an
 - **THEN** the earlier valid persistent answer is not overwritten or deleted by the failed attempt
 
 #### Scenario: Explicit clear during generation
-- **WHEN** the user runs ExplainrCacheClear while a request is pending
+- **WHEN** the user runs IrrelevantExplainerCacheClear while a request is pending
 - **THEN** completed entries and reusable memory answers are cleared without closing the reader or deleting unrelated files
 - **AND** this process's pre-clear requests cannot repopulate the disk cache; other running processes may later create new entries
 - **AND** unfinished review checkpoints remain governed by Cancel/Refresh, not completed-result cache clear
@@ -411,6 +451,56 @@ Persistent caching SHALL default to enabled and support opt-out, a size limit an
 #### Scenario: Invalid cache options
 - **WHEN** enabled is not boolean, max_bytes is not a positive finite integer, or namespace or an explicitly supplied decoder_key is empty or not a string
 - **THEN** setup reports the invalid option rather than silently accepting an ambiguous cache identity or unbounded store
+
+### Requirement: Review chunk coordinate disclosure
+
+Review requests SHALL disclose each supplied chunk's original inclusive start_line and end_line with its unchanged source lines. Prompts SHALL explain that lines[i] denotes start_line + i - 1 using a 1-based index, that gaps are unavailable, and that fragment anchors remain confined to assigned target ranges even when original hunk or manifest bounds are larger.
+
+#### Scenario: Fragment starts after the beginning of a file
+- **WHEN** an annotation request supplies a fragment beginning at an original line other than 1 and hunk metadata spans beyond that fragment
+- **THEN** the chunk endpoints match the supplied original text exactly and the prompt distinguishes fragment coverage from full-hunk coordinates
+- **AND** neither note anchors nor evidence are authorized by unsent hunk or manifest metadata
+
+### Requirement: Unsent chunk range diagnostics
+
+A range crossing or extending beyond supplied chunks SHALL remain invalid. Its validation error SHALL identify the exact path, side, attempted inclusive range, and first unsent line without disclosing source text or accepting the valid portion of a failed invocation.
+
+#### Scenario: Note anchor extends past a supplied chunk
+- **WHEN** a returned note anchors old-side lines 5-7 but only lines 5-6 were supplied
+- **THEN** rejection identifies the attempted old-side range and line 7 as the first unsent line
+
+#### Scenario: Finding evidence crosses a gap
+- **WHEN** finding evidence cites new-side lines 1-3 of a document whose supplied chunks contain only lines 1 and 3
+- **THEN** rejection identifies the document, new side, attempted range 1-3, and line 2 as the first unsent line
+- **AND** no failed invocation output becomes a checkpoint or partial new review
+
+### Requirement: Default external agent
+
+Without AI overrides, setup SHALL select `ai.command={"opencode","run","--agent","explain","--format","json"}`, `ai.output="opencode"`, and `ai.timeout_ms=300000`. Setup/loading SHALL NOT launch, install, or authenticate a tool. OpenCode, its user-created restricted explain agent, provider/model, and effective permissions SHALL remain user prerequisites, not plugin-managed resources.
+
+#### Scenario: Default setup without inference
+- **WHEN** the user calls setup() without AI overrides
+- **THEN** the complete OpenCode argv, OpenCode decoder, and 300000 ms timeout are selected without starting an external process
+- **AND** inference begins only through the existing explicit-request or opt-in navigation contracts
+
+#### Scenario: Default tool is unavailable
+- **WHEN** inference is requested with the default command but OpenCode cannot be launched
+- **THEN** the plugin reports the launch failure without installing a tool, approving permissions, or falling back to another provider
+- **AND** setup and source collection remain usable without an installed OpenCode executable
+
+### Requirement: Storage continuity across the package rename
+
+The renamed plugin SHALL retain `stdpath("cache")/explainr/results/v1` as its documented compatibility storage path. Branding alone SHALL NOT change completed-result format or semantic identity, migrate or delete existing records, or broaden cache clearing beyond plugin-owned entries. Eligible existing records SHALL remain subject to normal identity, schema, evidence, freshness, and permission validation.
+
+#### Scenario: Existing completed answer after rename
+- **WHEN** an existing valid completed record matches a freshly captured request after the package rename
+- **THEN** the renamed plugin can reuse it without external inference after normal validation
+- **AND** no record is rewritten or considered invalid merely because the command or Lua package name changed
+
+#### Scenario: Renamed cache clear reaches existing storage
+- **WHEN** the user invokes IrrelevantExplainerCacheClear or require("irrelevant_explainer").clear_cache()
+- **THEN** eligible plugin-owned records in the retained storage path are cleared under the existing ownership and concurrency rules
+- **AND** unrelated cache files are not removed and no second renamed storage tree is created
 
 ## Decisions
 

@@ -100,7 +100,7 @@ An explanation SHALL remain bound to the source snapshot used to request it. Sou
 
 ### Requirement: Code commands and refresh
 
-The plugin SHALL expose `Explainr [file|selection|hunk|review]` with file as the default and `require("explainr").explain(scope, selection)`, plus Refresh/Cancel/Close controls. Commands invoked from notes/detail SHALL target the followed source, not Markdown. Refresh SHALL bypass result caching for the current scope and retain visual selection boundaries. Completion SHALL list only supported scopes. Setup SHALL not install global editing mappings. ExplainrCode/ExplainrDiff and public code()/diff() aliases SHALL be removed.
+The plugin SHALL expose `IrrelevantExplainer [file|selection|hunk|review]` with file as the default and `require("irrelevant_explainer").explain(scope, selection)`, plus Refresh/Cancel/Close controls under the IrrelevantExplainer prefix. Commands invoked from notes/detail SHALL target the followed source, not Markdown. Refresh SHALL bypass result caching for the current scope and retain visual selection boundaries. Completion SHALL list only supported scopes. Setup SHALL not install global editing mappings. Explainr commands, the explainr Lua package, and public code()/diff() aliases SHALL not be provided.
 
 #### Scenario: Explain from the reading pane
 - **WHEN** an explanation action is invoked while the explanation pane has focus
@@ -112,22 +112,22 @@ The plugin SHALL expose `Explainr [file|selection|hunk|review]` with file as the
 
 #### Scenario: Optional integrations absent
 - **WHEN** the plugin is loaded on Neovim 0.11+ without Diffview or an external AI executable installed
-- **THEN** code-mode loading and setup still work, file/selection collection needs no parser, and attempting inference without a configured executable reports an actionable failure
+- **THEN** code-mode loading and setup still work, file/selection collection needs no parser, and attempting inference without an available executable reports an actionable failure
 - **AND** ordinary code routing does not load Diffview
 
 #### Scenario: Default and completion
-- **WHEN** the user invokes Explainr without an argument, calls explain() without a scope, or requests command completion
+- **WHEN** the user invokes IrrelevantExplainer without an argument, calls explain() without a scope, or requests command completion
 - **THEN** the default is file, and completion offers file, selection, hunk, and review without function or class
 
 #### Scenario: Retired scope from a command or Lua call
-- **WHEN** the user requests function or class through Explainr or explain()
+- **WHEN** the user requests function or class through IrrelevantExplainer or explain()
 - **THEN** the plugin rejects the scope before cache lookup or inference and recommends file or explicit visual selection
 - **AND** it does not resolve a syntax node, reuse a retired-scope answer, silently broaden the target or remove fresh accepted notes
 
 #### Scenario: Removed public entrypoints
 - **WHEN** the plugin initializes in a fresh Neovim session
-- **THEN** it registers neither ExplainrCode nor ExplainrDiff and exposes neither public code() nor diff() aliases
-- **AND** migration examples use Explainr or explain(), while ExplainrReview and review() remain display-only
+- **THEN** it registers no Explainr-prefixed commands, provides no explainr Lua import aliases, and exposes neither public code() nor diff() aliases
+- **AND** migration examples use IrrelevantExplainer or explain(), while IrrelevantExplainerReview and review() remain display-only
 
 #### Scenario: Exact visual descriptor
 - **WHEN** selection is requested through an Ex Visual command or a Lua mapping supplying captured selection endpoints
@@ -139,12 +139,12 @@ The plugin SHALL expose `Explainr [file|selection|hunk|review]` with file as the
 File requests SHALL explain changes when the originating source window belongs to a Diffview source pane and code otherwise. Notes/detail SHALL resolve their followed source before classification. Filetype, path, shared buffer identity, or the diff option alone SHALL NOT imply Diffview ownership. Loading or unsupported Diffview sources SHALL fail explicitly rather than fall back to code. Non-source utility buffers SHALL NOT become code targets.
 
 #### Scenario: Ordinary file with local changes
-- **WHEN** Explainr file is requested in an ordinary source window whose file also has Git changes
+- **WHEN** IrrelevantExplainer file is requested in an ordinary source window whose file also has Git changes
 - **THEN** the whole current buffer is explained as code, including unsaved text, without opening Diffview
 
 #### Scenario: Same buffer in different windows
 - **WHEN** an ordinary window and a Diffview source window show the same working-file buffer
-- **THEN** invoking Explainr in the ordinary window requests code, while invoking it in the Diffview window requests that comparison's diff file
+- **THEN** invoking IrrelevantExplainer in the ordinary window requests code, while invoking it in the Diffview window requests that comparison's diff file
 
 #### Scenario: Unsupported or loading view
 - **WHEN** file scope is requested from a Diffview-owned source that is loading, conflicting, or otherwise unsupported
@@ -164,12 +164,12 @@ Completed code-file and visual-selection explanations SHALL support cross-sessio
 - **THEN** a valid retained result is installed without invoking the external agent, even if buffer numbers differ
 
 #### Scenario: Shared buffer in code and diff windows
-- **WHEN** an ordinary source window and a Diffview source window show the same working buffer and the user invokes Explainr file in each
+- **WHEN** an ordinary source window and a Diffview source window show the same working buffer and the user invokes IrrelevantExplainer file in each
 - **THEN** source-window ownership resolves code-file and diff-file requests before cache lookup, and their entries remain distinct
 - **AND** invocation from an associated reader uses its followed source rather than the reader's Markdown or the other window's cached mode
 
 #### Scenario: Selection from a Diffview source
-- **WHEN** Explainr selection or explain("selection", descriptor) is invoked from a Diffview source
+- **WHEN** IrrelevantExplainer selection or explain("selection", descriptor) is invoked from a Diffview source
 - **THEN** lookup uses the exact selected-code target and supplied code context, not diff-file or hunk identity
 - **AND** an equivalent ordinary-source selection can reuse that result only when source namespace, normalized target, supplied context and generation settings all match
 

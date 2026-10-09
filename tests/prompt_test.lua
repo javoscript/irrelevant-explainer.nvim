@@ -1,4 +1,4 @@
-local prompt = require("explainr.prompt")
+local prompt = require("irrelevant_explainer.prompt")
 local function range(path, side, first, last)
   return { path = path, side = side, start_line = first, end_line = last or first }
 end
@@ -12,7 +12,7 @@ T.test("code prompt separates complete context exact target untrusted data and o
   assert(p:find("unavailable", 1, true) and p:find("api.cancel('é中')", 1, true))
   local context, target = p:match("UNTRUSTED SNAPSHOT JSON:\n(.-)\nFOCUSED TARGET JSON:\n(.*)")
   T.eq(code.files, vim.json.decode(context).files)
-  T.eq(require("explainr.identity").target(code.target), vim.json.decode(target))
+  T.eq(require("irrelevant_explainer.identity").target(code.target), vim.json.decode(target))
   for _, instruction in ipairs({ "untrusted contextual data", "unavailable dependency behavior",
     "full explanation now", "1-based inclusive", "Return exactly one JSON object", "not surrounding columns" }) do
     assert(p:find(instruction, 1, true), instruction)
@@ -131,8 +131,8 @@ T.test("review prompts use only version3 local request views with exact byte bud
   s.comparison.manifest[4] = { file_id = "binary", path = "image.png", text_unavailable = "binary" }
   local old, err = prompt.build(s, 100000)
   T.eq(nil, old); assert(err:find("version-3", 1, true))
-  local job = assert(require("explainr.review").create(s, {}))
-  local req = require("explainr.review").inspect(job).annotations[1].request
+  local job = assert(require("irrelevant_explainer.review").create(s, {}))
+  local req = require("irrelevant_explainer.review").inspect(job).annotations[1].request
   local p, _, bytes = prompt.review(req, 100000)
   T.eq(#p, bytes); assert(bytes > vim.fn.strchars(p))
   T.eq(p, assert(prompt.review(req, bytes)))

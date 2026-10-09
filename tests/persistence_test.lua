@@ -2,20 +2,20 @@
 -- repository and XDG cache are shared; no provider executable is ever launched.
 local api = vim.api
 local workspace = vim.fn.getcwd()
-local runtime = vim.env.EXPLAINR_DIFFVIEW_PATH or vim.fn.stdpath("data") .. "/lazy/diffview.nvim"
-local plenary = vim.env.EXPLAINR_PLENARY_PATH or vim.fn.stdpath("data") .. "/lazy/plenary.nvim"
-local child = vim.env.EXPLAINR_PERSISTENCE_CASE
+local runtime = vim.env.IRRELEVANT_EXPLAINER_DIFFVIEW_PATH or vim.fn.stdpath("data") .. "/lazy/diffview.nvim"
+local plenary = vim.env.IRRELEVANT_EXPLAINER_PLENARY_PATH or vim.fn.stdpath("data") .. "/lazy/plenary.nvim"
+local child = vim.env.IRRELEVANT_EXPLAINER_PERSISTENCE_CASE
 
 if child then
   T.test("persistent acceptance child: " .. child, function()
     local case = vim.json.decode(child)
-    local root = assert(vim.env.EXPLAINR_PERSISTENCE_REPO)
-    assert(vim.fn.stdpath("cache"):find(vim.env.EXPLAINR_TEST_CACHE_ROOT, 1, true) == 1)
+    local root = assert(vim.env.IRRELEVANT_EXPLAINER_PERSISTENCE_REPO)
+    assert(vim.fn.stdpath("cache"):find(vim.env.IRRELEVANT_EXPLAINER_TEST_CACHE_ROOT, 1, true) == 1)
     vim.o.columns = 220
     for _ = 1, case.padding or 0 do api.nvim_create_buf(false, true) end
     api.nvim_set_current_dir(root)
-    local plugin, sessions = require("explainr"), require("explainr.session")
-    local agent, cache = require("explainr.agent"), require("explainr.cache")
+    local plugin, sessions = require("irrelevant_explainer"), require("irrelevant_explainer.session")
+    local agent, cache = require("irrelevant_explainer.agent"), require("irrelevant_explainer.cache")
     local calls, writes, errors, held = 0, 0, {}, nil
     vim.notify = function(message, level)
       if level == vim.log.levels.ERROR then errors[#errors + 1] = message end
@@ -29,7 +29,7 @@ if child then
         if callback then callback(ok) end
       end)
     end
-    plugin.setup({ ai = { command = { "offline-persistence-fixture-only" } },
+    plugin.setup({ ai = { command = case.argv or { "offline-persistence-fixture-only" }, output = case.output or "plain" },
       cache = { namespace = case.namespace or case.scope } })
     agent.run = function(prompt, _, _, callback)
       calls = calls + 1
@@ -91,7 +91,7 @@ if child then
         dv.open(args)
         wait(function()
           view = lib.get_current_view()
-          local state = view and view.cur_layout.b and require("explainr.diffview").current(view.cur_layout.b.id)
+          local state = view and view.cur_layout.b and require("irrelevant_explainer.diffview").current(view.cur_layout.b.id)
           if state and state.selected.path == (case.selected or "a.lua") then source = state.source; return true end
         end)
         api.nvim_set_current_win(source)
@@ -101,9 +101,35 @@ if child then
         source = api.nvim_get_current_win()
       end
     end
+    local legacy_path, legacy_bytes, sentinel
+    if case.legacy then
+      -- Captured from require("explainr").explain("file") before the rename,
+      -- with explicit offline-persistence-fixture-only/plain and this namespace.
+      -- Only the disposable worktree namespace varies. Keep these generation,
+      -- target and context digests frozen so an accidental identity bump misses.
+      assert(scope == "code" and case.namespace == "rename-continuity")
+      local identity = require("irrelevant_explainer.identity")
+      local source_hash = identity.hash({ worktree = root })
+      local key = identity.hash({ format = 1, prompt = 2, planner = 2, response = 1,
+        source = source_hash, mode = "code", scope = "file",
+        target = "18fc344a392ea3710759b30ab85e291d81dc9dbbef757fe2d3316485b32b702c",
+        context = "d6aae6d63c120956e8074cdf320e87292e66baceb557c443da3f06da1142a855",
+        generation = "014505b67095411463b992aea73be4a9e35390d94f073f342961927a5ceacb4a" })
+      local storage = vim.fn.stdpath("cache") .. "/explainr/results/v1"
+      vim.fn.mkdir(storage .. "/" .. source_hash, "p", 448)
+      legacy_path = storage .. "/" .. source_hash .. "/" .. key .. ".json"
+      legacy_bytes = vim.json.encode({ version = 1, scope = "file", source = source_hash, key = key,
+        answer = { version = 1, notes = { { detail = "Restored structured anchors must bind to the current source.",
+          summary = "Offline persistent note", intent_basis = "unknown", evidence = {},
+          anchors = { { path = "[unnamed]", side = "buffer", start_line = 1, end_line = 3 } } } } } })
+      local fd = assert(vim.uv.fs_open(legacy_path, "w", 384))
+      assert(vim.uv.fs_write(fd, legacy_bytes)); assert(vim.uv.fs_close(fd))
+      sentinel = storage .. "/unrelated.txt"
+      vim.fn.writefile({ "unrelated cache sentinel" }, sentinel)
+    end
     local function invoke()
       if case.command then
-        vim.cmd((scope == "selection" and "'<,'>" or "") .. "Explainr " .. requested)
+        vim.cmd((scope == "selection" and "'<,'>" or "") .. "IrrelevantExplainer " .. requested)
       elseif scope == "selection" then
         local buf = api.nvim_win_get_buf(source)
         plugin.explain("selection", { type = "V", pos1 = { buf, 1, 1, 0 }, pos2 = { buf, 2, 1, 0 } })
@@ -120,7 +146,7 @@ if child then
     end
     if case.action == "preclear" then
       wait(function() return held ~= nil end)
-      vim.cmd("ExplainrCacheClear")
+      vim.cmd("IrrelevantExplainerCacheClear")
       wait(function() return #vim.fn.glob(vim.fn.stdpath("cache") .. "/explainr/results/v1/*/*.json", false, true) == 0 end)
       held()
     end
@@ -141,11 +167,16 @@ if child then
       T.eq(0, calls)
       T.eq("Ready · cached", scope == "review" and s.review_status or s.pane.status)
     else assert(calls > 0, "expected a cache miss") end
+    if legacy_path then
+      T.eq(legacy_bytes, table.concat(vim.fn.readfile(legacy_path, "b"), "\n"))
+      T.eq({ "unrelated cache sentinel" }, vim.fn.readfile(sentinel))
+      T.eq(0, vim.fn.isdirectory(vim.fn.stdpath("cache") .. "/irrelevant_explainer"))
+    end
     if scope == "review" then
       T.eq("Offline persistent review", s.pane.review.title)
       assert(s.review_job == nil, "completed restoration must not leave an annotation job")
       if case.selected then
-        T.eq(case.selected, require("explainr.diffview").current(s.pane.source).selected.path)
+        T.eq(case.selected, require("irrelevant_explainer.diffview").current(s.pane.source).selected.path)
       end
     else
       T.eq("Offline persistent note", s.pane.result.notes[1].summary)
@@ -159,12 +190,12 @@ if child then
     if case.action == "refresh" then
       local before = calls
       api.nvim_set_current_win(s.pane.win)
-      vim.cmd("ExplainrRefresh")
+      vim.cmd("IrrelevantExplainerRefresh")
       wait(function() return calls > before end)
       ready()
     elseif case.action == "clear" then
       local visible = vim.deepcopy(s.pane.result)
-      vim.cmd("ExplainrCacheClear")
+      vim.cmd("IrrelevantExplainerCacheClear")
       wait(function() return #vim.fn.glob(vim.fn.stdpath("cache") .. "/explainr/results/v1/*/*.json", false, true) == 0 end)
       T.eq(visible, s.pane.result)
       local before = calls
@@ -175,6 +206,7 @@ if child then
       plugin.clear_cache()
       wait(function() return #vim.fn.glob(vim.fn.stdpath("cache") .. "/explainr/results/v1/*/*.json", false, true) == 0 end)
     end
+    if sentinel then T.eq({ "unrelated cache sentinel" }, vim.fn.readfile(sentinel)) end
     plugin.close()
     vim.wait(100)
   end)
@@ -207,9 +239,9 @@ local function fixture(run)
     run(function(case)
       local result = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n",
         "-c", "luafile tests/run.lua" }, { cwd = workspace, env = {
-          EXPLAINR_TEST = "tests/persistence_test.lua", EXPLAINR_PERSISTENCE_CASE = vim.json.encode(case),
-          EXPLAINR_PERSISTENCE_REPO = repo, EXPLAINR_TEST_CACHE_ROOT = xdg, XDG_CACHE_HOME = xdg,
-          EXPLAINR_DIFFVIEW_PATH = runtime, EXPLAINR_PLENARY_PATH = plenary,
+          IRRELEVANT_EXPLAINER_TEST = "tests/persistence_test.lua", IRRELEVANT_EXPLAINER_PERSISTENCE_CASE = vim.json.encode(case),
+          IRRELEVANT_EXPLAINER_PERSISTENCE_REPO = repo, IRRELEVANT_EXPLAINER_TEST_CACHE_ROOT = xdg, XDG_CACHE_HOME = xdg,
+          IRRELEVANT_EXPLAINER_DIFFVIEW_PATH = runtime, IRRELEVANT_EXPLAINER_PLENARY_PATH = plenary,
         } }):wait(30000)
       assert(result.code == 0 and result.signal == 0,
         vim.inspect(case) .. "\n" .. (result.stdout or "") .. (result.stderr or ""))
@@ -218,6 +250,17 @@ local function fixture(run)
   vim.fn.delete(root, "rf")
   assert(ok, err)
 end
+
+T.test("legacy completed record survives rename unchanged, semantic overrides miss and public clears preserve unrelated files", function()
+  fixture(function(run)
+    run({ scope = "code", namespace = "rename-continuity", legacy = true, hit = true })
+    run({ scope = "code", namespace = "rename-continuity", legacy = true,
+      argv = { "different-offline-command" } })
+    run({ scope = "code", namespace = "rename-continuity", legacy = true, output = "codex" })
+    run({ scope = "code", namespace = "rename-continuity", legacy = true, hit = true,
+      command = true, action = "clear" })
+  end)
+end)
 
 T.test("persistent code and visual selection survive fresh buffer numbers and context edits miss", function()
   fixture(function(run)

@@ -2,11 +2,11 @@
 local api = vim.api
 local M = {}
 function M.open(working, reference_variants)
-  local runtime = vim.env.EXPLAINR_DIFFVIEW_PATH or (vim.fn.stdpath("data") .. "/lazy/diffview.nvim")
+  local runtime = vim.env.IRRELEVANT_EXPLAINER_DIFFVIEW_PATH or (vim.fn.stdpath("data") .. "/lazy/diffview.nvim")
   assert(vim.fn.isdirectory(runtime .. "/lua/diffview") == 1, "Diffview runtime is required for this fixture")
   vim.opt.runtimepath:append(runtime)
-  vim.opt.runtimepath:append(vim.env.EXPLAINR_PLENARY_PATH or (vim.fn.stdpath("data") .. "/lazy/plenary.nvim"))
-  local root = vim.fn.tempname()
+  vim.opt.runtimepath:append(vim.env.IRRELEVANT_EXPLAINER_PLENARY_PATH or (vim.fn.stdpath("data") .. "/lazy/plenary.nvim"))
+  local root = vim.g.capture_workspace and (vim.g.capture_workspace .. "/offline-review") or vim.fn.tempname()
   vim.fn.mkdir(root, "p"); root = vim.uv.fs_realpath(root)
   local fixture = { root = root, cwd = vim.fn.getcwd(), tab = api.nvim_get_current_tabpage() }
   function fixture:git(...)
@@ -55,12 +55,13 @@ function M.open(working, reference_variants)
   end
   args[#args + 1] = "--selected-file=" .. root .. "/policy.lua"
   local dv, lib = require("diffview"), require("diffview.lib")
-  dv.setup({ watch_index = false, use_icons = false })
+  dv.setup({ watch_index = false, use_icons = false,
+    file_panel = vim.g.capture_workspace and { win_config = { width = 24 } } or nil })
   api.nvim_set_current_dir(root); dv.open(args)
   assert(vim.wait(10000, function()
     local view = lib.get_current_view()
     if not view or not view.cur_layout.b then return false end
-    fixture.state = require("explainr.diffview").current(view.cur_layout.b.id)
+    fixture.state = require("irrelevant_explainer.diffview").current(view.cur_layout.b.id)
     return fixture.state and fixture.state.selected.path == "policy.lua"
   end, 20), "review fixture did not load")
   fixture.view = lib.get_current_view()
@@ -70,13 +71,13 @@ function M.open(working, reference_variants)
     for _, item in self.view.files:iter() do if item.path == path then entry = item; break end end
     self.view:set_file(assert(entry), false, true)
     assert(vim.wait(10000, function()
-      self.state = require("explainr.diffview").current(self.view.cur_layout.b.id)
+      self.state = require("irrelevant_explainer.diffview").current(self.view.cur_layout.b.id)
       return self.state and self.state.selected.path == path
     end, 20))
     api.nvim_set_current_win(self.state.source)
   end
   function fixture:close()
-    require("explainr").close()
+    require("irrelevant_explainer").close()
     if api.nvim_tabpage_is_valid(self.view.tabpage) then api.nvim_set_current_tabpage(self.view.tabpage); dv.close() end
     if api.nvim_tabpage_is_valid(self.tab) then api.nvim_set_current_tabpage(self.tab) end
     api.nvim_set_current_dir(self.cwd)

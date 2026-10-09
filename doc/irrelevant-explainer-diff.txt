@@ -1,0 +1,203 @@
+*irrelevant-explainer-diff.txt*  Exact Diffview targets with bounded context
+
+COLLECTION API                             *irrelevant-explainer-diff-api*
+>
+  local diff = require("irrelevant_explainer.diff")
+  local job = diff.collect_async(0, "hunk", function(snapshot, error)
+    if snapshot then
+      diff.fresh_async(snapshot, function(current) print(current) end)
+    else
+      vim.notify(error)
+    end
+  end, { max_bytes = 262144, diff = "auto", radius = 20 })
+  -- job.cancel() silences late callbacks and stops the owned operation.
+<
+win=0 follows the current source pane; an explicit source window ID also works
+when a notes window has focus. File panels and notes windows are not sources.
+No Diffview dependency is loaded by requiring this module or using code mode.
+The cursor is captured when collect_async() is invoked, before asynchronous
+reads begin. Snapshot callbacks run on the main event loop. collect()/fresh()
+remain waiting compatibility helpers for offline callers; editor sessions do
+not use them.
+
+Supported: Git two-way commit-to-commit, commit-to-index stage 0,
+commit-to-working, and index stage 0-to-working comparisons. The selected
+Diffview entry's coherent set determines the pair. Other staged/working sets
+are excluded and this selection is explicitly labeled in the snapshot. Git
+pathspec filters and Diffview's untracked-file setting are retained. The
+manifest is recomputed from Git plus participating unsaved buffers, rather
+than trusting only the potentially stale displayed file list.
+
+Custom revisions, reversed pairs, conflicts/nonzero stages, mixed pairs in a
+set, non-two-way layouts, symlinks, submodules and nonregular filesystem files
+fail explicitly. Binary versions containing NUL bytes remain in the manifest
+with a text-unavailable reason. Binary-only or empty-only focused targets have
+no line-explainable anchors and fail rather than inventing an empty-file line.
+Missing required blobs/read errors and incoherent/loading panes fail collection;
+they never trigger a default-diff fallback or fabricated target.
+
+CONTEXT COVERAGE                      *irrelevant-explainer-diff-coverage*
+
+The default diff="auto" uses the entire coherent review when the serialized
+prompt fits max_bytes. Otherwise it falls back to focused coverage. Set
+diff="review" to require complete coverage (fail on overflow), or
+diff="focused" to always reduce coverage. These settings live under context
+in setup; the collection API accepts the same fields directly.
+
+Focused hunk requests supply the entire chosen hunk plus radius nearby old/new
+lines (default 20), and affordable changed OpenSpec/ADR/decision/requirements
+documents. Path-based document priority is deterministic, not a semantic search.
+Surroundings shrink before rejecting a required target and to prioritize those
+documents. File scope requires the complete selected file on both sides. Other
+code changes and tests are omitted unless they are the selected target. Nothing
+unchanged is automatically explored, and no hunk/selected file is truncated.
+
+The prompt and UI explicitly label reduced coverage. Only supplied ranges are
+valid evidence; gaps and omitted files cannot be cited. Exclusions are counted,
+not serialized as an unbounded path list. If the mandatory target and request
+overhead cannot fit, collection still fails before inference. The byte limit is
+not an exact provider token limit; lower max_bytes for smaller-context tools.
+
+IMMUTABLE SNAPSHOT                     *irrelevant-explainer-diff-snapshot*
+
+The caller must treat the returned tables as immutable. Important fields:
+
+  mode                 "diff"
+  cwd                  repository toplevel, used for Git argument-list calls
+  source               followed live source window ID, never the notes pane
+  source_buf           followed displayed buffer ID
+  windows              {old=role_a_win, new=role_b_win}; not screen positions
+  files                supplied textual versions, each with actual path,
+                       side="old"|"new", present, binary=false, mode, oid,
+                       content identity, endofline, and lines or sparse chunks
+  context              strategy="review"|"focused", effective radius,
+                       requested_radius for focused, omitted_files count,
+                       omission_policy for focused requests
+  target               {scope, path, oldpath, anchors, hunk?}; anchors are
+                       1-based inclusive path/side/start_line/end_line ranges
+  comparison           serializable identities, labeled selection, manifest
+  review_fingerprint   stable hash of supplied comparison, strategy and coverage
+  fingerprint          review hash plus immutable focused target identity
+  capture              retained adapter state, mutable guards and target
+
+comparison.identities.old/new are {type="commit",commit=<explicit SHA>,
+track_head=<boolean>}, {type="stage",stage=0}, or {type="local"}.
+selection records kind, path_args, show_untracked and a human-readable label.
+Each supplied manifest entry records status, Git status when available,
+oldpath/path, old/new presence, binary markers, modes, blob/content identities,
+available text, labeled patch coverage, and exact supplied changed hunks.
+Each version's supplied_from distinguishes git-blob, filesystem and loaded-
+buffer text. underlying_identity identifies saved/index bytes; overlaid=true
+explicitly labels buffer text that differs from those underlying bytes. A
+cleared 'modified' flag never permits substituting different saved contents.
+Hunks are {old_start,old_count,new_start,new_count}; a zero count means that
+side has no changed-line anchor. Rename-only and empty-file entries still have
+explicit identity/status even when their patch has no changed text lines.
+Patch headers quote paths as JSON strings; patches describe collected bytes,
+including unsaved overlays, not an independently saved Git patch.
+
+In review mode all changed text versions are supplied in full, including changed
+Markdown, reStructuredText, plain-text decisions, tests, ADRs and OpenSpec
+artifacts. Focused hunk versions instead contain chunks={ {start_line,lines} },
+line_count and supplied_ranges in original 1-based coordinates; line_count is
+the full version's length, not evidence that every line was supplied. Selected
+manifest entries have full_text=false and explicitly limited patch coverage.
+Optional supplied documents remain complete. Serialized manifest version
+metadata does not duplicate text from files. Absent/binary review versions are
+explicit markers, not fake empty files. Existing empty text versions have
+lines={}. No unchanged
+repository documents are explored. Model validation still restricts note
+anchors to target. Repository text is data, not controlling instructions.
+
+Hunk scope selects exact changed spans at the source cursor (no context-line
+anchors). On a zero-line side, the insertion/deletion boundary can select the
+paired hunk. Ambiguous or unchanged positions fail with a file-scope hint.
+Cursor movement alone does not change freshness: fresh_async() uses
+capture.target, not the current cursor. A new explicit collect_async() chooses
+a new cursor target.
+
+FRESHNESS AND LIFECYCLE                  *irrelevant-explainer-diff-fresh*
+
+fresh_async(snapshot, callback) delivers a boolean; revalidation errors mean
+false. The returned job is cancellable and cancellation silences callbacks.
+It recollects the same strategy/coverage twice, checks before/after adapter
+coherence, compares supplied context and target, and rechecks window/buffer identities,
+ticks, participating unsaved contents, filesystem bytes, full stage-0 index
+manifest and tracked HEAD when relevant. Newly changed/nonfocused tracked
+files and in-scope untracked additions are included in this check. Unsaved
+index buffers exposed by Diffview also participate. Out-of-scope filesystem
+edits do not widen an explicit path filter; index changes are conservatively
+stale even outside that filter. Local/index changes are irrelevant to a fixed
+two-commit comparison. No buffer or source option is modified by collection.
+Focused checks retain the full change/index manifest, omitted working-file stat
+guards and loaded-buffer ticks without reading omitted file contents for the
+prompt. They retain the original radius/strategy, even if setup changes later.
+
+restore_async(snapshot, source_win, callback) is the navigation restoration path.
+It returns a newly collected snapshot or nil, never invokes an agent, and uses
+the retained target/coverage with the same two-pass capture/race checks. It
+compares original content identities, context, targets and Git/filesystem guards
+instead of requiring the previous display's window/buffer IDs. Reading identical
+content from a newly loaded buffer instead of disk is not a context change.
+Supplied versions keep full-file hashes even when only excerpts were prompted;
+omitted files still require conservative buffer/stat guards. Saved answers are
+installed with fresh snapshots; original accepted captures are not mutated.
+Sessions retain complete file/hunk batches per file/comparison during this run,
+hide them on navigation, and restore only after successful revalidation. New
+files show an unexplained state. In-flight work remains owned by its original
+target after navigation. Automatic inference requires opt-in diff.auto_explain;
+see |irrelevant-explainer-ui.txt|.
+
+capture.state contains cwd, pair, selected entry, coherent displayed entries,
+filters, untracked setting, live old/new pane IDs/lines/ticks, followed source,
+stage buffer map and tabpage. capture.guards contains the full index digest
+when mutable, disk digests, relevant buffer ID/tick/options/underlying-content
+identities and tracked HEAD. These are local freshness inputs, not prompt
+instructions; serialize comparison/files/target, not capture, for an agent.
+Refresh makes a new collect_async() request; it must not mutate this snapshot.
+
+require("irrelevant_explainer.diffview").current(source_win) returns the current adapter
+descriptor or nil,error and can be used for lifecycle revalidation. Its role
+IDs come from public actions.view_windo(callback)(). Private get_current_view,
+entry revision metadata, file objects and selected-set enumeration are confined
+to the adapter. Both loaded panes must agree with selected entry identities;
+the collector additionally checks displayed source lines against required
+version contents. Retry a loading guard only after Diffview finishes loading.
+No hooks are overwritten and annotations are never inserted into its layouts.
+
+COMPATIBILITY / VERIFICATION             *irrelevant-explainer-diff-compat*
+
+Authoritative inspected and runtime-tested Diffview revision:
+4516612fe98ff56ae0415a259ff6361a89419b0a. Requires Neovim 0.11+ and Git.
+Collection is asynchronous; individual Git reads have a 30-second timeout.
+Filesystem reads and Git calls yield rather than blocking the editor; processing
+batches also yield. Review mode rejects oversized required versions early.
+Auto uses a size-only preflight; focused mode skips
+oversized optional content before reading it. Selected versions are still read
+and diffed locally in full to find exact hunks, even if only excerpts are sent.
+Unchanged unloaded tracked files are not read as context; new saved changes
+and participating loaded-buffer overlays remain included.
+Callers must still budget the complete serialized prompt before inference.
+Native hashing/diffing and final prompt encoding still run on the main thread.
+It checks consistency twice but cannot lock out external writers atomically.
+Binary detection uses NUL bytes; custom attribute/textconv renderings are not
+substituted for Git bytes and mismatched focused displays fail explicitly.
+
+Offline verification (only disposable Git directories, no provider calls):
+>
+  IRRELEVANT_EXPLAINER_DIFFVIEW_PATH=/path/to/diffview.nvim \
+  IRRELEVANT_EXPLAINER_PLENARY_PATH=/path/to/plenary.nvim \
+  IRRELEVANT_EXPLAINER_NVIM=/path/to/nvim bash tests/ci.sh integration
+<
+Use the Diffview pin above and Plenary 74b06c6c75e4eeb3108ec01852001636d85a932b.
+The integration script requires both paths, preflights loading, and rejects
+missing-runtime skips. It runs offline with disposable storage; dependencies
+must already be available. See |irrelevant-explainer-testing| for base/scanner
+commands and CI limitations.
+
+Direct tests/run.lua use IRRELEVANT_EXPLAINER_DIFFVIEW_PATH and
+IRRELEVANT_EXPLAINER_PLENARY_PATH, or detect stdpath("data")/lazy runtimes.
+Optional integration tests print SKIP when absent. They run in isolated Neovim
+subprocesses and never install/fetch a runtime.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

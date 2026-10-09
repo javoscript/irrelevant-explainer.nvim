@@ -1,4 +1,4 @@
-local agent = require("explainr.agent")
+local agent = require("irrelevant_explainer.agent")
 local fixture = vim.fn.getcwd() .. "/tests/fixtures/agent.py"
 local answer = '{"version":1,"notes":[]}'
 local progress = '{"version":1,"notes":[],"progress":true}'
@@ -169,7 +169,7 @@ end)
 
 T.test("missing executable returns nil,error and schedules its error exactly once", function()
   local count, callback_err = 0, nil
-  local invocation, err = agent.run("prompt", { command = { "/no/such/explainr-fixture" } }, nil, function(value, failure_err)
+  local invocation, err = agent.run("prompt", { command = { "/no/such/irrelevant_explainer-fixture" } }, nil, function(value, failure_err)
     T.eq(nil, value); T.eq(false, vim.in_fast_event())
     count, callback_err = count + 1, failure_err
   end)
@@ -245,7 +245,7 @@ T.test("cancel between process completion and scheduled delivery overrides queue
 end)
 
 T.test("all decoders preserve assembled internal v2 output without interpreting schemas", function()
-  local model = require("explainr.model")
+  local model = require("irrelevant_explainer.model")
   local snapshot = { mode = "diff", target = { scope = "review", files = {
     { scope = "file", file_id = "a", anchors = {} },
   } }, files = {}, comparison = { manifest = { { file_id = "a" } } } }
@@ -281,7 +281,7 @@ T.test("all decoders preserve assembled internal v2 output without interpreting 
 end)
 
 T.test("offline v3 phases survive all transports and reject nonzero, errors and truncation", function()
-  local model, review, prompt = require("explainr.model"), require("explainr.review"), require("explainr.prompt")
+  local model, review, prompt = require("irrelevant_explainer.model"), require("irrelevant_explainer.review"), require("irrelevant_explainer.prompt")
   local anchor = { path = "a.lua", side = "new", start_line = 1, end_line = 1 }
   local target = { scope = "file", file_id = "a", anchors = { anchor } }
   local snapshot = { mode = "diff", target = { scope = "review", files = { target } },

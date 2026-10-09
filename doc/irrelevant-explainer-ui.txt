@@ -1,0 +1,380 @@
+*irrelevant-explainer-ui.txt*  Row-aligned explanations
+
+REVIEW AND FILE MODES
+
+Diff readers have two modes in the same right-hand pane. File is the aligned
+overview/detail described below. Review is independently scrollable, read-only
+Markdown for the entire comparison, with visible markers and native wrapping.
+It has no anchor rails, source dimming, source-linked cursor or scrolling.
+Optional Markdown parsers improve highlighting but are not required.
+
+:IrrelevantExplainer review generates the review and its per-file notes through
+sequential annotation, optional reduction and synthesis calls. From an ordinary
+source it first opens a HEAD-to-working-tree
+Diffview comparison; opening is asynchronous and Cancel/Close can stop it before
+inference. From an existing comparison it preserves its revisions and filters.
+See |irrelevant-explainer-review| for repository selection and buffer limitations.
+:IrrelevantExplainerReview and require("irrelevant_explainer").review() display a review
+or its empty/pending/failed/stale state; they never generate one or open Diffview.
+Without a supported comparison they report an error. Empty Review directs you
+to :IrrelevantExplainer review for generation. A buffer-local
+<Plug>(IrrelevantExplainerReview) is available in File, detail, and Review.
+No global shortcut is installed. Example display-only shortcut: >
+  vim.keymap.set("n", "<leader>aV", "<cmd>IrrelevantExplainerReview<cr>")
+<
+Review controls: >
+  Enter             Follow a host-rendered file reference (not arbitrary prose)
+  Esc               Return to the selected File overview
+  q                 Close the reader
+<
+References use the original comparison entries, including renamed, deleted,
+binary and empty files, rather than opening guessed working-tree paths.
+Diffview navigation/explorer mappings also work in Review, respecting remapped
+or disabled bindings. Only an actual selected-file change switches to File;
+a no-op next/previous action at a list boundary leaves Review untouched.
+Returning to the same narrative restores its reading position. A replacement
+narrative starts at the beginning, without stealing focus or switching modes.
+Background File updates do not interrupt Review; a fresh File replacement waits
+until expanded detail exits. Stale detail is cleared rather than retained.
+Winbars identify the mode, request state and Auto, and distinguish background
+work from selected-file loading. The editor's statusline remains untouched.
+While a review is pending or checking saved results, its body shows the same
+faint tint and animated rail as File loading, including before a narrative
+exists. These decorations follow
+the narrative viewport, not source ranges. Accepted prose and reading position
+stay intact; the focused logical cursor line retains a steady rail through its
+wraps. Rails cover blank lines and empty space too. Review uses a one-space
+continuation prefix so native smoothscroll markers cannot overwrite the gutter.
+The loader clears when the request ends or Review is hidden. It indicates
+activity, not a percentage.
+
+Opening preflight uses a notification, before a reader is ready. The existing
+reader header then shows collection/planning, Annotating 25%, reducing,
+synthesizing and Ready. Annotation percentage measures completed planned units,
+not files, tokens, elapsed time or overall job completion; 100% is not Ready
+until synthesis and final freshness checks pass. A compact bar appears when
+space permits. Checkpoints stay internal: the
+new narrative and every file's notes install together, never as partial answers.
+Older fresh accepted content remains readable during work or ordinary failure.
+Narrow headers shorten status while preserving their existing mode/count/Auto
+priorities; no new pane or progress layout is introduced.
+
+On failure, :messages identifies the phase/request, completed units and relevant
+byte/call limits. Repeat :IrrelevantExplainer review in the comparison/reader to
+revalidate and resume matching successful checkpoints. Cancel retains those
+checkpoints while the owner stays open; Close, stale/replaced comparisons and
+restart discard unfinished work. :IrrelevantExplainerRefresh regenerates Review
+phases; in File it stays file/hunk-scoped. A new review from ordinary code opens
+a new view rather than adopting another owner's unfinished job. Repeats during
+opening only coalesce. Failure starts no automatic per-file fallback.
+
+Completed shared-cache hits show Ready · cached after fresh capture/validation,
+without fabricated annotation or synthesis progress, including after outside
+opening. Reading or expanding that answer performs no inference. In-memory
+navigation restoration still shows Ready · restored and preserves reading state.
+Cache clear does not remove displayed valid notes or close readers. See
+|irrelevant-explainer-cache| for persistence, privacy, opt-out and Refresh.
+
+The explanation window is read-only and opens at the far right, outside both
+old/new diff panes, even when triggered from old. Blank rows preserve
+the source's display geometry. Its logical line count matches the whole source,
+including unannotated/pending lines. Ordinary j/k, gg/G, counted motions and
+cursor movement work beyond the current viewport; either window's cursor line
+updates the other without changing focus. Source-driven motion preserves its
+column; note-driven motion clamps that column to the destination line.
+Native vertical cursor/viewport actions synchronize in both directions, including
+zz/zt/zb, z+/z-, searches, marks, screen motions and counted scrolling. The plugin
+observes cursor/scroll events and idle view changes instead of remapping each
+action. Overview-driven scrolling preserves the requested screen-row placement,
+including wrapped segments, rather than resetting the view from the source.
+The overview follows whichever old/new source the user moves or scrolls in,
+including stacked layouts; it cannot physically align with both stacked panes
+at once. Notes-driven motion maps counterpart cursor lines by native comparison
+coordinates, not equal old/new line numbers after insertions or deletions.
+Wrapping, folds, and diff filler belong to the source; the plugin does not disable
+them. Notes-owned virtual rows and folds reproduce that geometry without fake
+navigable lines. Long summaries truncate with [+]. Closed folds combine notes
+and label them [folded]. Opening/closing folds re-aligns the overview when the
+editor becomes idle, even without cursor/scroll movement, following the active
+old/new source. Opened cached folds are removed even when their start has scrolled
+out of view; accepted anchors and explanations remain unchanged.
+Old-side deletion notes render in virtual filler and
+are reachable at the following surviving source line, or the last line at EOF.
+
+In the collapsed explanation pane: >
+  j / k             Next / previous line, including added/deleted diff sections
+  n / p             Next / previous explanation (counts, stops at either end)
+  N (Shift-n)       Previous explanation, like p (also in expanded detail)
+  K / Enter         Expand full detail and intent basis
+  q / Esc           Close the explanation pane
+  Ctrl-f/b/d/u/e/y   Scroll the paired source, then repaint the notes
+  Mouse wheel       Scroll the paired source
+<
+In diff mode, both overview and expanded detail inherit Diffview's configured
+normal-mode file-navigation and explorer mappings. Defaults: >
+  Tab / Shift-Tab   Next / previous diff file
+  <leader>e         Focus the file explorer
+  <leader>b         Toggle the file explorer
+<
+Remapped actions, custom RHS/options and disabled bindings are respected.
+Irrelevant Explainer's Enter/K controls take precedence on conflicting keys. Other
+layout-specific Diffview actions are not attached to the notes buffer.
+Switching files exits detail and hides that file's notes, not marking them stale.
+Completed file/hunk batches are retained per file/comparison in memory for this
+Neovim run. A file with no saved notes shows "No explanations". Returning to an
+explained file shows "Checking saved explanations", then "Ready · restored"
+after its original context is revalidated. By default, navigation does not infer.
+Real context changes instead clear the affected notes and show Stale. Pending
+requests remain owned by the comparison when leaving a file; their results are
+retained for the original target without replacing another file's reader.
+Tab never expands/collapses an explanation, and code mode leaves it unmapped.
+
+With diff.auto_explain=true, an already open diff explanation pane requests a
+whole-file explanation when the selected file has no valid saved notes. Valid
+saved file/hunk batches are restored without inference; stale saved batches are
+re-explained on navigation. The request waits for coherent old/new buffers and
+does not steal focus. Opening Diffview alone, code-mode panes, or navigation
+after closing the reader does not trigger it. Duplicate events and polling do not
+retry a request, nor do current-file edits, cancellation or failures. Background
+tab navigation waits until that tab is active. The default is false; opting in
+can increase external-agent usage. Refresh or navigate again to retry explicitly.
+
+IrrelevantExplainerToggleAutoExplain switches this mode across all tabs. Enabling
+affects subsequent navigation only; disabling leaves started requests and notes
+intact. Auto appears beside the count in both overview and expanded diff winbars
+whenever the mode is enabled, regardless of request state. It denotes enabled
+navigation automation, not a running request. Toggling updates open headers
+immediately without collapsing detail, changing focus, or moving reading views.
+Counts and Auto take priority over descriptions/hints when the header is narrow.
+Disabled mode and code panes omit the indicator. The editor statusline and
+vim.b.irrelevant_explainer_status request-state string remain unchanged.
+
+Diff j/k (including counts) switches the followed side when needed to put a
+native cursor on added/deleted lines rather than jumping over virtual filler.
+Keyboard-driven paired scroll events cannot take over while notes have focus;
+direct source motions and mouse-wheel scrolling still drive synchronization.
+Status reserves a separate winbar above content as soon as the pane opens,
+including initial loading, and never overlays summaries or diff filler.
+Source windows without a winbar get a temporary blank matching header to
+preserve row alignment. Those placeholders remain through results, refreshes,
+terminal states, and detail expansion; they are restored when a source leaves
+pane ownership or the pane closes. Existing headers and user edits are preserved.
+The status header includes an intent legend: D documented, ~ inferred, ? unknown.
+It also shows the number of available explanations, or the current position
+when on an explanation (e.g. 2 / 5), in source/display order. Counts update in
+both overview and expanded detail, including entry navigation and newly
+accepted notes. Shared or folded groups show their positions as a range
+(e.g. 1–3 / 5); every explanation counts, not only each navigation stop.
+Expanded counts and navigation hints use the same reserved header row.
+IrrelevantExplainerTitle defaults to DiagnosticInfo for the information accent
+on the Irrelevant Explainer title. IrrelevantExplainerMetadata keeps counts,
+spinner, state, separators, descriptions and hints muted regardless of state.
+Legend D/~/? symbols reuse IrrelevantExplainerDocumented,
+IrrelevantExplainerInferred and IrrelevantExplainerUnknown exactly as item markers
+do. User highlight overrides are respected.
+Documented means intent cites supplied decision material; inferred means the
+model inferred intent from code; unknown means no intent basis was established.
+These are intent categories, not guarantees of correctness. Semantic
+highlights distinguish summaries, metadata and [+] detail cues. References such
+as [old:8–9] or [old:4 ↔ new:4] show original inclusive anchor ranges; vertical
+continuation rails mark covered rows and deletion filler. All remain
+single-row; Markdown borders/padding cannot shift the source alignment.
+Overlapping summaries occupy separate available comparison rows within their
+anchor ranges, starting at the preferred annotation position and moving down.
+Collisions prefer file overviews, then narrower covered ranges, then
+documented/inferred/unknown intent and original result order. Primary positions
+are reserved before overlaps are placed. Anchors/source geometry never change.
+If no spare row exists inside an anchor, use a free annotation row below it,
+adding rows at EOF when needed. Each entry retains its own range and source
+target. Closed folds combine notes on a shared compact row.
+n/p navigation treats a closed fold as one stop and reveals the first wrapped
+segment of its destination. It never wraps: counts clamp to the first/last
+explanation, and a motion with no destination leaves the cursor/view unchanged.
+Each successful jump centers the destination with native zz,
+even when it was already visible, and aligns the overview to that source view.
+A line with multiple notes opens their details
+together. Navigation and detail never issue another inference request.
+
+Focusing a collapsed explanation uses the same dimming/theme-derived tint as detail.
+Its full anchor ranges stay emphasized in the explainer and source buffers;
+continuation rails connect them. Moving to a blank row or leaving the explainer
+clears collapsed focus. Collapse derives focus from the destination row's summary,
+if any, without moving back to retain a highlight. A whole-file overview refers
+to all supplied file content, including both available diff sides, but displays
+at the file start rather than a changed hunk.
+Focusing it emphasizes all content, not only line 1.
+
+K/Enter expands from the selected summary in the same right-hand pane. Visible
+entries retain their screen-row position when space allows, range labels and
+D/~/? accents; faint preceding overview rows provide context above the expanded
+body. K/Enter also expands from summary-free rows anywhere inside original
+anchor ranges, including context before a changed-line summary. Visible summaries
+take precedence over covering ranges. With no summary, one local note opens
+directly even if a file overview covers the same row; an overview alone opens
+directly. Multiple local notes offer a chooser with summaries and original
+side/range labels, locals first and overviews last, rather than automatically
+choosing the shortest range. Cancelling changes no position. Closed summary
+folds keep their combined expansion, and opening alone never moves code.
+Context and highlighted continuation use real, navigable blank rows with
+display-only labels. Neighboring summaries are not parsed or wrapped as Markdown.
+Surrounding context and the empty area outside the explanation have a strongly
+dimmed backdrop; the expanded body has a subtle theme-derived surface tint.
+Summary/range/metadata backgrounds and wrapped prose margins match the card;
+code fences remain visible, with syntax colors when their parser is installed.
+The tint blends the active
+colorscheme's CursorLine background halfway toward Normal, falling back to
+NormalFloat or a faint blend of normal text if neither has a background. No
+diagnostic color is used. Dark/light themes and custom highlight overrides work.
+A continuous ▎ gutter rail marks the entire expanded block, including
+wrapped lines and blanks, matching the referenced source rail.
+The gutter and its one-space left padding keep the dimmed backdrop, not the
+content tint. IrrelevantExplainerDetailGutter customizes foreground/background.
+The tint and rail cover at least the visible anchored extent, not just the
+explanation text. Anchored context above a changed-line summary joins the block;
+short details get highlighted continuation rows down to the referenced range's
+end. Neighboring summaries inside those anchors retain dimmed text without
+interrupting the active background or gutter rail. Whole-file overviews cover
+the full visible file extent, even across later entries.
+Extent follows displayed wraps, folds and diff filler. Long detail remains fully
+highlighted rather than clipped to the anchor's height; continuation is bounded
+to the visible source viewport and recomputed on entry navigation.
+Markdown and intent foreground colors remain unchanged. Collapse restores the
+original gutter/highlight settings. Themes can customize
+IrrelevantExplainerDetailContext, IrrelevantExplainerDetailBackdrop and
+IrrelevantExplainerDetailActive;
+the rail uses IrrelevantExplainerActiveRange.
+Near the bottom, leading context is trimmed to show the first explanation line
+without moving code.
+The [+] control becomes [−]. Detail shows the explanation and intent basis,
+without context warnings or separate evidence/anchor lists. Range labels and
+source gutter markers still identify the referenced lines. No popup covers code.
+
+The cursor can move through the entire expanded pane, including highlighted
+blank rows and surrounding notes. Moving onto context outside the current
+anchored range automatically collapses detail at that destination, not back at
+the summary. Cursor motion inside anchored context keeps detail open and updates
+the corresponding source cursor, resolving folded rows and old/new diff filler.
+All prose remains navigable even if it is taller than its anchor. Ordinary
+movement onto another note does not auto-expand it: use K/Enter explicitly, or
+n/p/N to browse while keeping details open. Source-driven scrolling does not
+auto-collapse the reading view.
+
+In detail, K/Enter or Esc/q explicitly collapses at the current source-aligned
+position, never forcing a return to the summary or invocation row. Source-backed
+continuation retains its exact position; prose resolves by current visual-row
+geometry bounded to visible anchors, with nearest-target and earlier-row tie
+rules. If no anchored target remains visible, collapse keeps the current native
+source position. Without reading motion after opening or n/p initialization, it
+also keeps the source position rather than remapping the newly placed header.
+Source viewports and explanation focus remain unchanged within native geometry
+limits; removing prose can change layout, but does not select a summary for you.
+Enter/K in detail never opens the ambiguity chooser.
+n/p browses entries in source order (counts, stopping at either end), moving the source
+cursor and viewport to the selected note and synchronizing its diff counterpart.
+The destination is centered with native zz before expanding its detail; further
+movement/scrolling updates the current position retained on collapse.
+Native file-edge limits and detail space still apply.
+Deleted rows use the old source when the new side has only virtual filler.
+Entry navigation updates the existing Markdown buffer in place; it does not
+switch through the overview or retrigger buffer/filetype attachment events.
+Statusline plugins retain the same buffer throughout expanded navigation.
+Entries expand at their current overview position when space allows.
+Code-driven scrolling follows the summary's natural position until the card
+reaches an edge, then pins it within the content viewport below the header.
+A fitting card stays entirely visible at either edge. Scrolling back releases
+it into natural alignment. A longer card retains a viewport-sized reading area
+and the logical prose position, including later wrapped segments; every paragraph
+remains reachable. Pinning neither scrolls code again nor changes selection or
+focus, even when every anchor leaves the screen. Bounds use the card's height,
+not its blank anchored continuation. Dimmed neighbors remain navigable where
+space permits. Resize, wrapping, folds and diff geometry recompute placement
+without replacing the Markdown buffer or resetting reading.
+Normal-mode j/k in expanded detail move by displayed row, including counts: 4j
+moves four screen rows, not four buffer lines. The buffer-local mappings bypass
+global j/k remappings. Native gj/gk, other motions, and overview/source mappings
+remain unchanged.
+Ctrl-e/Ctrl-y still accept counts. In overview, code and notes scroll together;
+with detail open, source scrolling uses sticky placement instead of equal prose
+movement. Explanation-driven scrolling continues to move code while pinned.
+At the reader's upper buffer limit, Ctrl-y scrolls code upward even with no
+earlier prose rows. k on the summary's first displayed segment at the top screen
+edge likewise scrolls code without collapsing into stale context. Later summary
+segments use ordinary gk movement, even when clipped to the top edge.
+Counts for the top-edge shortcut use native source display rows;
+both controls stop at the source's beginning. Other prose/context motion remains
+ordinary cursor movement.
+Wraps, folds, diff filler and source scrolloff (including unequal diff margins)
+are accounted for without extra cursor-margin scrolls. Original source options
+and scroll/cursor bindings are retained.
+Native expanded-detail viewport changes (including zz/zt/zb and cursor motions
+that scroll) move sources by the actual display-row distance, bounded by
+each buffer's native limits. The detail cursor remains free to read paragraphs;
+Markdown cursor lines are never treated as code line numbers. After a reading
+scroll, the source cursor selects the final source-aligned target, even if
+sticky-edge scrolling left the reader cursor unchanged. Context and continuation
+retain exact source coordinates; prose selects by its final content-screen row,
+bounded to visible anchors with nearest-target and earlier-row tie rules.
+Without a visible prose target, the native source cursor remains unchanged.
+Selection preserves the completed source viewport, focus and original scrolloff
+settings. Source-driven motion, initialization and layout-only changes never
+apply an inactive prose cursor to code, and a true scroll no-op does not reselect.
+Referenced source ranges are
+temporarily marked with muted ▎ signs in the gutter. Text outside the union of
+the expanded anchors is dimmed in the source buffers, including both diff sides.
+A side with no anchors is dimmed entirely. Anchored syntax, Git diff backgrounds
+and existing signs are preserved; only outside text foregrounds change.
+Native diff foregrounds take precedence over dimming, so changed text outside
+the anchors can remain brighter to preserve Git cues.
+IrrelevantExplainerSourceContext customizes that foreground. Focus/markings follow
+entry navigation and the collapsed destination row's summary, if any. They
+disappear on blank collapsed rows, stale data or pane closure, and when collapsed
+focus leaves the explanation.
+The IrrelevantExplainerActiveRange foreground can be customized by your theme.
+Markers respect the source's 'signcolumn' setting; priority 5 gives Git and
+diagnostic signs precedence when space is limited. Use 'signcolumn' "auto:2"
+to allow another sign alongside them. The plugin does not change this setting.
+Overview and detail use filetype 'irrelevant_explainer', registered with the Markdown
+Tree-sitter parser. Optional markdown/markdown_inline parsers highlight structure
+and inline code; installed language parsers highlight fenced snippets. Markdown
+markers remain visible with window-local 'conceallevel' zero. Detail wraps
+natively without renderer borders or padding. Missing parsers retain readable
+semantic styling; the plugin never installs parsers or invokes render-markdown.nvim.
+User renderer setup and ordinary Markdown buffers are unchanged. Explicit user
+integrations targeting 'irrelevant_explainer' remain under the user's control.
+Prompts request Markdown detail, including
+backtick inline code and language-tagged fenced snippets; summaries stay compact
+single-line plain text. The response itself remains JSON, not a Markdown document.
+Detail is already part of the returned answer:
+opening it does not invoke AI. Initial expansion keeps the source position;
+navigating or paired scrolling then follows the user's actions.
+
+Pending, stale, and failed status uses the persistent matched winbar, not content
+rows or the editor's statusline. Global statuslines/lualine retain ownership.
+Every active and queued range has a steady faint full-width loading tint.
+Only a cursor-width ▊ gutter rail animates: an eased 2.4-second cascading
+glow, updated every 100ms. Braille spinners remain as activity cues. Rails cover
+wrapped/folded ranges and deletion/EOF filler; accepted text and backgrounds
+stay steady, and source/diff buffers are never decorated by the loader.
+While notes have focus, the cursor's logical row keeps a steady rail. Other
+requested rows and the header spinner keep animating, including saved-result
+checks and expanded detail; the paused rail resumes when the cursor or focus
+moves. Saved File checks load the visible extent without an inference request.
+Your cursor shape/blink settings are never changed. The palette derives from Normal and
+DiagnosticInfo; themes can customize IrrelevantExplainerLoading (steady background) and
+IrrelevantExplainerLoadingRail1–8 (gutter brightness, dimmest through brightest).
+Before diff collection completes, file requests cover the whole source and hunk requests
+use a provisional cursor/native changed region. Collected anchors then replace
+that preview. Ticks update visible decorations, not buffer text or full-file
+coordinate scans. Earlier accepted notes remain visible during an addition;
+cancel/failure preserves them, while stale data removes them.
+Focused-context status identifies the effective nearby-line radius and omitted
+file count in the overview, not the detailed explanation. Status stays above
+content even in a narrow pane. The explanation count comes first; the title is
+omitted when necessary and verbose status/context text is shortened to keep
+counts visible. Visible text keeps its semantic colors. The legend abbreviates as
+space requires, first documented to doc, then just D and ? around ~ inferred.
+vim.b.irrelevant_explainer_status exposes pane state for optional statusline components.
+The explanation window never joins diff/scrollbind membership. Closing the
+source closes its owned annotation/detail windows and handlers.
+
+vim:tw=78:ts=8:ft=help:norl:

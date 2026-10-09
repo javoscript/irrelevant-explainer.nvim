@@ -1,0 +1,584 @@
+*irrelevant-explainer.txt*  AI explanations beside code and whole-review diffs
+
+INTRODUCTION                                          *irrelevant-explainer*
+
+Irrelevant Explainer uses an external command for inference. It collects actual
+buffer/review text, builds a versioned structured prompt, validates returned
+anchors/evidence, and shows sparse notes in a right-hand read-only pane. Enter
+or K opens full detail from that same answer. No source editing or autonomous
+repo exploration is performed by the plugin. Configure your external agent to
+deny unnecessary tools; a prompt alone cannot sandbox arbitrary commands.
+
+Developed for personal use and shared for inspiration, inspection and adaptation,
+not as a supported product or a promise of maintenance, stable APIs or a roadmap.
+README satire is editorial only; explanation instructions remain factual.
+
+Requires Neovim 0.11+. Runtime tested on 0.11.5 and 0.12.5. Code collection
+needs no parser; Diffview/Git are needed only for diff mode. Markdown
+Tree-sitter highlighting in the reader remains optional.
+Install javoscript/irrelevant-explainer.nvim with your plugin manager, or append
+a local checkout to 'runtimepath', then call setup. With lazy.nvim:
+>
+  { "javoscript/irrelevant-explainer.nvim", main = "irrelevant_explainer", opts = {} }
+<
+No global mappings are installed. Read |irrelevant-explainer-agent-safety| before
+generation: external tools/providers receive source/context and own permissions,
+authentication, retention/sharing and billing. The enabled-by-default local cache
+is plaintext and can retain source snippets; see |irrelevant-explainer-cache|.
+
+SETUP                                           *irrelevant-explainer-setup*
+
+These are defaults; setup alone starts no external process:
+>
+  require("irrelevant_explainer").setup({
+    ai = {
+      command = { "opencode", "run", "--agent", "explain", "--format", "json" },
+      output = "opencode", -- "plain", "codex", or decoder function
+      timeout_ms = 300000,
+    },
+    context = { max_bytes = 262144, diff = "auto", radius = 20 },
+    diff = { auto_explain = false },
+    review = {
+      request_max_bytes = 262144, response_max_bytes = 32768,
+      max_snapshot_bytes = 16777216, max_requests = 128,
+    },
+    cache = { enabled = true, max_bytes = 104857600, namespace = "default" },
+    -- Add cache.decoder_key = "my-decoder-v1" for custom-decoder disk reuse.
+  })
+<
+OpenCode must already be installed/authenticated, with a user-created restricted
+primary "explain" agent and provider/model configured externally. Verify effective
+permissions: OpenCode may warn and fall back to its default agent if the named
+agent is missing or is a subagent. The plugin does not enforce that restriction.
+See |irrelevant-explainer-agents.txt| for restricted-agent guidance, Codex/plain/
+custom examples, output contracts and local-only cancellation limitations.
+
+An explicit ai.command list replaces all default arguments, including a one-item
+list or {}. Empty argv permits setup but disables generation. Command-only
+overrides retain output="opencode"; explicitly select another decoder when needed.
+There is no format detection, automatic installation/authentication or fallback.
+
+diff.auto_explain defaults to false. When true, navigating to a Diffview file
+without valid saved explanations requests a whole-file explanation, only if a
+diff explanation pane is already open. Valid saved file/hunk batches are reused;
+stale saved batches are replaced on navigation. Closing the reader stops this
+behavior. Repeated events, current-file edits, cancellation and failures do not
+retry automatically. External usage may increase. See |irrelevant-explainer-ui.txt|.
+
+COMMANDS                                     *irrelevant-explainer-commands*
+>
+  :IrrelevantExplainer [file|selection|hunk|review]
+  :IrrelevantExplainerReview
+  :IrrelevantExplainerRefresh
+  :IrrelevantExplainerCancel
+  :IrrelevantExplainerClose
+  :IrrelevantExplainerCacheClear
+  :IrrelevantExplainerToggleAutoExplain
+<
+IrrelevantExplainerToggleAutoExplain switches diff.auto_explain for all tabs in this
+process and reports enabled/disabled through vim.notify. Its Lua equivalent,
+require("irrelevant_explainer").toggle_auto_explain(), returns the new boolean without
+resetting other configuration. Setup supplies its initial value (default false);
+calling setup again resets configuration normally. The toggle is not persisted.
+Enabling applies to subsequent navigation only, not the current file or earlier
+navigation still resolving. Disabling leaves started requests and notes intact;
+use IrrelevantExplainerCancel to stop work explicitly. Manual requests and saved-note
+restoration remain available. Enabled diff panes show Auto in the overview and
+detail winbars, not the editor's statusline. No global keymap is installed: >
+  vim.keymap.set("n", "<leader>ea", "<cmd>IrrelevantExplainerToggleAutoExplain<CR>", {
+    desc = "Toggle Irrelevant Explainer automatic explanations",
+  })
+<
+IrrelevantExplainer defaults to file scope. File explains code in an ordinary
+source window, or changes in a Diffview source window. Routing uses window
+ownership, not filetype, Git status, buffer identity or the 'diff' option: the
+same buffer in an ordinary split and Diffview can route differently. Native
+vimdiff remains code mode. Notes/detail resolve their followed source first.
+Loading/unsupported Diffview sources fail explicitly, never fall back to code.
+File/hunk require a source pane, not a file panel or unrelated utility buffer.
+Selection always explains exact source text, not a guessed diff hunk; hunk
+requires a coherent Diffview source and never opens a comparison.
+
+One agent invocation runs per tab. Requests for the same buffer or loaded
+old/new comparison accumulate in the existing pane; repeating an identical
+target replaces only its batch.
+Distinct overlapping scopes can coexist. Explicit diff file/hunk/review requests
+append while a diff request is pending, rather than cancelling it. Targets/configuration
+are captured at invocation; agent calls run in request order. Pending ranges
+animate together and status shows the queued count. Each completion adds notes;
+ordinary failures skip that request and continue the queue. Equivalent pending
+requests are deduplicated. Code requests replace pending code work. Different buffers, modes
+or comparison ownership start a new session. Commands invoked from notes/detail
+use the currently followed source window, not the explanation text.
+IrrelevantExplainer review and IrrelevantExplainerReview work from the DiffviewFiles tree,
+using the currently displayed comparison without changing tree focus/selection.
+File/hunk generation still requires a source pane or its explanation reader.
+Refresh clears active/queued requests, collects a new snapshot and explicitly
+calls the command, even when a result is cached. Selection refresh retains the
+original region; hunk refresh selects the hunk at the
+source cursor now. Review refresh regenerates the narrative and all file notes;
+File refresh requests only the file/hunk, even for notes distributed by a review.
+Cancel stops active/queued collection/check/inference jobs and preserves
+accepted notes.
+Ordinary failures also preserve accepted notes; freshness checks remain active.
+Close removes the pane, detail, timer and event handlers; it never alters source
+text/options. Requests in a coherent diff return a live Pending pane immediately;
+their snapshot becomes available after asynchronous collection succeeds. An
+outside review first reports pending opening, without placeholder aligned notes.
+
+Code scope uses unsaved contents and the whole current file as context. File
+and visual scopes need no parser. The five explanation scopes are visual
+selection, code file, diff file, diff hunk and whole review.
+See |irrelevant-explainer-migration| for the breaking rename and older API changes.
+See |irrelevant-explainer-code.txt| for selection descriptors and collection details.
+
+Both file scopes request a concise file-purpose overview before regular notes.
+Diff overviews also describe the selected file's overall change purpose, grounded
+in supplied context. Overviews display at the file start and reference all
+whole-file target anchors, so focusing them emphasizes the complete content.
+Other scopes do not request an overview. No text means no invented overview.
+
+For a last Visual selection, execute :'<,'>IrrelevantExplainer selection. The Ex range
+is not an arbitrary line-range scope: the retained Visual type/marks determine
+characterwise, linewise or blockwise boundaries. Prefer this Visual mapping to
+capture live endpoints, virtual offsets, and the current selection option:
+>
+  vim.keymap.set("x", "<leader>ce", function()
+    local selection = {
+      type = vim.fn.mode(),
+      pos1 = vim.fn.getpos("v"),
+      pos2 = vim.fn.getpos("."),
+      exclusive = vim.o.selection == "exclusive",
+    }
+    require("irrelevant_explainer").explain("selection", selection)
+  end)
+<
+Lua equivalents are explain(scope?, selection?), review(), refresh(), cancel(),
+close(), clear_cache() and toggle_auto_explain() on require("irrelevant_explainer").
+explain() defaults to "file".
+
+BREAKING MIGRATION                         *irrelevant-explainer-migration*
+
+Surface          Former name                 Current name
+Repository       explainr.nvim               irrelevant-explainer.nvim
+Lua package      explainr                    irrelevant_explainer
+Commands         Explainr + suffix           IrrelevantExplainer + suffix
+Highlights       Explainr*                   IrrelevantExplainer*
+Status variable  vim.b.explainr_status       vim.b.irrelevant_explainer_status
+Filetype         explainr                    irrelevant_explainer
+Help prefix      explainr-*                  irrelevant-explainer-*
+Pane action      <Plug>(ExplainrReview)      <Plug>(IrrelevantExplainerReview)
+
+Use the approved javoscript/irrelevant-explainer.nvim repository coordinate.
+Submodule imports use irrelevant_explainer.*; help filenames use the
+irrelevant-explainer prefix, including irrelevant-explainer.txt.
+
+Update imports, command/Visual mappings, theme overrides and statusline/filetype
+integrations, then restart Neovim. Do not load both identities together. No old
+compatibility aliases remain. Older ExplainrCode/ExplainrDiff commands become
+IrrelevantExplainer; public code()/diff() calls become explain(). Function/class
+scopes have been removed: select their text explicitly and use selection, or
+file for the whole buffer. Retired scopes error without broadening the target.
+
+The old empty-command/plain defaults now become OpenCode argv/event decoding;
+plain wrappers must select ai.output="plain" explicitly. Branding alone preserves
+completed-result identities/versions and stdpath("cache")/explainr/results/v1,
+without migration or deletion. With the same explicit AI settings and matching
+inputs, valid old records remain reusable after normal validation. Changed
+effective defaults/argv/decoder can produce ordinary cache misses.
+
+DIFF SCOPE                                      *irrelevant-explainer-review*
+
+Inside Diffview, the plugin uses the loaded old/new two-way comparison. The
+selected entry's coherent revision set and explicit path filters define the
+whole comparison; existing staged and working sets are never silently mixed.
+Review also works from its file panel without changing selection or tree focus.
+
+Outside Diffview, IrrelevantExplainer review opens a repository-wide HEAD-to-working
+tree comparison. The originating named source determines the repository and
+linked worktree; only an unnamed source falls back to its window's effective
+cwd. A named file outside a repository fails rather than using cwd. Another
+open Diffview tab cannot redirect the request. The comparison is the net staged
+plus unstaged change, not concatenated patches: an unstaged undo can completely
+cancel a staged edit relative to HEAD. No buffers are saved and nothing is staged.
+Diffview's effective untracked policy determines inclusion; ignored/untracked
+files excluded by it are not added. The tested Diffview version excludes
+untracked files from HEAD comparisons, but includes tracked staged additions.
+Unsaved working-buffer text overlays only
+files already in the comparison manifest. Unsaved-only files absent from that
+manifest and unnamed text are not discovered as repository changes.
+
+Opening is nonblocking pending work, cancellable with IrrelevantExplainerCancel or
+IrrelevantExplainerClose from the origin/new view. Equivalent requests coalesce while
+opening. Inference waits for coherent source panes and the intended comparison;
+opening has a 10-second deadline separate from the agent timeout. Cancellation,
+closure or incompatible replacement retires callbacks. Cancellation/failure
+leaves an already-opened Diffview tab intact and preserves unrelated notes.
+Configuration is captured at invocation, contents after opening; later callbacks
+do not steal focus. Missing Git/Diffview, repository/HEAD, or eligible text and
+incompatible Diffview defaults fail visibly without a substitute comparison or
+changes to global defaults.
+
+IrrelevantExplainer review requests a narrative and all eligible files' notes
+through one sequential job: annotate, reduce findings when needed, synthesize.
+It requires complete job-wide text coverage regardless of context.diff. Whole
+files are preferred; oversized files/hunks split into original-coordinate units
+without truncating lines or omitting unchanged text. Each invocation sees only
+its supplied chunks, not all source simultaneously. Fragment units have no
+whole-file overview. Binary/both-empty entries retain metadata but receive no
+invented anchors. No eligible text targets means no inference. Distributed
+coverage proves neither semantic completeness nor explanation correctness.
+
+The Review header shows completed annotation units as a percentage, with a compact
+bar when space permits. This measures annotation coverage, not elapsed time or
+overall job completion; reduction/synthesis show separate phase labels afterward.
+
+Successful invocations become internal, memory-only checkpoints. Repeat
+:IrrelevantExplainer review in the comparison, file panel or associated reader to
+recollect/revalidate matching work and resume failed/unstarted invocations.
+Cancel keeps validated checkpoints while that owner stays open. Close, stale or
+replaced comparisons, and restart discard unfinished work. Review Refresh
+discards checkpoints and regenerates every phase. A request from ordinary code
+after opening has finished opens a new comparison, not another owner's unfinished
+job. Repeats during opening only coalesce. Completed exact answers can be reused
+across owners through the shared cache; unfinished checkpoints cannot.
+
+IrrelevantExplainerReview (or require("irrelevant_explainer").review()) opens the narrative without
+inference. It requires a supported existing comparison and never opens Diffview.
+Review uses independently scrollable Markdown in the same pane.
+Ctrl-e/Ctrl-y in Review scroll by one visible row, including wrapped lines;
+counts use the same unit (3Ctrl-e scrolls three visible rows), within native
+buffer limits. Source windows stay still. Returning to File restores the pane's
+previous scrolling setting; source-linked File scrolling remains unchanged.
+Enter on a generated file-reference row selects that exact Diffview entry and
+shows File notes; prose Enter is inert. Esc returns to File overview; q closes.
+Reopening the same narrative preserves its reading position. Empty, pending,
+failed and stale states are explicit. <Plug>(IrrelevantExplainerReview) is pane-local;
+there is no global default mapping. See |irrelevant-explainer-ui.txt| for a shortcut.
+Review wire responses use version 3 phase envelopes; code/file/hunk keep version 1.
+Version 2 is internal assembled review data only, not an accepted wire response.
+Only after all phases and freshness checks succeed are narrative and file notes
+installed together. Incomplete or malformed reviews install neither; older fresh
+accepted results remain. Failure starts no repair, fallback or automatic retry.
+See |irrelevant-explainer-agents.txt| for the contract and output-limit guidance.
+
+For file/hunk scope only:
+context.diff="auto" supplies every textual patch and complete changed text
+version when the review fits the byte budget, including changed OpenSpec
+artifacts, other decisions/ADRs and tests. Otherwise it uses focused coverage:
+the whole selected hunk and nearby old/new lines, or complete selected file for
+file scope, plus affordable changed OpenSpec/ADR/decision/requirements documents.
+Those documents are prioritized by path, not semantic relevance. No unchanged
+repository document is automatically explored. Only selected file/hunk ranges
+may receive notes.
+
+context.diff="focused" always uses focused coverage. context.diff="review"
+requires the whole comparison and fails on overflow. context.radius=20 is the
+default number of nearby lines on each side of a focused hunk; a nonnegative
+integer (including 0) is allowed. Surroundings shrink if needed, prioritizing
+changed decision documents. Focused status shows the effective radius and
+omitted-file count; detail also labels coverage. The prompt identifies supplied
+files/ranges, and citations outside them are rejected.
+
+Requests ask for observable effects, documented/inferred/unknown intent,
+citations, and visible decision/code mismatches. Evidence validation proves
+that a cited range was supplied, not that an AI explanation is true or tests
+passed. Renamed paths, independent old/new lines, and deletion-only anchors
+are preserved. Absences/empty files/binaries are not fabricated source lines.
+See |irrelevant-explainer-diff.txt| for supported revision pairs and limitations.
+
+SNAPSHOTS, BUDGETS AND STATUS                    *irrelevant-explainer-status*
+
+The complete serialized UTF-8 prompt (instructions, contract, context, target)
+must fit context.max_bytes. File/hunk with context.diff="review" fails on overflow,
+without omitting context or starting a command. Auto/focused mode omits optional
+context, never truncates the selected target, and fails if that target and
+request overhead cannot fit. Prefer hunk scope to file scope for large files.
+Byte count is not provider token count: the external tool may still reject a
+prompt below the budget. Lower max_bytes (for example, 65536) or use focused
+mode for a smaller-context provider.
+
+Explicit review has separate positive finite integer limits:
+  review.request_max_bytes   262144    complete per-call prompt bytes
+  review.response_max_bytes  32768     decoded final JSON bytes per call
+  review.max_snapshot_bytes  16777216  canonical serialized snapshot admission
+  review.max_requests        128       new calls per explicit run/resume
+The effective input cap is min(context.max_bytes, review.request_max_bytes).
+Raising context.max_bytes alone does not enlarge review batches. Snapshot bytes
+are not Lua heap usage. Output allowances also bound counts and text per item;
+see |irrelevant-explainer-agent-review|. All annotations are admitted before inference.
+Later reduction/synthesis depends on actual findings and can still fail: an
+indivisible line/evidence packet, mandatory manifest, or nonshrinking reduction
+is not silently clipped. max_requests counts launches across all phases; another
+explicit resume grants another bounded run, reusing validated checkpoints.
+ai.timeout_ms applies to each call. Multiple calls can increase latency and cost.
+These byte guardrails do not control provider tokens/output limits or guarantee
+capacity, and do not fix or disable OpenCode compaction. Reduce limits or filter
+the comparison/use file or hunk scope if the provider still fails.
+
+Pending/Ready/Failed/Stale/Cancelled use a separate matched header from the
+moment the pane opens, never content rows. Source windows without winbars get
+temporary blank headers until ownership ends or the pane closes; existing
+headers and user edits are preserved. The editor's statusline is not overwritten.
+Pending phases animate the requested rows every 100ms,
+including deletion filler; initial hunk ranges are provisional until collected.
+Ticks only update decorations, not buffer text, collection or inference. Full
+errors use vim.notify and :messages. Edits, revision/comparison switches and
+view closure invalidate late output. Stale notes are removed instead of shifted
+onto edited code. No automatic inference
+is issued on edits or scrolling. Source buffer events and a one-second timer
+check every retained batch's context; completions and cached output are
+revalidated before installation. Detail coverage warnings reflect each note's
+original request. A fresh new request can complete after stale older batches
+are discarded. Diff collection/revalidation uses cancellable asynchronous
+Git/filesystem reads and
+yielded processing batches. Checks are coalesced rather than run concurrently.
+Git reads time out after 30 seconds. Focused collection skips oversized unrelated
+files before reading their contents, but reads/diffs selected versions locally
+in full to locate exact hunks. Native hashes/diffs and final prompt encoding
+still perform CPU work on the editor's main thread.
+
+Validated results and serialized whole-context blocks are reused in memory by
+supplied coverage/target and agent/context configuration. Fresh collection checks
+current inputs before cache reuse. Completed answers also use the shared disk
+cache described below; no implicit external conversation is added.
+Completed diff batches are also retained per repository, comparison/filter and
+file for the current run. Navigation alone hides notes, not invalidates them.
+Returning to a file revalidates every retained batch under its original coverage
+and restores it without inference, including incremental hunk explanations.
+Recreated clean buffers and newly loaded identical context files are not edits;
+actual code/context/index changes still prevent restoration. In-flight work
+survives file navigation, including during collection, and remains owned by its
+original target. Off-screen completion preserves other files' detail and focus.
+Fresh replacements of expanded notes are deferred until detail exits. Review
+file results retain all shared-context freshness dependencies.
+Auto keeps at most one unstarted latest-file candidate while busy, behind explicit
+requests. Turning Auto off drops that candidate, not running or explicit work.
+A queued/running review suppresses automatic file candidates; its failure does
+not trigger per-file retries. Cancel/Close stop comparison-wide pending work;
+tab switching alone does not. Unfinished jobs do not survive Neovim restarts.
+External tools may independently retain supplied code or continue attached
+remote generation after the client is killed; see |irrelevant-explainer-agents.txt|.
+
+COMPLETED RESULT CACHE                           *irrelevant-explainer-cache*
+
+All five scopes support exact-input completed-answer reuse across processes.
+cache.enabled=true, cache.max_bytes=104857600 (100 MiB), and
+cache.namespace="default" are the defaults. enabled must be boolean, max_bytes
+a positive finite integer, and namespace a nonempty string. Set enabled=false
+to disable disk reads/writes without disabling current-process note retention.
+An optional cache.decoder_key must be nonempty text. Custom ai.output functions
+without it opt out of disk reuse, retaining in-memory decoder identity checks.
+For example, use decoder_key="my-decoder-v1" and change it with decoder behavior.
+
+Identity includes the canonical worktree/source namespace, resolved mode/scope,
+exact normalized target and supplied context, comparison and generation settings.
+Code/diff file modes and different scopes do not alias. Buffer/window IDs and
+opening method do not prevent otherwise identical matches; selection byte and
+virtual spans remain exact. Equivalent manually/automatically opened reviews can
+share completed results only after readiness and fresh capture. Hidden external
+provider/agent config, environment or wrapper changes cannot be detected: change
+cache.namespace/decoder_key or explicitly Refresh when those change. Raw command
+argv is hashed for identity rather than persisted as plaintext configuration.
+
+Storage is private plaintext JSON, not encryption:
+  stdpath("cache")/explainr/results/v1/<source-hash>/<request-key>.json
+The historical directory is intentional compatibility storage, not an old public
+alias. The rename does not migrate/delete records or bump semantic identity;
+matching explicit generation settings can reuse them. See |irrelevant-explainer-migration|.
+Directories/files are created with 0700/0600 permissions where supported. Records
+exclude full source snapshots, prompts, process streams and unfinished job state,
+but result prose may contain sensitive source snippets. Complete review records
+retain validated phase outputs for local replay of request/provenance validation,
+not external inference or a resumable disk job. Hits undergo schema, identity,
+range/coverage and final freshness checks before atomic display as Ready · cached.
+
+Atomic replacement and least-recently-used pruning manage committed entries;
+individually oversized entries are skipped. The configured limit is not a hard
+whole-directory capacity guarantee including temporary files/external changes.
+Corrupt/incompatible entries are misses. Cache I/O/maintenance failures are
+nonfatal; bounded warnings report unavailable storage. Simultaneous misses in
+different processes can both invoke the agent; there is no cross-process
+single-flight inference or provider billing-discount guarantee.
+
+:IrrelevantExplainerCacheClear and require("irrelevant_explainer").clear_cache() clear owned disk
+entries and reusable memory answers without closing panes or removing displayed
+valid notes. Unfinished checkpoints remain governed by Cancel/Review Refresh.
+This process's pre-clear work cannot repopulate the cache; another Neovim can
+create later entries. Refresh bypasses both answer caches for the visible scope;
+Review Refresh also bypasses checkpoints. An existing disk answer is replaced
+only after successful validation, not deleted by a failed Refresh.
+
+NAVIGATION                                      *irrelevant-explainer-reading*
+
+See |irrelevant-explainer-ui.txt|: n/p jump among explanations (counts, stopping at either
+end). N (Shift-n) also goes to the previous explanation in both views. K or
+Enter expands below the selected summary, retaining its visible position when
+space allows and dimmed overview context above and below it. Following notes
+keep their source rows when space allows, otherwise follow the card instead of
+disappearing. Enter/K also works on summary-free rows within original anchors.
+A displayed summary takes precedence; otherwise one local note opens directly,
+even with a covering file overview. Multiple local notes offer summaries and
+range labels in a chooser, locals first and overviews last; cancellation does
+nothing. An overview alone opens directly, and folded summaries still open
+together. Opening does not move code. Both views reserve a gutter and one
+padding space, so expansion does not shift text horizontally. A matching gutter
+rail surrounds the expanded explanation, including wrapped lines. Near the bottom it lifts to expose
+the first explanation line without moving code. K/Enter or Esc/q collapses at
+the current source-aligned line, not the summary or original entry point;
+source views and explanation focus are preserved within native geometry limits.
+Prose collapse uses display-row geometry bounded to visible anchors; with all
+anchors off-screen it keeps the native source position. Without reading motion,
+collapse keeps the source position established on opening or n/p navigation.
+Enter/K in detail only collapses, without a chooser. Esc/q in overview closes notes.
+Referenced code gets temporary
+muted gutter markers. Text outside anchors dims; anchored syntax and Git diff
+backgrounds/signs remain intact. Native diff foregrounds may remain brighter.
+Collapsed summaries apply the same focus styling when selected; blank rows or
+leaving collapsed notes clears it. Collapse follows the destination row's focus,
+including clearing focus when it lands on a blank row.
+In detail, n/p browses existing entries without inference and synchronizes the
+selected source line/viewport and both diff sides. Subsequent reading motion
+updates the collapse destination; collapse never forces a return to that summary.
+Scrolling code makes expanded detail follow its summary until an edge, then
+stick inside the content viewport below the header. A fitting card stays fully
+visible; taller detail keeps its logical prose position and a reading area with
+every paragraph reachable. Scrolling back releases the card into alignment.
+Pinning does not move code a second time, steal focus or select another note.
+Entry navigation resets reading/sticky state; collapse, replaced results, file
+switches and pane closure clear it through their existing cleanup paths.
+Ctrl-e/Ctrl-y support counts. Overview scrolls paired buffers together. Expanded
+explanation-driven scrolling still moves code by its actual displayed-row delta,
+even while pinned, whereas source-driven scrolling uses sticky placement.
+When the reader has no earlier buffer rows, Ctrl-y still scrolls code upward.
+k on a summary at the top screen edge does the same without collapsing detail
+or jumping to stale context. Counts work; neither scrolls past the source's start.
+Once a fitting card reaches its bottom placement limit, a further reader Ctrl-y
+from inside the card enters the source-backed display row immediately above it.
+An outside-anchor destination collapses detail; an anchored destination keeps it
+expanded. Counts stop at this escape destination, discarding leftover steps.
+Reaching an edge alone, source-driven scrolling, and genuine file limits do not
+trigger the escape. Viewport-filling/long prose remains readable through native
+scrolling; top-pinned reading settles without a displaced corrective frame.
+Source scrolloff and unequal diff margins are respected without drift or an
+extra margin-correction scroll; original source option values are retained.
+Ordinary motion through expanded summary, metadata and prose selects the source
+line beside the cursor's display row, accounting for wraps, folds and diff filler.
+Prose beyond the anchors selects the nearest visible anchored row (earlier on
+ties). When all anchors scroll off-screen, reading continues without snapping
+code back. Markdown buffer line numbers are never used as source line numbers.
+Blank anchored continuation follows code; entering surrounding context outside
+the anchors collapses at that destination. Native expanded viewport actions keep
+paired scrolling by displayed-row distance, within native buffer limits.
+In diff mode, overview and detail also inherit Diffview's file/explorer bindings:
+Tab/Shift-Tab selects the next/previous diff file, <leader>e focuses the explorer,
+and <leader>b toggles it by default. Configured remaps and disabled mappings are
+respected; Irrelevant Explainer's Enter/K take precedence. File switches hide notes;
+returning restores validated saved batches without requesting new explanations.
+Unexplained files show an empty pane, not a stale warning. Tab is not an expansion
+shortcut.
+The pane opens at the far right, beyond both diff sources. One logical overview
+line matches each followed source line; j/k and other motions work on blank or
+pending rows. Either old/new source can drive sync without stealing focus.
+Original-side line references and continuation rails show annotation ranges.
+Diff summaries use the first changed line within their anchor, not an unchanged
+block header. Entirely unchanged ranges keep their original start. References
+and expanded detail retain the full anchor range.
+Whole-file overviews instead stay at the file start, with a separate matched
+status header that, like all requests, is reserved before results arrive and
+never covers their summary.
+Overlapping notes each get a separate row and their own original range label.
+Primary positions are reserved; collisions prefer file overviews, narrower
+ranges, documented/inferred/unknown intent, then original result order. If an
+anchor has no free row, use a free annotation row below it, adding rows at EOF
+if necessary. These overflow rows still synchronize to the original anchor;
+source text and geometry are not changed. n/p/N follows the displayed order.
+Ctrl-f/b/d/u/e/y and mouse wheel scroll the source then align the notes.
+Folds combine notes; wrapped continuations and diff filler retain their display
+rows. Long summaries end in an expansion indicator. Source window diff/fold/
+wrap/binding options remain unchanged. Intent accents are D (documented), ~
+(inferred), and ? (unknown). Overview and detail use the 'irrelevant_explainer' filetype
+with optional Markdown Tree-sitter highlighting and visible Markdown markers.
+Missing parsers leave readable semantic styling; the plugin does not invoke
+render-markdown.nvim or change its user configuration. Expanded j/k, including
+counts, move by displayed row; see |irrelevant-explainer-ui.txt| for the top-edge k shortcut.
+vim.b.irrelevant_explainer_status exposes pane status for optional lualine components.
+
+Example theme override and optional statusline component (add the function to
+your own lualine section; the plugin does not configure lualine):
+>
+  vim.api.nvim_set_hl(0, "IrrelevantExplainerTitle", { link = "DiagnosticInfo" })
+  local explanation_status = function()
+    return vim.b.irrelevant_explainer_status or ""
+  end
+<
+
+Every busy phase has an animated header spinner, even with focus or expanded
+detail: saved-result checks, collection, cache lookup, agent work, review
+processing and result-context validation. It indicates activity, not a provider
+call or fabricated progress. Background work is identified separately and does
+not tint unrelated File notes. Checking saved File explanations loads the
+visible file extent without inference; notes still wait for freshness checks.
+Busy Review retains readable prose or its placeholder, with continuous gutter
+rails across wrapped paragraphs, blank lines and empty viewport space. Accepted
+text and backgrounds remain steady. The focused logical cursor line keeps a
+steady rail across its wraps while other eligible rails and the header animate.
+Loading decorations clear when their owned work ends or the reader closes.
+
+If the terminal cursor flickers during loading, keep 'termsync' enabled (its
+Neovim default). Supported terminals/multiplexers batch redraws atomically;
+without synchronized output, even painting another split can hide/show the
+terminal cursor each frame. The plugin leaves 'termsync' and 'guicursor' alone.
+
+DEVELOPMENT                                      *irrelevant-explainer-testing*
+>
+  bash tests/ci.sh base
+  IRRELEVANT_EXPLAINER_DIFFVIEW_PATH=/path/to/diffview.nvim \
+  IRRELEVANT_EXPLAINER_PLENARY_PATH=/path/to/plenary.nvim \
+  bash tests/ci.sh integration
+  IRRELEVANT_EXPLAINER_GITLEAKS=/path/to/gitleaks bash tests/ci.sh secrets
+  IRRELEVANT_EXPLAINER_NVIM=/path/to/nvim bash tests/ci.sh base
+<
+Run from the repository root with Python 3, Git and preinstalled tools/runtimes.
+The script isolates XDG/cache storage, uses normal headless startup (not -l),
+omits optional runtimes in base, and preflights/rejects missing integration skips.
+Use |irrelevant-explainer-diff-compat| for pinned runtimes. IRRELEVANT_EXPLAINER_NVIM
+selects the Neovim executable in either test mode; the default is nvim.
+
+CI selects locally checked Neovim 0.11.5/0.12.5, Python 3.12.12, Gitleaks 8.30.1,
+and immutable Diffview/Plenary pins. Actions/download checksums are in
+.github/workflows/ci.yml. These are configured jobs, not a hosted CI success claim.
+No credentials, login or paid inference are required. External CLI contracts use
+fake-process fixtures, not authenticated compatibility/retention/billing checks.
+Optional parser highlighting is not guaranteed by base CI.
+
+secrets requires Gitleaks 8.30.1 and complete nonshallow history/all intended refs;
+it scans tracked/nonignored candidate files and all-ref history with redacted
+output/default rules. Manual privacy review of history/metadata/media is still
+required; no detected matches is not universal clearance.
+
+Focused direct run (not the CI wrapper):
+>
+  IRRELEVANT_EXPLAINER_TEST=tests/model_test.lua \
+  nvim --headless -u NONE -i NONE -n -c 'luafile tests/run.lua'
+<
+Actual-screen captures use tests/render.py with Python pynvim/Pillow and a
+monospace font (--font), optionally --nvim and --states. Default mode has no user
+config; README media use opt-in personal styling, local-only and never in CI.
+Both use synthetic content/offline fixture answers, not live AI. Keep raw output
+under excluded .amp/in/artifacts/. The personal mode is tailored to the author's
+installed config, retaining its styling while suppressing services and hiding
+the floating filename overlay. No personal dotfiles/session changes are made.
+>
+  python3 tests/render.py --personal-config "$HOME/.config/nvim" \
+    --font /path/to/monospace-nerd-font.ttf --demo \
+    --output .amp/in/artifacts/publication-media
+<
+Inspect every image/GIF frame and metadata before publishing regenerated assets.
+
+LICENSE
+
+MIT; see LICENSE at the repository root. THIRD_PARTY_NOTICES.md retains separate
+attribution/license guidance. Reuse permission is not a maintenance commitment.
+
+vim:tw=78:ts=8:noet:ft=help:norl:
