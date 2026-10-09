@@ -208,6 +208,7 @@ T.test("opening waits for buffers, deduplicates in the new view and preserves co
     local current, held = adapter.current, true
     adapter.current = function(...) if held then return nil, "loading" end; return current(...) end
     local ok, err = xpcall(function()
+      plugin.config.prompts.diff = "Business rules captured before opening"
       local captured = vim.deepcopy(plugin.config)
       local epoch = require("irrelevant_explainer.cache").epoch()
       local op = plugin.explain("review")
@@ -226,7 +227,7 @@ T.test("opening waits for buffers, deduplicates in the new view and preserves co
       T.eq(epoch, sessions.current().pending.cache_epoch)
       assert(epoch ~= require("irrelevant_explainer.cache").epoch())
       local config = require("irrelevant_explainer.review").config(sessions.current().review_job)
-      for _, key in ipairs({ "ai", "context", "review", "cache" }) do T.eq(captured[key], config[key]) end
+      for _, key in ipairs({ "ai", "context", "review", "cache", "prompts" }) do T.eq(captured[key], config[key]) end
       local found
       for _, file in ipairs(sessions.current().pending.snapshot.files) do
         if file.path == "mixed.lua" and file.side == "new" then found = file.lines end

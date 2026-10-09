@@ -167,6 +167,40 @@ See [transport examples and schemas](doc/irrelevant-explainer-agents.txt).
 
 Each `setup()` resets unspecified options to defaults. Combine options in one call.
 
+### Choose the explanation perspective
+
+Add free-form preferences without replacing the plugin's prompt or JSON protocol:
+
+```lua
+require("irrelevant_explainer").setup({
+  prompts = {
+    common = "Write in Spanish for an experienced developer.",
+    code = "Prioritize technical mechanisms, control flow, and state transitions.",
+    diff = "Prioritize business rules, user-visible outcomes, and who can do what.",
+    review = "Organize the whole-change narrative by business rule.",
+  },
+})
+```
+
+All four slots default to `""`. `common` applies everywhere; `code` applies to
+code file/selection; `diff` applies to diff file/hunk and every review phase.
+`review` additionally shapes narrative reduction/synthesis, not file annotations.
+Specific slots override conflicting common preferences, never mandatory rules.
+For a technical diff, use `diff = "Emphasize mechanisms and compatibility risks."`.
+Other language, audience, terminology, depth, and style preferences are welcome;
+only these four string-valued keys are accepted, not templates or callbacks.
+
+The assembled prompt labels these as **user-supplied subordinate preferences**.
+They cannot override the schema, identities, anchors, evidence, coverage, limits,
+or tool restrictions. Business emphasis does not authorize invented rationale.
+Prompt wording cannot guarantee model obedience or sandbox the external command;
+normal validation rejects incompatible output without repair or fallback.
+
+Preferences count toward prompt budgets and can reduce optional diff context or
+increase review calls. They are captured when requested and automatically key
+answer/checkpoint reuse; changing any slot causes a miss even for an unused slot.
+Earlier prompt-version entries become ordinary misses, not deleted records.
+
 ## Whole-change jobs, whole-change invoices
 
 ```vim

@@ -1,4 +1,4 @@
-local M = { FORMAT_VERSION = 1, PROMPT_VERSION = 2, PLANNER_VERSION = 2 }
+local M = { FORMAT_VERSION = 1, PROMPT_VERSION = 3, PLANNER_VERSION = 2 }
 
 -- Typed keys avoid collisions between array coordinates and object fields.
 -- This is an identity encoding, not a wire JSON representation.
@@ -84,7 +84,8 @@ function M.key(snapshot, config, pause)
     target = M.hash(M.target(snapshot.target), pause),
     context = M.hash({ files = supplied(snapshot.files), comparison = comparison, context = snapshot.context }, pause),
     generation = M.hash({ command = M.hash(ai.command or {}), decoder = decoder,
-      ai = generation, context = config.context or {}, review = review, namespace = cache.namespace or "default" }),
+      ai = generation, prompts = require("irrelevant_explainer.prompt").normalize(config.prompts),
+      context = config.context or {}, review = review, namespace = cache.namespace or "default" }),
   })
   return source_hash, key
 end

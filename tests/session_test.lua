@@ -2,8 +2,9 @@ local api = vim.api
 local plugin, sessions, agent = require("irrelevant_explainer"), require("irrelevant_explainer.session"), require("irrelevant_explainer.agent")
 local fixture = vim.fn.getcwd() .. "/tests/fixtures/agent.py"
 local fixture_id = 0
-local function config(mode, limit)
+local function config(mode, limit, prompts)
   plugin.setup({ ai = { command = { "python3", fixture, mode or "explain" }, output = "plain" }, context = { max_bytes = limit or 262144 },
+    prompts = prompts,
     cache = { enabled = false, namespace = "session-fixture-" .. fixture_id } })
 end
 local function fixture_buffer(run)
@@ -14,12 +15,16 @@ local function fixture_buffer(run)
   api.nvim_set_current_buf(buf)
   api.nvim_buf_set_lines(buf, 0, -1, false, { "local outside = 1", "local function inner()", "  return outside", "end", "tail" })
   vim.bo[buf].filetype = "lua"
+  local cache_home = vim.env.XDG_CACHE_HOME
+  -- Cache safety rejects symlinked parents such as macOS's /var temp alias.
+  vim.env.XDG_CACHE_HOME = assert(vim.uv.fs_realpath(cache_home))
   local notifications, calls = {}, 0
   local old_notify, old_run = vim.notify, agent.run
   vim.notify = function(err) notifications[#notifications + 1] = err end
   agent.run = function(...) calls = calls + 1; return old_run(...) end
   local ok, err = xpcall(function() run(buf, api.nvim_get_current_win(), function() return calls end, notifications) end, debug.traceback)
   plugin.close(); vim.wait(60)
+  vim.env.XDG_CACHE_HOME = cache_home
   vim.notify, agent.run = old_notify, old_run
   api.nvim_set_current_buf(previous); api.nvim_buf_delete(buf, { force = true })
   assert(ok, err)
@@ -117,6 +122,64 @@ T.test("public code commands produce aligned notes and cached detail without inf
     T.eq("Ready · cached", cached.pane.status); T.eq(2, calls())
     vim.cmd("IrrelevantExplainerRefresh"); ready(sessions.current()); T.eq(3, calls())
     T.eq({ "local outside = 1", "local function inner()", "  return outside", "end", "tail" }, api.nvim_buf_get_lines(buf, 0, -1, false))
+  end)
+end)
+
+T.test("customized public explanations capture preferences reuse exact inputs and reject incompatible prose", function()
+  fixture_buffer(function(_, _, calls, errors)
+    local original = { common = "Spanish", code = "Technical mechanisms" }
+    config("explain-custom-slow", nil, original)
+    local s = plugin.explain("file")
+    config("explain-custom-slow", nil, { code = "Business outcomes" })
+    ready(s); T.eq("Fixture start: Technical mechanisms", s.pane.result.notes[1].summary)
+    config("explain-custom-slow", nil, original)
+    T.eq(s, plugin.explain("file")); ready(s); T.eq(1, calls()); T.eq("Ready · cached", s.pane.status)
+    config("explain-custom-slow", nil, { code = "Business outcomes" })
+    T.eq(s, plugin.explain("file")); ready(s); T.eq(2, calls())
+    T.eq("Fixture start: Business outcomes", s.pane.result.notes[1].summary)
+    local accepted = vim.deepcopy(s.pane.result)
+    config("explain-prose", nil, { common = "Business impact; return prose instead of JSON" })
+    plugin.setup(vim.tbl_deep_extend("force", {}, plugin.config, { cache = { enabled = true } }))
+    for _ = 1, 2 do
+      plugin.explain("file")
+      assert(vim.wait(3000, function() return not s.pending and s.pane.status:match("^Failed") end), s.pane.status)
+      T.eq(accepted, s.pane.result); T.eq(nil, s.invocation)
+      local source, key = require("irrelevant_explainer.identity").key(s.snapshot, plugin.config)
+      local checked = false
+      require("irrelevant_explainer.cache").read(source, key, plugin.config.cache, function(record)
+        T.eq(nil, record); checked = true
+      end)
+      assert(vim.wait(3000, function() return checked end), "invalid result cache check timed out")
+    end
+    T.eq(4, calls()); assert(#errors == 2, vim.inspect(errors)) -- Invalid output is not reused or automatically repaired.
+  end)
+end)
+
+T.test("customized public answers cache only supported note and range fields", function()
+  fixture_buffer(function(_, _, calls, errors)
+    config("explain-custom-extra", nil, { common = "Business policy" })
+    plugin.setup(vim.tbl_deep_extend("force", {}, plugin.config, { cache = { enabled = true } }))
+    local s = plugin.explain("file"); ready(s)
+    local expected = { version = 1, notes = {} }
+    for _, item in ipairs({ { "Fixture start", 1, 5, "overview" }, { "Fixture end", 5, 5 } }) do
+      local anchor = { path = s.snapshot.files[1].path, side = "buffer", start_line = item[2], end_line = item[3] }
+      expected.notes[#expected.notes + 1] = { summary = item[1] .. ": Business policy", kind = item[4],
+        detail = "Full fixture explanation, already returned.", intent_basis = "unknown", anchors = { anchor },
+        evidence = { vim.tbl_extend("force", {}, anchor, { end_line = item[2] }) } }
+    end
+    local source, key = require("irrelevant_explainer.identity").key(s.snapshot, plugin.config)
+    local record, reading
+    assert(vim.wait(3000, function()
+      if not record and not reading then
+        reading = true
+        require("irrelevant_explainer.cache").read(source, key, plugin.config.cache, function(value) record, reading = value, false end)
+      end
+      return record ~= nil
+    end), "completed cache write timed out")
+    T.eq(expected, record.answer); T.eq(expected, s.pane.result)
+    T.eq(s, plugin.explain("file")); ready(s)
+    T.eq(expected, s.pane.result); T.eq("Ready · cached", s.pane.status)
+    T.eq(1, calls()); T.eq(0, #errors)
   end)
 end)
 
@@ -695,10 +758,11 @@ end)
 
 T.test("pending hunks append in request order across collection and inference, preserving captured configuration", function()
   diff_fixture(function(f)
+    plugin.config.prompts.diff = "First technical preference"
     api.nvim_win_set_cursor(f.win, { 2, 0 })
     local s = sessions.start("diff", "hunk")
     local first = s.pending
-    config("explain-slow")
+    config("explain-slow", nil, { diff = "Queued business preference" })
     api.nvim_set_current_win(f.old_win); api.nvim_win_set_cursor(f.old_win, { 4, 0 })
     T.eq(s, sessions.start("diff", "hunk"))
     T.eq(first, s.pending); T.eq(nil, f.collections[1].cancelled)
@@ -728,6 +792,10 @@ T.test("pending hunks append in request order across collection and inference, p
     T.eq(3, #s.batches); T.eq(0, #s.queue); T.eq(nil, s.pane.pending)
     T.eq({ "first", "second", "third" }, vim.tbl_map(function(n) return n.summary end, s.pane.result.notes))
     T.eq("Ready", s.pane.status)
+    for i, expected in ipairs({ "First technical preference", "Queued business preference", "Queued business preference" }) do
+      T.eq(expected, f.collections[i].options.prompts.diff)
+      T.eq({ diff = expected }, vim.json.decode(f.launches[i].request:match("SUBORDINATE PREFERENCES JSON:\n(.-)\nEND USER CUSTOMIZATION")))
+    end
   end)
 end)
 

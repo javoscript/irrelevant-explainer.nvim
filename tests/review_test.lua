@@ -65,7 +65,7 @@ local function run(job, respond, fresh)
   agent.run = function(text, _, _, callback)
     assert(not running, "two simultaneous invocations"); running = true
     local req = vim.json.decode(assert(text:match("UNTRUSTED REVIEW REQUEST JSON:\n(.*)")))
-    calls[#calls + 1] = { request = req, bytes = #text }
+    calls[#calls + 1] = { request = req, bytes = #text, prompt = text }
     local value, err = answer(req), nil
     if respond then value, err = respond(req, #calls, value) end
     vim.schedule(function() running = false; callback(value and vim.json.encode(value), err) end)
@@ -188,6 +188,34 @@ T.test("whole files output packing missing sources empty comparison and indivisi
   for _, key in ipairs({ "request_max_bytes", "response_max_bytes", "max_snapshot_bytes", "max_requests" }) do
     for _, value in ipairs({ 0, -1, 1.1, math.huge, "100" }) do T.eq(nil, review.create(fixture(), { review = { [key] = value } })) end
   end
+end)
+
+T.test("customized review planning counts overhead preserves capture and rejects oversized phase preferences", function()
+  local s = fixture(3, 10, 100)
+  local baseline = review.inspect(assert(review.create(s, {}))).annotations[1].bytes
+  local config = { review = { request_max_bytes = baseline },
+    prompts = { common = "Spanish", diff = "Business outcomes " .. string.rep("é", 300) } }
+  local job = assert(review.create(s, config))
+  assert(#review.inspect(job).annotations > 1, "customization must change affordable batching")
+  local expected = vim.deepcopy(config.prompts)
+  config.prompts.diff = "Changed after job capture"
+  local done, calls = run(job)
+  assert(done.result, done.error)
+  for _, call in ipairs(calls) do
+    assert(call.bytes <= baseline)
+    T.eq(expected, vim.json.decode(call.prompt:match("SUBORDINATE PREFERENCES JSON:\n(.-)\nEND USER CUSTOMIZATION")))
+  end
+  config.prompts = expected
+  T.eq(done.result, assert(review.validate_record(done.record, s, config)))
+  assert(not vim.json.encode(done.record):find(expected.diff, 1, true))
+  config.prompts = { common = string.rep("é", baseline) }
+  local rejected, err = review.create(s, config)
+  T.eq(nil, rejected); assert(err:find("indivisible", 1, true), err)
+  config.prompts = { review = string.rep("é", baseline) }
+  local failed, launched = run(assert(review.create(s, config)))
+  T.eq(nil, failed.result); T.eq(nil, failed.record)
+  T.eq(1, #launched); T.eq("annotate", launched[1].request.phase)
+  assert(failed.error:find("synthesize manifest/mandatory overhead", 1, true), failed.error)
 end)
 
 T.test("annotation units share the available response budget including the envelope", function()
@@ -326,7 +354,7 @@ T.test("large cached review replay services events and cancellation without infe
 end)
 
 T.test("failed sibling invocation is discarded and resume reuses only validated checkpoints", function()
-  local s, config = fixture(7), { review = { response_max_bytes = 8192 } }
+  local s, config = fixture(7), { review = { response_max_bytes = 8192 }, prompts = { diff = "Business rules" } }
   local job = assert(review.create(s, config))
   local failed, calls = run(job, function(_, n, value)
     if n == 3 then return value, "provider failed after emitting apparently valid JSON" end
@@ -338,6 +366,9 @@ T.test("failed sibling invocation is discarded and resume reuses only validated 
   local done, resumed = run(assert(review.create(s, config, job)))
   assert(done.result, done.error); T.eq(6, #resumed)
   T.eq(before, review.inspect(job).checkpoints)
+  local preferences = vim.deepcopy(config); preferences.prompts.diff = "Technical mechanisms"
+  T.eq({}, review.inspect(assert(review.create(s, preferences, job))).checkpoints)
+  T.eq(nil, review.validate_record(done.record, s, preferences))
   local changed = vim.deepcopy(config); changed.ai = { output = function() end }
   T.eq({}, review.inspect(assert(review.create(s, changed, job))).checkpoints)
   local custom = assert(review.create(s, changed))
@@ -432,7 +463,8 @@ local function findings_answer(req, _, value)
 end
 
 T.test("multi-level reduction rehydrates original evidence and completed replay preserves every child", function()
-  local s, config = fixture(14, 3, 50), { review = { request_max_bytes = 7500, response_max_bytes = 8192 } }
+  local s, config = fixture(14, 3, 50), { review = { request_max_bytes = 7500, response_max_bytes = 8192 },
+    prompts = { common = "Spanish", diff = "Business rules", review = "Organize by policy" } }
   local job = assert(review.create(s, config))
   local done, calls = run(job, findings_answer)
   assert(done.result, done.error)
@@ -440,6 +472,9 @@ T.test("multi-level reduction rehydrates original evidence and completed replay 
   for _, call in ipairs(calls) do
     assert(call.bytes <= 7500)
     local req = call.request
+    local preferences = { common = "Spanish", diff = "Business rules" }
+    if req.phase ~= "annotate" then preferences.review = "Organize by policy" end
+    T.eq(preferences, vim.json.decode(call.prompt:match("SUBORDINATE PREFERENCES JSON:\n(.-)\nEND USER CUSTOMIZATION")))
     if req.phase == "reduce" then
       reduced = reduced + 1
       for _, id in ipairs(req.child_ids) do if ids[id] then transitive = true end end
@@ -569,7 +604,8 @@ T.test("indivisible findings and oversized final manifest stop after annotations
   local s = fixture(1, 1, 2000)
   -- Annotation only needs its local manifest; reduction needs the whole manifest.
   s.comparison.manifest[2].path = string.rep("m", 2400)
-  local job = assert(review.create(s, { review = { request_max_bytes = 7000, response_max_bytes = 8192 } }))
+  local prompts = { review = "Prioritize business rules and preserve supplied technical evidence." }
+  local job = assert(review.create(s, { prompts = prompts, review = { request_max_bytes = 7000, response_max_bytes = 8192 } }))
   local done, calls = run(job, function(req, _, value)
     if req.phase == "annotate" then
       value.units[1].findings = { { text = string.rep("F", 1000), intent_basis = "documented",
@@ -581,7 +617,7 @@ T.test("indivisible findings and oversized final manifest stop after annotations
   assert(done.error:find("indivisible finding/evidence", 1, true) and done.error:find("7000", 1, true), done.error)
   T.eq(1, vim.tbl_count(review.inspect(job).checkpoints))
   s = fixture(); s.comparison.manifest[2].path = string.rep("m", 6000)
-  done, calls = run(assert(review.create(s, { review = { request_max_bytes = 5000 } })))
+  done, calls = run(assert(review.create(s, { prompts = prompts, review = { request_max_bytes = 5000 } })))
   T.eq(nil, done.result); T.eq(1, #calls)
   assert(done.error:find("synthesize manifest/mandatory overhead", 1, true), done.error)
 end)

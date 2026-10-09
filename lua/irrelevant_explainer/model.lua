@@ -61,6 +61,7 @@ local function range(value, snapshot, target)
     end
     assert(valid, "anchor is outside the focused target")
   end
+  return { path = value.path, side = value.side, start_line = value.start_line, end_line = value.end_line }
 end
 
 function M.validate(raw, snapshot)
@@ -112,16 +113,16 @@ function M.validate(raw, snapshot)
     end
     assert(type(value) == "table" and value.version == 1, "unsupported explanation version (expected 1)")
     array(value.notes, "notes")
-    local overview = false
+    local notes, overview = {}, false
     for _, note in ipairs(value.notes) do
       text(note.summary, "summary")
       assert(not note.summary:find("[\r\n]"), "summary must occupy one line")
       text(note.detail, "detail")
       array(note.anchors, "anchors")
       assert(#note.anchors >= 1 and #note.anchors <= (snapshot.mode == "code" and 1 or 2), "invalid anchor count")
-      local sides = {}
+      local sides, anchors = {}, {}
       for _, anchor in ipairs(note.anchors) do
-        range(anchor, snapshot, true)
+        anchors[#anchors + 1] = range(anchor, snapshot, true)
         assert(not sides[anchor.side], "duplicate anchor side")
         assert(snapshot.mode ~= "code" or anchor.side == "buffer", "code notes require buffer anchors")
         assert(snapshot.mode ~= "diff" or anchor.side ~= "buffer", "diff notes require old/new anchors")
@@ -143,9 +144,13 @@ function M.validate(raw, snapshot)
       assert(vim.tbl_contains({ "documented", "inferred", "unknown" }, note.intent_basis), "invalid intent_basis")
       array(note.evidence, "evidence")
       assert(note.intent_basis ~= "documented" or #note.evidence > 0, "documented intent requires evidence")
-      for _, citation in ipairs(note.evidence) do range(citation, snapshot, false) end
+      local evidence = {}
+      for _, citation in ipairs(note.evidence) do evidence[#evidence + 1] = range(citation, snapshot, false) end
+      -- Accepted v1 results retain only contract fields, never agent-supplied metadata.
+      notes[#notes + 1] = { summary = note.summary, detail = note.detail, kind = note.kind,
+        anchors = anchors, intent_basis = note.intent_basis, evidence = evidence }
     end
-    return value
+    return { version = 1, notes = notes }
   end)
   if ok then return result end
   local guidance = snapshot.target.scope == "review"

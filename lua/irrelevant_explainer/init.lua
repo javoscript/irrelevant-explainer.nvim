@@ -3,6 +3,7 @@ local M = {}
 local defaults = {
   ai = { command = { "opencode", "run", "--agent", "explain", "--format", "json" },
     output = "opencode", timeout_ms = 300000 },
+  prompts = { common = "", code = "", diff = "", review = "" },
   context = { max_bytes = 262144, diff = "auto", radius = 20 },
   diff = { auto_explain = false },
   review = { request_max_bytes = 262144, response_max_bytes = 32768, max_snapshot_bytes = 16777216, max_requests = 128 },
@@ -14,6 +15,11 @@ function M.setup(options)
   assert(vim.fn.has("nvim-0.11") == 1, "irrelevant_explainer requires Neovim 0.11+")
   assert(options == nil or type(options) == "table", "irrelevant_explainer setup expects a table")
   local config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), vim.deepcopy(options or {}))
+  assert(type(config.prompts) == "table", "prompts must be a table")
+  for name, value in pairs(config.prompts) do
+    assert(defaults.prompts[name] ~= nil, "unknown prompts option: " .. tostring(name))
+    assert(type(value) == "string", "prompts." .. name .. " must be a string")
+  end
   assert(vim.islist(config.ai.command), "ai.command must be an argument list")
   for _, arg in ipairs(config.ai.command) do
     assert(type(arg) == "string" and arg ~= "", "ai.command arguments must be nonempty strings")

@@ -223,3 +223,21 @@ T.test("identity custom decoders require stable keys not function addresses", fu
   cfg.cache.decoder_key = "decoder-v2"
   assert(before ~= key(s, cfg))
 end)
+
+T.test("identity normalizes empty prompt slots and conservatively keys every preference", function()
+  local s, cfg = fixture(), config()
+  local empty = key(s, cfg)
+  cfg.prompts = {}; T.eq(empty, key(s, cfg))
+  cfg.prompts = { common = "", code = "", diff = "", review = "" }; T.eq(empty, key(s, cfg))
+  for _, name in ipairs({ "common", "code", "diff", "review" }) do
+    cfg.prompts[name] = "Business é中 perspective " .. name
+    local customized = key(s, cfg)
+    assert(customized ~= empty)
+    local equivalent = vim.deepcopy(s); equivalent.source_buf = 789; equivalent.source_win = 456
+    T.eq(customized, key(equivalent, cfg))
+    cfg.prompts[name] = "Technical mechanisms " .. name
+    assert(key(s, cfg) ~= customized)
+    cfg.prompts[name] = ""
+  end
+  T.eq(empty, key(s, cfg))
+end)

@@ -66,6 +66,44 @@ and stderr remain separate, with their bytes accumulated until process exit.
 No transport-side prompt truncation or budget is applied; the caller must check
 the complete assembled prompt budget before launching.
 
+PROMPT CUSTOMIZATION                 *irrelevant-explainer-agent-preferences*
+
+Use setup's prompts.common/code/diff/review string slots; see
+|irrelevant-explainer-prompts| for technical and business-oriented examples.
+Each slot defaults to "". common applies to every request, code to code
+file/selection, diff to diff file/hunk and all review phases, and review
+additionally to narrative reduction/synthesis. Compatible preferences combine;
+more specific slots resolve preference conflicts, never mandatory-rule conflicts.
+
+Built prompts JSON-encode applicable nonempty slots in a separate user-supplied
+SUBORDINATE PREFERENCES block before the plugin-owned output contract. Mandatory
+instructions explicitly prohibit overriding schema/version, required fields,
+request/snapshot/unit/child IDs, anchors, evidence, coverage, output limits,
+supplied-context/task boundaries or agent-action restrictions. Conflicting
+portions are instructed to be ignored, keeping compatible preferences; no
+conflict warning belongs outside the response JSON. Source and derived findings
+remain untrusted data, not customization or controlling instructions.
+
+This is guidance, not proof that an agent obeys. Incompatible responses undergo
+normal validation and fail without schema relaxation, partial acceptance, repair
+or provider fallback. Valid citations do not prove business rationale, and
+business emphasis cannot authorize inventing it. Effective external permissions,
+not slot labels or prompt wording, enforce tool restrictions.
+
+All applicable text, escaping and boundary instructions count toward complete
+UTF-8 prompt caps during context selection and every review phase. Long
+preferences can reduce optional diff coverage or increase review calls; mandatory
+source, protocol and preferences are never clipped. Shorten preferences or
+adjust limits/scope on overflow; these bytes are not provider token counts.
+
+Slots are captured at invocation, including queued and outside-review requests.
+All normalized slots key answers and checkpoints: changing even an unused slot
+causes a miss, while omitted/empty slots match. Earlier prompt-version records
+become ordinary misses without migration/deletion. Raw preferences are hashed,
+not persisted; answer prose can still reflect them in the plaintext result cache.
+Accepted version-1 notes and nested ranges are projected to contract fields before
+display or caching, so agent-echoed metadata is not retained as extra JSON fields.
+
 DECODERS                                 *irrelevant-explainer-agent-output*
 
 plain: stdout is the final explanation text, not progress or log messages. It

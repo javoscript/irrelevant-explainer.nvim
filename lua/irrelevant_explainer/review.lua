@@ -120,7 +120,7 @@ local function request(job, phase, units, children, optional)
   if phase == "annotate" then req.units = units
   else req.child_ids, req.inputs = ids, findings end
   req.request_id = identity.hash(req, job.pause)
-  local text, err, size = prompt.review(req, job.input_cap)
+  local text, err, size = prompt.review(req, job.input_cap, job.config.prompts)
   if phase ~= "annotate" then
     local minimum = { version = 3, phase = phase, snapshot_id = job.id, request_id = req.request_id, child_ids = ids }
     if phase == "reduce" then minimum.findings = {}
@@ -295,6 +295,7 @@ function M.create(snapshot, config, previous, pause)
     captured.review = vim.tbl_extend("force", defaults, captured.review or {})
     captured.context = captured.context or {}; captured.context.max_bytes = captured.context.max_bytes or 262144
     captured.ai = captured.ai or {}
+    captured.prompts = prompt.normalize(captured.prompts)
     for name in pairs(defaults) do positive(captured.review[name], "review." .. name) end
     positive(captured.context.max_bytes, "context.max_bytes")
     -- Stable across processes, even when a custom function decoder is used. Its

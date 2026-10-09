@@ -30,9 +30,14 @@ if child then
       end)
     end
     plugin.setup({ ai = { command = case.argv or { "offline-persistence-fixture-only" }, output = case.output or "plain" },
+      prompts = case.prompts,
       cache = { namespace = case.namespace or case.scope } })
     agent.run = function(prompt, _, _, callback)
       calls = calls + 1
+      if case.prompts then
+        local supplied = vim.json.decode(assert(prompt:match("SUBORDINATE PREFERENCES JSON:\n(.-)\nEND USER CUSTOMIZATION")))
+        T.eq(case.prompts.common, supplied.common)
+      end
       local json = prompt:match("UNTRUSTED REVIEW REQUEST JSON:\n(.*)")
       local answer
       if json then
@@ -105,8 +110,8 @@ if child then
     if case.legacy then
       -- Captured from require("explainr").explain("file") before the rename,
       -- with explicit offline-persistence-fixture-only/plain and this namespace.
-      -- Only the disposable worktree namespace varies. Keep these generation,
-      -- target and context digests frozen so an accidental identity bump misses.
+      -- Keep the old identity frozen: the customization prompt-version change
+      -- intentionally misses this record without migrating or deleting it.
       assert(scope == "code" and case.namespace == "rename-continuity")
       local identity = require("irrelevant_explainer.identity")
       local source_hash = identity.hash({ worktree = root })
@@ -160,6 +165,11 @@ if child then
       wait(function() return not s.pending and writes == 0 end)
     end
     ready()
+    if case.prompts then
+      for _, path in ipairs(vim.fn.glob(vim.fn.stdpath("cache") .. "/explainr/results/v1/*/*.json", false, true)) do
+        assert(not table.concat(vim.fn.readfile(path), "\n"):find(case.prompts.common, 1, true), "raw preferences persisted")
+      end
+    end
     if case.action == "preclear" then
       T.eq(0, #vim.fn.glob(vim.fn.stdpath("cache") .. "/explainr/results/v1/*/*.json", false, true))
     end
@@ -251,9 +261,9 @@ local function fixture(run)
   assert(ok, err)
 end
 
-T.test("legacy completed record survives rename unchanged, semantic overrides miss and public clears preserve unrelated files", function()
+T.test("earlier prompt records remain unchanged on misses and public clears preserve unrelated files", function()
   fixture(function(run)
-    run({ scope = "code", namespace = "rename-continuity", legacy = true, hit = true })
+    run({ scope = "code", namespace = "rename-continuity", legacy = true })
     run({ scope = "code", namespace = "rename-continuity", legacy = true,
       argv = { "different-offline-command" } })
     run({ scope = "code", namespace = "rename-continuity", legacy = true, output = "codex" })
@@ -269,6 +279,17 @@ T.test("persistent code and visual selection survive fresh buffer numbers and co
       run({ scope = scope, padding = 17, hit = true })
       run({ scope = scope, padding = 9, context = true })
       run({ scope = scope, padding = 23, command = true, hit = true })
+    end
+  end)
+end)
+
+T.test("customized persistent answers reuse across restart and changed preferences miss", function()
+  fixture(function(run)
+    for _, scope in ipairs({ "code", "selection" }) do
+      local prompts = { common = "CUSTOM PERSISTENCE BUSINESS PERSPECTIVE" }
+      run({ scope = scope, prompts = prompts })
+      run({ scope = scope, padding = 13, prompts = prompts, hit = true })
+      run({ scope = scope, prompts = { common = "CUSTOM PERSISTENCE TECHNICAL PERSPECTIVE" } })
     end
   end)
 end)
@@ -293,9 +314,11 @@ end
 T.test("persistent diff file hunk and whole review reuse across fresh editors", function()
   fixture(function(run)
     for _, scope in ipairs({ "diff", "hunk", "review" }) do
-      run({ scope = scope, command = true })
-      run({ scope = scope, padding = 19, hit = true, selected = scope == "review" and "b.lua" or nil })
-      run({ scope = scope, action = "cancel" })
+      local prompts = { common = "CUSTOM PERSISTENCE DIFF BUSINESS PERSPECTIVE" }
+      run({ scope = scope, command = true, prompts = prompts })
+      run({ scope = scope, padding = 19, hit = true, prompts = prompts, selected = scope == "review" and "b.lua" or nil })
+      run({ scope = scope, action = "cancel", prompts = prompts })
+      run({ scope = scope, prompts = { common = "CUSTOM PERSISTENCE DIFF TECHNICAL PERSPECTIVE" } })
     end
   end)
 end)

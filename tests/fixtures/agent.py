@@ -132,10 +132,14 @@ elif mode in ("review", "review-overview"):
             "intent_basis": "inferred", "evidence": [],
         })
     sys.stdout.write(json.dumps({"version": 1, "notes": notes}))
-elif mode in ("explain", "explain-slow", "explain-invalid"):
+elif mode in ("explain", "explain-slow", "explain-invalid", "explain-custom", "explain-custom-slow", "explain-custom-extra", "explain-prose"):
     target = json.loads(prompt.decode().split("FOCUSED TARGET JSON:\n", 1)[1])
-    if mode == "explain-slow":
+    if mode in ("explain-slow", "explain-custom-slow"):
         time.sleep(0.4)
+    preferences = {}
+    if mode.startswith("explain-custom") or mode == "explain-prose":
+        preferences = json.loads(prompt.decode().split("SUBORDINATE PREFERENCES JSON:\n", 1)[1]
+                                 .split("\nEND USER CUSTOMIZATION", 1)[0])
     anchors = target["anchors"]
     selected = next((a for a in anchors if a["side"] == "new"), anchors[0] if anchors else None)
     notes = []
@@ -144,9 +148,19 @@ elif mode in ("explain", "explain-slow", "explain-invalid"):
             anchor = {**selected, "start_line": line, "end_line": line}
             if mode == "explain-invalid":
                 anchor["end_line"] = 99999
+            if preferences:
+                label += ": " + preferences.get("code", preferences.get("diff", preferences.get("common", "")))
             notes.append({"summary": label, "detail": "Full fixture explanation, already returned.",
                           "anchors": [anchor], "intent_basis": "unknown", "evidence": []})
-    sys.stdout.write(json.dumps({"version": 1, "notes": notes}))
+    if mode == "explain-custom-extra":
+        notes[0]["kind"] = "overview"
+        notes[0]["anchors"] = [dict(selected)]
+        for note in notes:
+            note["raw_preferences"] = preferences
+            note["evidence"] = [{**note["anchors"][0], "end_line": note["anchors"][0]["start_line"],
+                                 "raw_preferences": preferences}]
+            note["anchors"][0]["raw_prompt"] = prompt.decode()
+    sys.stdout.write("Business impact without JSON" if mode == "explain-prose" else json.dumps({"version": 1, "notes": notes}))
 else:
     sys.stderr.write("unknown fixture mode\n")
     sys.exit(2)

@@ -570,7 +570,7 @@ launch = function(session, snapshot, options, config)
   if not is_review then
     local context_key = snapshot.review_fingerprint or snapshot.fingerprint
     contexts[context_key] = contexts[context_key] or prompt.context(snapshot)
-    request, err = prompt.build(snapshot, config.context.max_bytes, contexts[context_key])
+    request, err = prompt.build(snapshot, config.context.max_bytes, contexts[context_key], config.prompts)
     if not request then return fail(session, err) end
   end
   local store, semantic = require("irrelevant_explainer.cache"), require("irrelevant_explainer.identity")
@@ -848,6 +848,7 @@ function M.start(mode, scope, options)
         launch(session, value, options, config)
       else render(session) end
     end, vim.tbl_extend("force", config.context, { target = options.target,
+      prompts = config.prompts,
       snapshot_max_bytes = scope == "review" and config.review.max_snapshot_bytes or nil }))
   end
   local state = display_state or collection and collection.state

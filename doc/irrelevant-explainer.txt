@@ -36,6 +36,7 @@ These are defaults; setup alone starts no external process:
       output = "opencode", -- "plain", "codex", or decoder function
       timeout_ms = 300000,
     },
+    prompts = { common = "", code = "", diff = "", review = "" },
     context = { max_bytes = 262144, diff = "auto", radius = 20 },
     diff = { auto_explain = false },
     review = {
@@ -52,6 +53,38 @@ permissions: OpenCode may warn and fall back to its default agent if the named
 agent is missing or is a subagent. The plugin does not enforce that restriction.
 See |irrelevant-explainer-agents.txt| for restricted-agent guidance, Codex/plain/
 custom examples, output contracts and local-only cancellation limitations.
+
+PROMPT PREFERENCES                              *irrelevant-explainer-prompts*
+
+The optional prompts table accepts only four string-valued slots, all defaulting
+to "". Empty slots add no preference text. Free-form language, audience, tone,
+terminology, depth, perspective and organization preferences are supported:
+>
+  require("irrelevant_explainer").setup({
+    prompts = {
+      common = "Write in Spanish for an experienced developer.",
+      code = "Explain technical mechanisms, control flow and state transitions.",
+      diff = "Emphasize business rules, user-visible outcomes and permissions.",
+      review = "Organize the overall narrative by business rule.",
+    },
+  })
+<
+For technical diffs, set diff="Emphasize mechanisms and compatibility risks."
+common applies everywhere; code applies to code file/selection; diff applies to
+diff file/hunk and every whole-review phase. review additionally shapes narrative
+reduction/synthesis, not source annotations. Compatible preferences combine;
+more specific slots resolve preference conflicts (common < code/diff < review).
+Unknown keys, non-string values and non-table prompts fail setup. Subsequent
+setup calls reset unspecified slots; caller options are not mutated. No template
+replacement, callbacks, automatic project instructions or extra tools are added.
+
+Customization is JSON-encoded and explicitly labeled user-supplied subordinate
+preferences. Mandatory protocol, task, grounding, coverage and resource rules
+always take precedence. Conflicting portions are instructed to be ignored while
+compatible preferences remain applicable. Business emphasis does not authorize
+invented rationale or unseen context. Prompt wording cannot guarantee obedience
+or sandbox a command; normal validation rejects incompatible responses without
+repair or fallback. See |irrelevant-explainer-agent-preferences|.
 
 An explicit ai.command list replaces all default arguments, including a one-item
 list or {}. Empty argv permits setup but disables generation. Command-only
@@ -289,11 +322,15 @@ See |irrelevant-explainer-diff.txt| for supported revision pairs and limitations
 
 SNAPSHOTS, BUDGETS AND STATUS                    *irrelevant-explainer-status*
 
-The complete serialized UTF-8 prompt (instructions, contract, context, target)
+The complete serialized UTF-8 prompt (instructions, preferences and their JSON
+escaping, contract, context, target)
 must fit context.max_bytes. File/hunk with context.diff="review" fails on overflow,
 without omitting context or starting a command. Auto/focused mode omits optional
 context, never truncates the selected target, and fails if that target and
 request overhead cannot fit. Prefer hunk scope to file scope for large files.
+Long preferences can reduce optional diff coverage or increase review calls;
+preferences, required source and protocol are never clipped to fit. Shorten the
+preferences or adjust the budget/scope when mandatory input cannot fit.
 Byte count is not provider token count: the external tool may still reject a
 prompt below the budget. Lower max_bytes (for example, 65536) or use focused
 mode for a smaller-context provider.
@@ -373,6 +410,13 @@ For example, use decoder_key="my-decoder-v1" and change it with decoder behavior
 
 Identity includes the canonical worktree/source namespace, resolved mode/scope,
 exact normalized target and supplied context, comparison and generation settings.
+Prompt preferences are captured at invocation and included in generation identity.
+Changing any slot prevents old answer/checkpoint reuse, even for an unused slot;
+omitted and explicitly empty slots match. Earlier prompt versions are ordinary
+misses without record migration/deletion. Raw preferences/prompts are not stored,
+but resulting answer prose can reflect them and remains plaintext.
+Accepted version-1 notes, anchors and evidence retain only contract fields before
+display or caching; extra agent metadata is discarded without changing validation.
 Code/diff file modes and different scopes do not alias. Buffer/window IDs and
 opening method do not prevent otherwise identical matches; selection byte and
 virtual spans remain exact. Equivalent manually/automatically opened reviews can

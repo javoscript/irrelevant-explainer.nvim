@@ -547,6 +547,40 @@ T.test("auto keeps affordable review and exact serialized UTF-8 boundary", funct
   end)
 end)
 
+T.test("customized diff budgets reduce optional evidence without truncating preferences or targets", function()
+  repo(function(r)
+    r.write("focus.lua", "old\nunchanged\n"); r.write("docs/adr.md", string.rep("x", 3000) .. "\n")
+    local a = r.commit()
+    r.write("focus.lua", "new\nunchanged\n"); r.write("docs/adr.md", string.rep("y", 3000) .. "\n")
+    local b = r.commit()
+    local state = r.display({ old = rev(a), new = rev(b) }, "focus.lua", "old\nunchanged\n", "new\nunchanged\n")
+    local prompt = require("irrelevant_explainer.prompt")
+    for _, scope in ipairs({ "file", "hunk" }) do
+      local plain = assert(diff.collect(state.source, scope, { diff = "review", prompts = {} }))
+      local cap = #assert(prompt.build(plain, 100000))
+      local preferences = { diff = "Business outcomes " .. string.rep("é", 3000) }
+      T.eq("review", assert(diff.collect(state.source, scope, { diff = "auto", max_bytes = cap, prompts = {} })).context.strategy)
+      local strict, err = diff.collect(state.source, scope, { diff = "review", max_bytes = cap, prompts = preferences })
+      T.eq(nil, strict); assert(err:find("Complete prompt", 1, true), err)
+      for _, strategy in ipairs({ "auto", "focused" }) do
+        local selected = assert(diff.collect(state.source, scope, { diff = strategy, radius = 0, max_bytes = cap, prompts = preferences }))
+        T.eq("focused", selected.context.strategy); T.eq(1, selected.context.omitted_files)
+        T.eq(plain.target, selected.target)
+        local text = assert(prompt.build(selected, cap, nil, preferences))
+        T.eq(preferences, vim.json.decode(text:match("SUBORDINATE PREFERENCES JSON:\n(.-)\nEND USER CUSTOMIZATION")))
+        require("irrelevant_explainer").setup({ prompts = { diff = string.rep("later preference", cap) } })
+        T.eq(true, diff.fresh(selected)) -- Recollection uses original customization, not new setup.
+        require("irrelevant_explainer").setup()
+      end
+      local oversized = { diff = string.rep("é", cap) }
+      for _, strategy in ipairs({ "auto", "focused" }) do
+        local rejected, message = diff.collect(state.source, scope, { diff = strategy, max_bytes = cap, prompts = oversized })
+        T.eq(nil, rejected); assert(message:find("No target was truncated", 1, true), message)
+      end
+    end
+  end)
+end)
+
 T.test("many unrelated changes fail review but auto preflights before reading their blobs", function()
   repo(function(r)
     r.write("focus.lua", "old\n")

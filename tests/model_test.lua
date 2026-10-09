@@ -58,6 +58,20 @@ T.test("setup replaces complete argv, keeps explicit decoders, resets and isolat
       T.eq(300000, plugin.config.ai.timeout_ms)
       plugin.setup(); T.eq(defaults, plugin.config)
     end
+    local options = { prompts = { common = "Business rules é中", code = "Expert audience" } }
+    local before = vim.deepcopy(options)
+    plugin.setup(options); T.eq(before, options)
+    T.eq({ common = before.prompts.common, code = before.prompts.code, diff = "", review = "" }, plugin.config.prompts)
+    options.prompts.common = "caller mutation"
+    T.eq(before.prompts.common, plugin.config.prompts.common)
+    for _, invalid in ipairs({ "text", false, { unknown = "text" }, { code = 1 }, { diff = {} },
+      { review = function() end } }) do
+      local accepted, message = pcall(plugin.setup, { prompts = invalid })
+      assert(not accepted and message:find("prompts", 1, true), tostring(message))
+      T.eq(before.prompts.common, plugin.config.prompts.common)
+    end
+    plugin.setup(); T.eq(defaults, plugin.config)
+    T.eq({ common = "", code = "", diff = "", review = "" }, plugin.config.prompts)
     T.eq(0, calls)
   end, debug.traceback)
   vim.system = system; plugin.setup()
@@ -96,6 +110,12 @@ T.test("paired renamed anchors and supplied evidence", function()
   local value = { version = 1, notes = { note } }
   T.eq(value, assert(model.validate(vim.json.encode(value), snapshot)))
   T.eq({ version = 1, notes = {} }, assert(model.validate('{"version":1,"notes":[]}', snapshot)))
+  local supplied = vim.deepcopy(value)
+  supplied.raw_prompt, supplied.notes[1].raw_preferences = "Private prompt", { diff = "Private perspective" }
+  for _, a in ipairs(supplied.notes[1].anchors) do a.raw_prompt = "Private anchor metadata" end
+  supplied.notes[1].evidence[1].raw_preferences = { common = "Private evidence metadata" }
+  local before = vim.deepcopy(supplied)
+  T.eq(value, assert(model.validate(supplied, snapshot))); T.eq(before, supplied)
 end)
 T.test("file diff priority does not forbid relevant unchanged anchors", function()
   local s = { mode = "diff", target = { scope = "file", hunks = { { 1, 1, 1, 1 } },

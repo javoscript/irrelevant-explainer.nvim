@@ -425,7 +425,7 @@ local function gather(state, io, strategy)
     -- blob just to discover that a complete review cannot possibly fit.
     local minimum = io.main(function()
       return #assert(require("irrelevant_explainer.prompt").build({ mode = "diff", files = {}, target = {},
-        comparison = comparison, context = { strategy = "review", radius = io.radius, omitted_files = 0 } }, math.huge))
+        comparison = comparison, context = { strategy = "review", radius = io.radius, omitted_files = 0 } }, math.huge, nil, io.prompts))
     end)
     for _, path in ipairs(sorted) do
       io.size(minimum)
@@ -674,7 +674,7 @@ local function capture(state, scope, retained, row, io, requested)
     local function capacity()
       local minimal = vim.deepcopy(selected)
       surroundings(minimal, 0)
-      local _, _, bytes = require("irrelevant_explainer.prompt").build(minimal, math.huge)
+      local _, _, bytes = require("irrelevant_explainer.prompt").build(minimal, math.huge, nil, io.prompts)
       io.optional_capacity = io.max_bytes - bytes
     end
     io.accept = function(item, comparison, omitted)
@@ -692,7 +692,7 @@ local function capture(state, scope, retained, row, io, requested)
                 .. "Omitted paths are logical destination entries (changed or loaded candidates); "
                 .. "their content was not supplied or inspected for rationale. Rename source text may be supplied on the old side." } }
           selected.comparison.manifest = { supplied }
-          local prompt, err = require("irrelevant_explainer.prompt").build(selected, io.max_bytes)
+          local prompt, err = require("irrelevant_explainer.prompt").build(selected, io.max_bytes, nil, io.prompts)
           if prompt then target_file_count = #files; capacity(); break end
           if radius == 0 or scope == "file" then error(err) end
           radius = math.floor(radius / 2)
@@ -706,7 +706,7 @@ local function capture(state, scope, retained, row, io, requested)
       candidate.comparison.manifest[#candidate.comparison.manifest + 1] = supplied
       vim.list_extend(candidate.files, files)
       candidate.context.omitted_files = candidate.context.omitted_files - 1
-      while not require("irrelevant_explainer.prompt").build(candidate, io.max_bytes) do
+      while not require("irrelevant_explainer.prompt").build(candidate, io.max_bytes, nil, io.prompts) do
         if scope == "file" or candidate.context.radius == 0 then return false end
         surroundings(candidate, math.floor(candidate.context.radius / 2))
       end
@@ -732,7 +732,7 @@ local function capture(state, scope, retained, row, io, requested)
       if io.snapshot then
         io.size(#canonical({ context = vim.json.decode(require("irrelevant_explainer.prompt").context(selected)), target = selected.target }))
       else
-        local prompt, err = require("irrelevant_explainer.prompt").build(selected, io.max_bytes)
+        local prompt, err = require("irrelevant_explainer.prompt").build(selected, io.max_bytes, nil, io.prompts)
         assert(prompt, err)
       end
     end)
@@ -775,13 +775,14 @@ local function capture(state, scope, retained, row, io, requested)
   snapshot.fingerprint = hash({ snapshot.review_fingerprint, snapshot.target })
   snapshot.max_bytes = io.max_bytes
   snapshot.snapshot_max_bytes = io.snapshot and io.max_bytes or nil
-  snapshot.capture = { state = state, guards = guards, target = vim.deepcopy(snapshot.target) }
+  snapshot.capture = { state = state, guards = guards, target = vim.deepcopy(snapshot.target), prompts = io.prompts }
   return snapshot
 end
 
 function M.collect_async(win, scope, callback, options)
   options = options or {}
   local config = require("irrelevant_explainer").config.context
+  local prompts = vim.deepcopy(options.prompts or require("irrelevant_explainer").config.prompts)
   local max_bytes, strategy, radius = options.max_bytes or config.max_bytes, options.diff or config.diff, options.radius or config.radius
   if scope == "review" then strategy = "review" end
   local snapshot_max_bytes = scope == "review"
@@ -800,6 +801,7 @@ function M.collect_async(win, scope, callback, options)
   local job = run(function(io)
     assert(ok, state)
     io.max_bytes, io.radius, io.auto, io.hunk = max_bytes, radius, strategy == "auto", scope == "hunk"
+    io.prompts = prompts
     io.snapshot = snapshot_max_bytes ~= nil
     return capture(state, scope, options.target, row, io, strategy)
   end, callback, max_bytes)
@@ -814,6 +816,7 @@ function M.fresh_async(snapshot, callback)
     callback(current ~= nil and vim.deep_equal(content(current), content(snapshot))
       and same_guards(snapshot.capture.guards, current.capture.guards))
   end, { state = snapshot.capture.state, target = snapshot.capture.target, max_bytes = snapshot.max_bytes,
+    prompts = snapshot.capture.prompts,
     snapshot_max_bytes = snapshot.snapshot_max_bytes,
     diff = snapshot.context and snapshot.context.strategy or "review",
     radius = snapshot.context and (snapshot.context.requested_radius or snapshot.context.radius) or 20 })
