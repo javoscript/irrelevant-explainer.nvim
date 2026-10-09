@@ -1,0 +1,18 @@
+# Tasks
+
+## 1. Preserve expanded navigation through accepted target display
+
+- [x] 1.1 Capture expanded File-detail state before old-file teardown in the session navigation lifecycle and bind one-shot expansion intent to the new comparison/file identity, preserving remapped/source-originated navigation and no-op boundaries. Extend existing real-Diffview tests in `tests/diffview_test.lua` to verify next and previous navigation from reader/source windows, expanded and collapsed starts, disabled/remapped bindings, and unchanged boundary reading state.
+- [x] 1.2 Add a focus-preserving mode to the existing indexed detail-opening path in `lua/irrelevant_explainer/ui.lua`, preserving manual behavior and avoiding source centering or cursor remapping during initialization. Extend existing UI tests to verify unchanged active window and source views with an off-screen first note; verify manual expansion and collapse still behave as before.
+- [x] 1.3 Consume eligible navigation intent after target notes are rendered in displayed order, covering asynchronous restoration, accepted generated/cached results, and already-pending review/file work. Extend existing Diffview/session coverage with reversed response order and an optional overview; verify the first displayed note opens once and inference counts stay unchanged for restored notes, empty targets with Auto off, and exactly one eligible existing request with Auto on.
+- [x] 1.4 Update `README.md` reading controls and `doc/irrelevant-explainer-ui.txt` navigation/restoration wording to describe expanded continuity, collapsed preservation, and separate inference eligibility. Verify neither document promises initial auto-expansion, a new option, or automatic generation when Auto is disabled.
+
+## 2. Retire obsolete expansion without interrupting owned work
+
+- [x] 2.1 Retire target expansion intent on subsequent navigation, user reading/focus/tab choices, Review entry, Cancel/Refresh, invalidation, failure, ownership replacement, and closure while ignoring programmatic initialization events. Extend existing delayed-callback tests to verify superseded restoration/completion cannot reopen detail or affect another target, user-selected detail, Review, or a closed reader; verify returning focus and redraw events do not revive intent.
+- [x] 2.2 Preserve old-detail gutter/decorations cleanup and normal retained/pending result ownership through automatic target expansion. Extend existing lifecycle regressions to verify no old cursor reaches replacement source buffers, no gutter errors or source-option leaks occur, explicit collapse stays collapsed, empty results do not trigger retry, and a later navigation from an unresolved/empty target uses actual collapsed state. Add a brief help note explaining that delayed expansion is discarded after intervening reading/navigation choices and verify it matches these checks.
+
+## 3. Combined validation
+
+- [x] 3.1 Run `bash tests/ci.sh base` and `bash tests/ci.sh integration` with valid `IRRELEVANT_EXPLAINER_DIFFVIEW_PATH` and `IRRELEVANT_EXPLAINER_PLENARY_PATH`; verify all executed tests pass and required integration coverage is not skipped.
+- [x] 3.2 Exercise the actual reader with offline Diffview fixtures and the existing `tests/render.py`/`tests/visual.lua` capture workflow: inspect expanded-to-expanded navigation first, then collapsed-to-collapsed, and an unexplained target with Auto disabled. Verify first-note content, header/gutter cleanup, no focus/source jump, and no unexpected inference; store and inspect final review captures under `.amp/in/artifacts/`, keeping `/.amp/in/` repository-locally excluded and removing temporary capture helpers.

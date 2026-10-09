@@ -112,6 +112,12 @@ vim.keymap.set("n", "<leader>ar", "<cmd>IrrelevantExplainer review<cr>")
 | Esc / `q` in Review | Return to File / close the reader |
 | Tab / Shift-Tab in diffs | Next / previous file; respects Diffview remaps |
 
+Expanded detail carries forward to the next file's first available note;
+a collapsed reader stays collapsed. This works from notes or source windows
+without taking focus or moving the source to the note. Missing notes do not
+trigger generation unless `diff.auto_explain` is enabled. Initial opening and
+Review-to-File navigation still show the overview.
+
 `D` = documented intent, `~` = inferred, `?` = unknown. Not confidence scores.
 Review scrolls independently; File notes track the source.
 

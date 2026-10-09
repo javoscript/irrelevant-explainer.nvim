@@ -26,7 +26,7 @@ if vim.env.IRRELEVANT_EXPLAINER_DIFFVIEW_CHILD ~= "1" then
     local result = vim.system({ vim.v.progpath, "--headless", "-u", "NONE", "-i", "NONE", "-n",
       "-c", "luafile tests/run.lua" }, {
       cwd = vim.fn.getcwd(), env = { IRRELEVANT_EXPLAINER_TEST = "tests/diffview_test.lua", IRRELEVANT_EXPLAINER_DIFFVIEW_CHILD = "1",
-        IRRELEVANT_EXPLAINER_DIFFVIEW_PATH = runtime } }):wait(240000)
+        IRRELEVANT_EXPLAINER_DIFFVIEW_PATH = runtime } }):wait(360000)
     print((result.stdout or "") .. (result.stderr or ""))
     assert(result.code == 0 and result.signal == 0,
       string.format("isolated real Diffview tests failed (code=%s, signal=%s)", result.code, result.signal))
@@ -685,6 +685,149 @@ local function toggle_fixture(run)
   assert(ok, err)
 end
 
+T.test("expanded file navigation opens the first displayed note without changing inference or focus", function()
+  toggle_fixture(function(f, fixture, plugin)
+    local actions = require("diffview.actions")
+    require("diffview").setup({ watch_index = false, use_icons = false, keymaps = { view = {
+      ["<tab>"] = false, ["<s-tab>"] = false,
+      { "n", "]f", actions.select_next_entry }, { "n", "[f", actions.select_prev_entry },
+    } } })
+    plugin.setup({ cache = { enabled = false }, diff = { auto_explain = true } })
+    fixture:switch("tests/policy.txt")
+    local s = plugin.explain("file"); f.answer(f.job(1)); f.ready(s, "tests/policy.txt")
+    local p = s.pane
+    T.eq(nil, p.detail_buf) -- Initial opening never auto-expands.
+    p:detail(1)
+    api.nvim_feedkeys("]f", "xt", false)
+    local request = f.job(2)
+    T.eq("policy.lua", request.target.path)
+    local windows = assert(adapter.current(p.source)).windows
+    api.nvim_win_call(windows.new, function() vim.cmd.normal({ "60Gzt", bang = true }) end)
+    vim.cmd("redraw!")
+    local views = {}
+    for side, win in pairs(windows) do views[side] = api.nvim_win_call(win, vim.fn.winsaveview) end
+    request.callback({ version = 1, notes = {
+      { summary = "Later note", detail = "Later explanation.", intent_basis = "unknown", evidence = {},
+        anchors = { { path = "policy.lua", side = "new", start_line = 8, end_line = 8 } } },
+      { summary = "Earlier note", detail = "Earlier explanation.", intent_basis = "unknown", evidence = {},
+        anchors = { { path = "policy.lua", side = "new", start_line = 4, end_line = 4 } } },
+    } })
+    f.ready(s, "policy.lua")
+    assert(p.detail_buf)
+    local prose = table.concat(api.nvim_buf_get_lines(p.detail_buf, 0, -1, false), "\n")
+    assert(prose:find("Earlier explanation.", 1, true) and not prose:find("Later explanation.", 1, true))
+    T.eq(p.win, api.nvim_get_current_win())
+    for side, win in pairs(windows) do T.eq(views[side], api.nvim_win_call(win, vim.fn.winsaveview)) end
+    -- Previous from the source carries expanded state without taking focus.
+    api.nvim_set_current_win(p.source); actions.select_prev_entry()
+    f.ready(s, "tests/policy.txt"); assert(p.detail_buf)
+    T.eq(p.source, api.nvim_get_current_win()); T.eq(2, #f.jobs)
+    p:back()
+    api.nvim_set_current_win(p.win); api.nvim_feedkeys("]f", "xt", false)
+    f.ready(s, "policy.lua"); T.eq(nil, p.detail_buf); T.eq(2, #f.jobs)
+    p:detail(1)
+    plugin.toggle_auto_explain() -- Expansion does not depend on Auto.
+    api.nvim_feedkeys("[f", "xt", false)
+    f.ready(s, "tests/policy.txt"); assert(p.detail_buf); T.eq(2, #f.jobs)
+    local detail, view = p.detail_buf, api.nvim_win_call(p.win, vim.fn.winsaveview)
+    fixture.view:set_file(fixture.view.cur_entry)
+    f.events(); T.eq(detail, p.detail_buf); T.eq(view, api.nvim_win_call(p.win, vim.fn.winsaveview))
+    api.nvim_feedkeys("[f", "xt", false) -- openspec/spec.md has no saved notes.
+    assert(vim.wait(5000, function() return p.status:match("^No explanations") end), p.status)
+    T.eq(nil, p.detail_buf); T.eq(2, #f.jobs)
+    api.nvim_feedkeys("]f", "xt", false)
+    f.ready(s, "tests/policy.txt"); T.eq(nil, p.detail_buf)
+    p:detail(1); api.nvim_feedkeys("[f", "xt", false)
+    assert(vim.wait(5000, function() return p.status:match("^No explanations") end))
+    plugin.explain("file"); f.job(3).callback({ version = 1, notes = {} }); f.ready(s, "openspec/spec.md")
+    T.eq(nil, p.detail_buf)
+    api.nvim_feedkeys("]f", "xt", false); f.ready(s, "tests/policy.txt")
+    p:detail(1); api.nvim_feedkeys("[f", "xt", false); f.ready(s, "openspec/spec.md")
+    T.eq(nil, p.detail_buf); T.eq(3, #f.jobs)
+    api.nvim_feedkeys("]f", "xt", false); f.ready(s, "tests/policy.txt")
+    p:detail(1); api.nvim_feedkeys("]f", "xt", false); f.ready(s, "policy.lua")
+    plugin.setup({ cache = { enabled = false }, diff = { auto_explain = true } })
+    api.nvim_feedkeys("]f", "xt", false)
+    f.job(4).callback(nil, "Provider unavailable")
+    assert(vim.wait(5000, function() return p.status:match("^Failed") end), p.status)
+    f.events(); T.eq(nil, p.detail_buf); T.eq(4, #f.jobs)
+    T.eq("", vim.v.errmsg)
+  end)
+end)
+
+T.test("expanded Auto navigation opens validated cached notes without inference", function()
+  toggle_fixture(function(f, fixture, plugin)
+    plugin.setup({ cache = { enabled = false } })
+    local s = plugin.explain("file"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+    local cache = require("irrelevant_explainer.cache")
+    local read = cache.read
+    cache.read = function(source, key, _, callback)
+      vim.schedule(function()
+        callback({ version = 1, source = source, key = key, scope = "file", answer = { version = 1, notes = {
+          { summary = "Cached ADR", detail = "The saved ADR explanation.", intent_basis = "unknown", evidence = {},
+            anchors = { { path = "docs/adr.md", side = "new", start_line = 1, end_line = 2 } } },
+        } } })
+      end)
+      return { cancel = function() end }
+    end
+    local ok, err = xpcall(function()
+      plugin.setup({ diff = { auto_explain = true } })
+      s.pane:detail(1); require("diffview.actions").select_next_entry()
+      f.ready(s, "docs/adr.md")
+      T.eq("Ready · cached", s.pane.status); assert(s.pane.detail_buf)
+      local prose = table.concat(api.nvim_buf_get_lines(s.pane.detail_buf, 0, -1, false), "\n")
+      assert(prose:find("The saved ADR explanation.", 1, true))
+      T.eq(s.pane.win, api.nvim_get_current_win()); T.eq(1, #f.jobs)
+    end, debug.traceback)
+    cache.read = read
+    assert(ok, err)
+  end)
+end)
+
+T.test("delayed expanded restoration yields to later reading navigation and lifecycle choices", function()
+  for _, choice in ipairs({ "none", "stale", "focus", "tab", "move", "review", "navigate", "cancel", "close", "refresh" }) do
+    toggle_fixture(function(f, fixture, plugin)
+      plugin.setup({ cache = { enabled = false } })
+      local s = plugin.explain("file"); f.answer(f.job(1)); f.ready(s, "policy.lua")
+      fixture:switch("docs/adr.md"); plugin.explain("file")
+      f.answer(f.job(2)); f.ready(s, "docs/adr.md")
+      fixture:switch("policy.lua"); f.ready(s, "policy.lua")
+      local p, release = s.pane, nil
+      local restore = diff.restore_async
+      diff.restore_async = function(snapshot, source, callback)
+        return restore(snapshot, source, function(bound)
+          release = function() callback(choice ~= "stale" and bound or nil) end
+        end)
+      end
+      p:detail(1); require("diffview.actions").select_next_entry()
+      assert(vim.wait(5000, function() return release ~= nil end), "restoration not held")
+      T.eq(nil, p.detail_buf)
+      if choice == "focus" then
+        api.nvim_set_current_win(p.source); vim.wait(30); api.nvim_set_current_win(p.win)
+      elseif choice == "tab" then
+        vim.cmd("tabnew"); vim.wait(30); vim.cmd("tabclose")
+      elseif choice == "move" then api.nvim_feedkeys("j", "xt", false)
+      elseif choice == "review" then plugin.review()
+      elseif choice == "navigate" then require("diffview.actions").select_next_entry()
+      elseif choice == "cancel" then plugin.cancel()
+      elseif choice == "close" then plugin.close()
+      elseif choice == "refresh" then plugin.refresh() end
+      release()
+      if choice == "none" then
+        f.ready(s, "docs/adr.md"); assert(p.detail_buf)
+        p:back(); f.events(); T.eq(nil, p.detail_buf)
+      else
+        vim.wait(150); T.eq(nil, p.detail_buf)
+        if choice == "review" then T.eq(true, p.review_mode) end
+        if choice == "navigate" then T.eq("openspec/spec.md", fixture.view.cur_entry.path) end
+        if choice == "refresh" then f.answer(f.job(3)); f.ready(s, "docs/adr.md"); T.eq(nil, p.detail_buf) end
+      end
+      T.eq(choice == "refresh" and 3 or 2, #f.jobs)
+      T.eq("", vim.v.errmsg)
+    end)
+  end
+end)
+
 T.test("notes navigation preserves source window defaults for unopened Diffview files", function()
   for _, expanded in ipairs({ false, true }) do
     toggle_fixture(function(f, fixture, plugin)
@@ -774,8 +917,9 @@ for _, auto in ipairs({ false, true }) do
             else
               assert(vim.wait(5000, function() return not s.restoring and p.status:match("^No explanations") end))
             end
-            T.eq(nil, p.detail_buf); T.eq(false, api.nvim_buf_is_valid(detail))
-            T.eq("O ", vim.wo[p.win].statuscolumn)
+            T.eq(auto and not collapse, p.detail_buf ~= nil)
+            T.eq(false, api.nvim_buf_is_valid(detail))
+            T.eq("O ", p.overview and p.overview.options.statuscolumn or vim.wo[p.win].statuscolumn)
             -- Old prose positions must not be applied after the file switch.
             local cursors = {}
             for _, win in pairs(fixture.state.windows) do
@@ -787,7 +931,9 @@ for _, auto in ipairs({ false, true }) do
             T.eq(panel.winid, api.nvim_get_current_win()); T.eq(auto and 2 or 1, #f.jobs)
             select("policy.lua"); f.ready(s, "policy.lua")
             T.eq("Ready · restored", p.status); T.eq(accepted, p.result)
-            T.eq("O ", vim.wo[p.win].statuscolumn); T.eq(auto and 2 or 1, #f.jobs)
+            T.eq(auto and not collapse, p.detail_buf ~= nil)
+            T.eq("O ", p.overview and p.overview.options.statuscolumn or vim.wo[p.win].statuscolumn)
+            T.eq(auto and 2 or 1, #f.jobs)
           end
           assert(#observed > 0, "must observe buffer transitions")
           for _, item in ipairs(observed) do
@@ -1170,6 +1316,36 @@ local function whole_review_fixture(run, reference_variants)
   agent.run, vim.notify, vim.o.columns = original, notify, columns
   assert(ok, err)
 end
+
+T.test("expanded navigation consumes existing file and review work without duplicate inference", function()
+  for _, scope in ipairs({ "file", "review" }) do
+    whole_review_fixture(function(f, plugin)
+      local s = plugin.explain("file"); f:job(1); f:answer(1); f:settled(s)
+      if scope == "file" then f:select("docs/adr.md", s) end
+      plugin.explain(scope); f:job(2)
+      if scope == "file" then f:select("policy.lua", s)
+      else s.pane:show_file() end
+      s.pane:detail(1)
+      api.nvim_set_current_win(s.pane.source)
+      require("diffview.actions").select_next_entry()
+      assert(vim.wait(5000, function()
+        local state = adapter.current(s.pane.source)
+        return state and state.selected.path == "docs/adr.md" and not s.restoring
+          and s.review_key == vim.inspect({ state.cwd, state.pair, state.path_args,
+            state.show_untracked, "docs/adr.md", "docs/adr.md", state.selected.kind })
+      end))
+      T.eq(nil, s.pane.detail_buf); T.eq(2, #f.jobs)
+      local source = api.nvim_get_current_win()
+      local count = f:complete(2, "Target"); f:settled(s)
+      assert(s.pane.detail_buf)
+      local prose = table.concat(api.nvim_buf_get_lines(s.pane.detail_buf, 0, -1, false), "\n")
+      assert(prose:find("Target docs/adr.md", 1, true) and not prose:find("policy.lua", 1, true))
+      T.eq(source, api.nvim_get_current_win()); T.eq(scope == "review" and 4 or 2, count)
+      s.pane:back(); api.nvim_exec_autocmds("User", { pattern = "DiffviewViewPostLayout" })
+      vim.wait(150); T.eq(nil, s.pane.detail_buf); T.eq(count, #f.jobs); T.eq({}, f.errors)
+    end)
+  end
+end)
 
 T.test("whole-review commands work from the Diffview file tree without moving focus or selection", function()
   whole_review_fixture(function(f, plugin)

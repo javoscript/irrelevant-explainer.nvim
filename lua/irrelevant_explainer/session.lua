@@ -112,6 +112,20 @@ render = function(session, status)
   if status == "Ready" and value and #value.notes == 0 then status = "Ready · no notes" end
   if vim.deep_equal(value, session.pane.result) then session.pane:set_status(status)
   else session.pane:set(value, status) end
+  local expansion = session.expand_target
+  if expansion then
+    local pane = session.pane
+    if expansion.key ~= session.review_key or pane.review_mode or pane.detail_win
+        or api.nvim_get_current_win() ~= expansion.win then
+      session.expand_target = nil
+    elseif value then
+      -- Consume before opening: initialization and subsequent status updates
+      -- must not replay expansion after the user explicitly collapses it.
+      session.expand_target = nil
+      local first = pane.note_order[1]
+      if first then pane:detail(first, false) end
+    end
+  end
 end
 
 local function progress(session, request, status)
@@ -123,6 +137,7 @@ local function progress(session, request, status)
 end
 
 local function stop_jobs(session)
+  session.expand_target = nil
   for _, key in ipairs({ "collection", "checking", "invocation", "restoration", "cache_lookup" }) do
     if session[key] then session[key].cancel(); session[key] = nil end
   end
@@ -247,6 +262,7 @@ local function check(session, callback, dirty)
     if #kept ~= #session.batches then
       session.batches = kept
       session.stale = true
+      session.expand_target = nil
       -- Stale detail must not be deferred merely because some other batch is fresh.
       session.pane.deferred_result = nil
       session.pane:back(true)
@@ -313,6 +329,17 @@ local function watch(session)
   api.nvim_create_autocmd({ "TextChanged", "TextChangedI", "BufWritePost", "BufWinEnter", "TabEnter", "FocusGained" }, {
     group = session.group, callback = schedule,
   })
+  api.nvim_create_autocmd({ "WinEnter", "TabLeave" }, { group = session.group, callback = function()
+    local expansion = session.expand_target
+    if not expansion then return end
+    -- Diffview briefly uses temporary windows while replacing its sources.
+    -- Compare settled focus, not those programmatic initialization events.
+    vim.schedule(function()
+      if session.expand_target == expansion and api.nvim_get_current_win() ~= expansion.win then
+        session.expand_target = nil
+      end
+    end)
+  end })
   if session.mode == "diff" then
     api.nvim_create_autocmd("User", { group = session.group,
       pattern = { "DiffviewDiffBufWinEnter", "DiffviewViewPostLayout", "DiffviewViewEnter" }, callback = schedule })
@@ -370,6 +397,8 @@ follow = function(session, manual)
   end
   local key = review_key(selected)
   if key ~= session.review_key then
+    session.expand_target = session.pane.detail_win and not session.pane.review_mode
+      and { key = key, win = api.nvim_get_current_win() } or nil
     remember(session)
     if session.restoration then session.restoration.cancel(); session.restoration = nil end
     if session.automatic then
@@ -412,6 +441,7 @@ follow = function(session, manual)
       M.start("diff", "file", { win = state.source, automatic = true })
       return true
     end
+    if not pending_for(session, key) then session.expand_target = nil end
     render(session, unavailable and "No text annotations · " .. unavailable or "No explanations · request file or hunk")
     return false
   end
@@ -435,6 +465,7 @@ follow = function(session, manual)
     if not batch then
       session.restoration, session.restoring = nil, nil
       if #batches == 0 then
+        session.expand_target = nil
         retained[key], session.stale = nil, true
         if session.auto_explain_navigation and require("irrelevant_explainer").config.diff.auto_explain then
           session.restoring = true
@@ -479,6 +510,7 @@ local function fail(session, err)
   elseif request and request.path then
     err = request.path .. ": " .. err
   end
+  if visible or request and request.scope == "review" then session.expand_target = nil end
   if visible then session.file_status = "Failed · see :messages" end
   session.pending, session.pane.pending = nil, nil
   notify(err)
@@ -731,6 +763,7 @@ end
 function M.start(mode, scope, options)
   options = options or {}
   local previous = M.current()
+  if previous and not options.automatic then previous.expand_target = nil end
   local source = source_window(options.win or api.nvim_get_current_win())
   if mode == "diff" and scope == "review" then
     local message
@@ -843,6 +876,7 @@ function M.start(mode, scope, options)
     session.pane = require("irrelevant_explainer.ui").open(source, snapshot, nil, function() M.close(session) end,
       mode == "diff" and require("irrelevant_explainer.diffview").keymaps or nil)
     session.pane.mode = mode
+    session.pane.on_interact = function() session.expand_target = nil end
     session.pane.on_review = function() M.review() end
     session.pane.on_file = function() session.pane:show_file(); render(session) end
     session.pane.on_reference = function(entry)

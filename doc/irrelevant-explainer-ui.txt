@@ -119,15 +119,27 @@ normal-mode file-navigation and explorer mappings. Defaults: >
 Remapped actions, custom RHS/options and disabled bindings are respected.
 Irrelevant Explainer's Enter/K controls take precedence on conflicting keys. Other
 layout-specific Diffview actions are not attached to the notes buffer.
-Switching files exits detail and hides that file's notes, not marking them stale.
+Switching files exits old-file detail and hides its notes, not marking them stale.
+If File detail was expanded when navigation began, the target's first note in
+displayed order expands after validation. A collapsed reader stays collapsed.
+This also applies when navigating from a source window, without stealing focus
+or jumping to the note's anchor. Initial opening and Review-to-File navigation
+remain collapsed. There is no auto-expansion setting.
+Delayed expansion is discarded after further navigation, reading/focus choices,
+Review entry, cancellation, refresh, invalidation, failure or closure. Collapsing
+the new detail keeps it collapsed; redraw/status events do not reopen it.
 Completed file/hunk batches are retained per file/comparison in memory for this
 Neovim run. A file with no saved notes shows "No explanations". Returning to an
 explained file shows "Checking saved explanations", then "Ready · restored"
 after its original context is revalidated. By default, navigation does not infer.
+Expansion never requests missing notes: only diff.auto_explain or explicit
+requests can generate them. An empty target leaves detail closed and does not
+carry a persistent expanded preference into subsequent navigation.
 Real context changes instead clear the affected notes and show Stale. Pending
 requests remain owned by the comparison when leaving a file; their results are
 retained for the original target without replacing another file's reader.
-Tab never expands/collapses an explanation, and code mode leaves it unmapped.
+Tab only carries expansion through an actual file change; it is not a detail
+toggle, and code mode leaves it unmapped.
 
 With diff.auto_explain=true, an already open diff explanation pane requests a
 whole-file explanation when the selected file has no valid saved notes. Valid

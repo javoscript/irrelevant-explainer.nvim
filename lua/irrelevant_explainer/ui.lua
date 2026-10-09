@@ -271,6 +271,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
   local wheel_up = api.nvim_replace_termcodes("<ScrollWheelUp>", true, false, true)
   vim.on_key(function(_, typed)
     if typed ~= "" then
+      if pane.on_interact then pane.on_interact() end
       pane.wheel_input = typed == wheel_down or typed == wheel_up
       if pane.detail_win and pane:windows()[api.nvim_get_current_win()] then
         if typed == "z" then pane.fold_prefix = true
@@ -1318,6 +1319,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
 
   function pane:show_review()
     if self.closed or self.review_mode then return end
+    if self.on_interact then self.on_interact() end
     if not self.review_buf then self:set_review(nil, {}, "No review · :IrrelevantExplainer review") end
     self:back()
     self:focus(true)
@@ -1675,9 +1677,10 @@ function M.open(source, snapshot, result, on_close, keymaps)
     return true
   end
 
-  function pane:detail(index)
+  function pane:detail(index, focus)
     if self.review_mode then return end
     if self.closed or not self.result then return end
+    if focus ~= false and self.on_interact then self.on_interact() end
     self.selection = nil
     index = type(index) == "number" and index or nil
     if index and not self.result.notes[index] then return end
@@ -1864,7 +1867,7 @@ function M.open(source, snapshot, result, on_close, keymaps)
       -- A fresh buffer inherits source defaults, not the overview's local
       -- styling. Carry that styling over without changing those defaults.
       for name, value in pairs(self.overview.options) do vim.wo[self.win][0][name] = value end
-      api.nvim_set_current_win(self.win)
+      if focus ~= false then api.nvim_set_current_win(self.win) end
     end
     vim.wo[self.win][0].foldenable = false
     local mappings = {}

@@ -912,6 +912,7 @@ if vim.g.capture_state:match("^diff") then
   local plugin = require("irrelevant_explainer")
   local focused = vim.g.capture_state == "diff-focused"
   local overview = vim.g.capture_state:match("^diff%-file%-overview")
+    or vim.g.capture_state:match("^diff%-navigation")
   if focused then
     capture_review:write("src/unrelated.lua", string.rep("unrelated\n", 20000))
     vim.api.nvim_win_set_cursor(capture_review.state.source, { 4, 0 })
@@ -924,7 +925,35 @@ if vim.g.capture_state:match("^diff") then
   local session = plugin.explain(focused and "hunk" or "file")
   assert(vim.wait(5000, function() return session.pane.result ~= nil end), session.pane.status)
   _G.capture_pane = session.pane
-  if vim.g.capture_state == "diff-publication-review" then
+  if vim.g.capture_state:match("^diff%-navigation") then
+    local api, agent = vim.api, require("irrelevant_explainer.agent")
+    local calls, run = 0, agent.run
+    agent.run = function(...)
+      calls = calls + 1
+      return run(...)
+    end
+    capture_review:switch("docs/adr.md")
+    plugin.config.ai.command = { "python3", script, "explain" }
+    plugin.explain("file")
+    assert(vim.wait(5000, function() return capture_pane.result and not session.pending end))
+    api.nvim_set_current_win(capture_pane.win)
+    api.nvim_win_set_width(capture_pane.win, 90)
+    local expanded = vim.g.capture_state ~= "diff-navigation-collapsed"
+    if expanded then capture_pane:detail(1) end
+    local actions = require("diffview.actions")
+    if vim.g.capture_state == "diff-navigation-empty" then actions.select_next_entry()
+    else actions.select_prev_entry() end
+    assert(vim.wait(5000, function() return not session.restoring and
+      (vim.g.capture_state == "diff-navigation-empty" and capture_pane.status:match("^No explanations")
+        or session.snapshot and session.snapshot.target.path == "policy.lua") end), capture_pane.status)
+    assert(api.nvim_get_current_win() == capture_pane.win and calls == 1)
+    assert((capture_pane.detail_buf ~= nil) == (vim.g.capture_state == "diff-navigation-expanded"))
+    if capture_pane.detail_buf then
+      local prose = table.concat(api.nvim_buf_get_lines(capture_pane.detail_buf, 0, -1, false), "\n")
+      assert(prose:find("This file decides whether", 1, true), "first displayed overview did not expand")
+    end
+    assert(vim.v.errmsg == "")
+  elseif vim.g.capture_state == "diff-publication-review" then
     -- Run the real offline review pipeline, then retain readable File notes.
     plugin.config.ai.command = { "python3", script, "whole-review" }
     session = plugin.explain("review")
